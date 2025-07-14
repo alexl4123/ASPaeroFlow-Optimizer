@@ -47,6 +47,10 @@ overload(X,T,LOAD-C) :- sector(X,T,C), time(T), #count{ID:flight(ID,T,X)} = LOAD
 {reroute(ID)} :- flightPlan(ID,_,_).
 1{flight(ID,T+T',X):sectorFlight(ID,T',X)}1 :- reroute(ID), flightTime(ID,T'), actualDepartureTime(ID, T).
 
+% DELAY ONLY:
+%flight(ID,T + T_DIFF,X) :- reroute(ID), actualDepartureTime(ID, T), flightPlan(ID,T_ORIG,X), plannedDepartureTime(ID,T_ORIG_START), T_ORIG - T_ORIG_START = T_DIFF.
+
+
 % FLIGHT MUST OCCUR:
 flightOccurs(ID) :- flight(ID,_,_).
 :- flightID(ID), not flightOccurs(ID).

@@ -91,7 +91,7 @@ if __name__ == "__main__":
 
     draw_graph(G)
 
-    for flights in range(100,301,100):
+    for flights in range(30000,30001,100):
 
         flight_list = []
 
@@ -133,8 +133,8 @@ if __name__ == "__main__":
 
         #capacity = math.ceil(flights/len(list(G.nodes())))
         non_airport_nodes = set(G.nodes()).difference(set(airport_nodes))
-        non_airport_capacity = 4
-        airport_capacity = 100
+        non_airport_capacity = 400
+        airport_capacity = 10000
         capacities = [(vertex,non_airport_capacity) for vertex in non_airport_nodes] + [(vertex,airport_capacity) for vertex in airport_nodes]
         pd.DataFrame(capacities, columns=["Sector_ID", "Capacity"]).to_csv(f"capacity_{flights}.csv", index=False)
 

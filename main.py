@@ -153,7 +153,7 @@ class Main:
 
         counter_equal_solutions = 0
         additional_time_increase = 0
-        max_number_airplanes_considered_in_ASP = 3
+        max_number_airplanes_considered_in_ASP = 2
 
         iteration = 0
 
@@ -248,7 +248,7 @@ class Main:
                     counter_equal_solutions += 1
 
                     if max_number_airplanes_considered_in_ASP > 3:
-                        max_number_airplanes_considered_in_ASP = 3
+                        max_number_airplanes_considered_in_ASP = 2
                         additional_time_increase += 1
                         counter_equal_solutions = 0
                         print(f">>> INCREASED TIME TO:{additional_time_increase}")
