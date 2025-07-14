@@ -21,6 +21,9 @@ from typing import Any, Final, List, Optional
 
 from solver import Solver, Model
 
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import shortest_path
+
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -119,6 +122,7 @@ class Main:
 
         edges_instance = "\n".join(edges_instance)
 
+        edge_distances = self.compute_distance_matrix()
 
         airport_instance = []
 
@@ -143,24 +147,29 @@ class Main:
         # 5.) Create capacity overload matrix
         capacity_overload_mask = capacity_demand_diff_matrix < 0
 
-        number_of_conflicts = capacity_overload_mask.sum()
+        #number_of_conflicts = capacity_overload_mask.sum()
+        number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
         number_of_conflicts_prev = None
 
         counter_equal_solutions = 0
         additional_time_increase = 0
+        max_number_airplanes_considered_in_ASP = 3
 
         iteration = 0
 
         fill_value = -1
 
+        np.savetxt("00_initial_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
+        original_converted_instance_matrix = converted_instance_matrix.copy()
 
         while np.any(capacity_overload_mask, where=True):
-            print(f"<ITER:{iteration}> REMAINING ISSUES: {str(capacity_overload_mask.sum())}")
+            print(f"<ITER:{iteration}> REMAINING ISSUES: {str(number_of_conflicts)}")
 
             # Possible improvements:
             # 1.) Efficiency:
             #   a.) remove unnecessary airports
             #   b.) remove all sector/stuff prior to earliest airplane in conflict (we consider them to be fixed)
+            #   ----> Reduce search space!
             # 2.) Correctness:
             #   a.) (?) Increase max time (from 24h successively to more)
             #   b.) Add whole capacity matrix? --> But is way harder to solve!
@@ -172,9 +181,54 @@ class Main:
             # maybe iteratively increase max-time (from 24h to sth. else...)
 
             time_index,bucket_index = self.first_overload(capacity_overload_mask)
+
+
             rows = np.flatnonzero(converted_instance_matrix[:, time_index] == bucket_index)
+
+            if len(rows) > max_number_airplanes_considered_in_ASP:
+                rows = rows[:max_number_airplanes_considered_in_ASP]
+
             flights_affected = converted_instance_matrix[rows, :]
 
+            flight_sector_instances = []
+            flight_times_instance = []
+
+            for flight_affected_index in range(flights_affected.shape[0]):
+
+                flight_index = rows[flight_affected_index]
+
+                flight_affected = flights_affected[flight_affected_index,:]
+
+                flight_affected = flight_affected[flight_affected != fill_value]
+
+                source = flight_affected[0]
+                destination = flight_affected[-1]
+
+                source_to_target_time = edge_distances[source,destination]
+
+
+                for from_source_time in range(1,source_to_target_time + 1):
+                    # The +1 means that we add the destination airport
+                    time_to_target_diff = source_to_target_time - from_source_time
+
+                    source_vertices = edge_distances[source,:] == from_source_time
+                    target_vertices = edge_distances[destination,:] == time_to_target_diff
+
+                    matching_vertices = source_vertices & target_vertices
+
+                    vertex_ids = np.where(matching_vertices)[0]
+
+                    vertex_instances = [f"sectorFlight({flight_index},{from_source_time},{vertex_id})." for vertex_id in vertex_ids]
+
+                    flight_times_instance.append(f"flightTime({flight_index},{from_source_time}).")
+
+                    flight_sector_instances += vertex_instances
+
+            flight_sector_instances = "\n".join(flight_sector_instances)
+            flight_times_instance = "\n".join(flight_times_instance)
+
+            #print(flight_sector_instances)
+            #print(flight_times)
             print(f">> NUMBER AFFECTED FLIGHTS: {len(rows)}")
 
             flight_plan_instance = self.flight_plan_strings(rows, flights_affected)
@@ -193,10 +247,16 @@ class Main:
                 if number_of_conflicts >= number_of_conflicts_prev:
                     counter_equal_solutions += 1
 
-                    if counter_equal_solutions > 5:
+                    if max_number_airplanes_considered_in_ASP > 3:
+                        max_number_airplanes_considered_in_ASP = 3
                         additional_time_increase += 1
                         counter_equal_solutions = 0
                         print(f">>> INCREASED TIME TO:{additional_time_increase}")
+
+                    elif counter_equal_solutions > 5:
+                        max_number_airplanes_considered_in_ASP += 1
+                        counter_equal_solutions = 0
+                        print(f">>> INCREASED AIRPLANES CONSIDERED TO:{max_number_airplanes_considered_in_ASP}")
                 else:
                     counter_equal_solutions = 0
 
@@ -209,9 +269,9 @@ class Main:
             #restricted_timed_matrix = np.delete(capacity_time_matrix, remaining_airport_vertices, axis=0)
                 
                     
-            #timed_capacities = self.sector_string_matrix(capacity_demand_diff_matrix) 
 
-            timed_capacities = self.sector_string_matrix(capacity_demand_diff_matrix_restricted) 
+            #timed_capacities = self.sector_string_matrix(capacity_demand_diff_matrix_restricted) 
+            timed_capacities = self.sector_string_matrix(capacity_demand_diff_matrix) 
 
             # Investigate why it takes so long
             edges_instance, airport_instance, timed_capacities = self.not_used_airports_removal_from_instance(fill_value, flights_affected, timed_capacities, capacity_demand_diff_matrix_restricted)
@@ -219,10 +279,9 @@ class Main:
             timed_capacities_instance = '\n'.join(timed_capacities)
 
             time_instance = f"additionalTime({additional_time_increase})."
-            instance = edges_instance + "\n" + timed_capacities_instance + "\n" + flight_plan_instance + "\n" + airport_instance + "\n" + time_instance
+            instance = edges_instance + "\n" + timed_capacities_instance + "\n" + airport_instance + "\n" + time_instance + "\n" + flight_plan_instance + "\n" + flight_sector_instances + "\n" + flight_times_instance
 
-            #open("test_instance_3.lp","w").write(instance)
-            #quit()
+            #open("test_instance_4.lp","w").write(instance)
 
             encoding = self.encoding
 
@@ -233,6 +292,8 @@ class Main:
 
             end_time = time.time()
             print(f">> Elapsed solving time: {end_time - start_time}")
+            #print(model.get_flights())
+            #quit()
 
             for flight in model.get_flights():
                 #print(flight)
@@ -253,11 +314,136 @@ class Main:
             capacity_demand_diff_matrix = capacity_time_matrix - system_loads
             capacity_overload_mask = capacity_demand_diff_matrix < 0
 
+            # OLD - Just number of conflicting sectors:
+            #number_of_conflicts_prev = number_of_conflicts
+            #number_of_conflicts = capacity_overload_mask.sum()
 
+            # NEW - With absolute overload:
             number_of_conflicts_prev = number_of_conflicts
-            number_of_conflicts = capacity_overload_mask.sum()
+            number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
 
             iteration += 1
+
+
+        np.savetxt("01_final_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
+
+        # --- 1. load the two schedules ------------------------------------------------
+        # remove "header=None" if your files already have a header row
+
+
+        t_init  = self.last_valid_pos(original_converted_instance_matrix)      # last non--1 in the *initial* schedule
+        t_final = self.last_valid_pos(converted_instance_matrix)     # last non--1 in the *final* schedule
+
+        # --- 3. compute delays --------------------------------------------------------
+        # Flights that disappear completely (-1 in *both* files) get a delay of 0
+        delay = np.where(t_init >= 0, t_final - t_init, 0)          # shape (|I|,)
+
+        # --- 4. aggregate in whichever way you need -----------------------------------
+        total_delay  = delay.sum()
+        mean_delay   = delay.mean()
+        max_delay    = delay.max()
+        per_flight   = delay.tolist()        # Python list if you want it
+
+        print(f"Total delay (all flights): {total_delay}")
+        print(f"Average delay per flight:  {mean_delay:.2f}")
+        print(f"Maximum single-flight delay: {max_delay}")
+
+
+    # --- 2. helper: last non--1 position for every row, fully vectorised ----------
+    def last_valid_pos(self, arr: np.ndarray) -> np.ndarray:
+        """
+        Return a 1-D array with, for every row in `arr`, the **last** column index
+        whose value is not -1.  If a row is all -1, we return -1 for that flight.
+        """
+        # True where value ≠ -1
+        mask = arr != -1                                        # same shape as arr
+
+        # Reverse columns so that the *first* True along axis=1 is really the last
+        # in the original orientation
+        reversed_first = np.argmax(mask[:, ::-1], axis=1)
+
+        # If the whole row was False, argmax returns 0.  Detect that case:
+        no_valid = ~mask.any(axis=1)                            # shape (|I|,)
+
+        # Convert “position in reversed array” back to real column index
+        last_pos = arr.shape[1] - 1 - reversed_first            # shape (|I|,)
+        last_pos[no_valid] = -1                                 # sentinel value
+
+        return last_pos.astype(np.int64)
+
+   
+    def compute_distance_matrix(
+        self,
+        *,
+        directed: bool = False,
+        as_int: bool = True,
+        remap: bool = True,
+    ) -> np.ndarray:
+        """
+        Return the |V| × |V| matrix of shortest-path lengths (all edges = 1).
+
+        Parameters
+        ----------
+        directed : bool, default=False
+            Treat the graph as directed.  If ``False`` the edge
+            list is symmetrised internally.
+        as_int : bool, default=False
+            Convert the result to ``int`` and replace unreachable
+            pairs by ``-1``.  SciPy returns ``float`` with
+            ``np.inf`` otherwise.
+        remap : bool, default=True
+            If vertex IDs are not contiguous ``0 … |V|-1``,
+            remap them first.  This costs an ``O(|E| log |E|)``
+            sort but guarantees a compact matrix.
+
+        Returns
+        -------
+        np.ndarray
+            Dense distance matrix.  Entry ``D[i, j]`` equals the
+            length (in edges) of the shortest path from *i* to *j*
+            or –1/np.inf if no path exists.
+
+        Notes
+        -----
+        * Memory usage is ``O(|V|²)`` for the result, so for very large
+          graphs consider streaming single-source BFS instead.
+        * Runs in roughly ``O(|E|)`` because the graph is unweighted (double check this).
+        """
+        # -------------------------- 0. Input hygiene --------------------- #
+        edges = self.graph
+        if edges.ndim != 2 or edges.shape[1] != 2:
+            raise ValueError("graph must be a (|E|, 2) edge list")
+
+        if remap:
+            # Compress vertex IDs to 0…n-1 to avoid huge, sparse matrices.
+            unique_ids, idx = np.unique(edges, return_inverse=True)
+            edges = idx.reshape(-1, 2)
+            n_vertices = unique_ids.size
+        else:
+            n_vertices = edges.max() + 1
+
+        # -------------------------- 1. Adjacency ------------------------- #
+        data = np.ones(len(edges), dtype=np.int8)
+        row, col = edges.T
+        A = csr_matrix((data, (row, col)), shape=(n_vertices, n_vertices))
+
+        if not directed:
+            A = A + A.T  # mirror the edges
+
+        # -------------------------- 2. BFS ------------------------------- #
+        dist = shortest_path(
+            A,
+            directed=directed,
+            unweighted=True,
+            return_predecessors=False,
+        )
+
+        # -------------------------- 3. Post-process ---------------------- #
+        if as_int:
+            dist = np.where(np.isinf(dist), -1, dist.astype(np.int32))
+
+        return dist
+
 
     def not_used_airports_removal_from_instance(self, fill_value, flights_affected, timed_capacities,capacity_demand_diff_matrix_restricted):
 
