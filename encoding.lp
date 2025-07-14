@@ -18,6 +18,11 @@ sectorEdge(X,X) :- airport(X).
 % GET ALL TIME STEPS:
 time(T) :- flightPlan(_,T,_).
 time(T) :- sector(_,T,_).
+
+flightPlanMaxTime(TMAX) :- TMAX = #max{T:flightPlan(_,T,_);T:sector(_,T,_)}.
+effectiveLastTime(T+TMAX) :- flightPlanMaxTime(TMAX), additionalTime(T).
+time(T+1) :- time(T), effectiveLastTime(TMAX), T < TMAX.
+
 % GET ALL FLIHT IDS:
 flightID(ID) :- flightPlan(ID,_,_).
 
@@ -99,5 +104,4 @@ arrivalDelay(ID,Y-T) :- plannedArrivalTime(ID,T), actualArrivalTime(ID,Y).
 %#show arrivalDelay/2.
 #show overload/3.
 #show arrivalDelay/2.
-%#show time/1.
-
+#show time/1.

@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import sys
 import numpy as np
+import time
 
 from pathlib import Path
 from typing import Any, Final, List, Optional
@@ -144,15 +145,26 @@ class Main:
 
         number_of_conflicts = capacity_overload_mask.sum()
         number_of_conflicts_prev = None
+
         counter_equal_solutions = 0
         additional_time_increase = 0
 
         iteration = 0
 
+        fill_value = -1
+
 
         while np.any(capacity_overload_mask, where=True):
             print(f"<ITER:{iteration}> REMAINING ISSUES: {str(capacity_overload_mask.sum())}")
 
+            # Possible improvements:
+            # 1.) Efficiency:
+            #   a.) remove unnecessary airports
+            #   b.) remove all sector/stuff prior to earliest airplane in conflict (we consider them to be fixed)
+            # 2.) Correctness:
+            #   a.) (?) Increase max time (from 24h successively to more)
+            #   b.) Add whole capacity matrix? --> But is way harder to solve!
+            # 
             # For efficiency, we can still improve stuff a lot here
             # Like, only provide graph space that is actually necessary 
             # And constrain sectors to relevant section of time
@@ -160,45 +172,67 @@ class Main:
             # maybe iteratively increase max-time (from 24h to sth. else...)
 
             time_index,bucket_index = self.first_overload(capacity_overload_mask)
-
             rows = np.flatnonzero(converted_instance_matrix[:, time_index] == bucket_index)
-
             flights_affected = converted_instance_matrix[rows, :]
+
+            print(f">> NUMBER AFFECTED FLIGHTS: {len(rows)}")
 
             flight_plan_instance = self.flight_plan_strings(rows, flights_affected)
             flight_plan_instance = "\n".join(flight_plan_instance)
 
             restricted_loads = self.system_loads_restricted(converted_instance_matrix, self.capacity.shape[0], time_idx = time_index, bucket_idx = bucket_index)
+
+            # CHANGE INSTANCES ACCORDINGLY: GRAPH DS and AIRPORTS
+            #print(restricted_timed_matrix.shape)
+            #print(capacity_time_matrix.shape)
  
             capacity_demand_diff_matrix_restricted = capacity_time_matrix - restricted_loads
 
             # HEURISTIC SELECTION OF COMPLEXITY OF TASK
-            """
-            if number_of_conflicts_prev is None:
-                timed_capacities = self.sector_string_matrix(capacity_demand_diff_matrix_restricted) 
-            elif number_of_conflicts < number_of_conflicts_prev:
-                timed_capacities = self.sector_string_matrix(capacity_demand_diff_matrix_restricted) 
-                counter_equal_solutions = 0
-            else:
-                counter_equal_solutions += 1
+            if number_of_conflicts is not None and number_of_conflicts_prev is not None:
+                if number_of_conflicts >= number_of_conflicts_prev:
+                    counter_equal_solutions += 1
 
-                if counter_equal_solutions > 5:
-                    additional_time_increase += 1
+                    if counter_equal_solutions > 5:
+                        additional_time_increase += 1
+                        counter_equal_solutions = 0
+                        print(f">>> INCREASED TIME TO:{additional_time_increase}")
                 else:
-                    timed_capacities = self.sector_string_matrix(capacity_demand_diff_matrix_restricted) 
-            """
+                    counter_equal_solutions = 0
+
+
+            #restricted_loads_optimized = np.array(restricted_loads, copy=True)
+            #restricted_loads_optimized = np.delete(restricted_loads_optimized, remaining_airport_vertices, axis=0)
+            #restricted_loads = restricted_loads_optimized
+
+            #restricted_timed_matrix = np.array(capacity_time_matrix, copy=True)
+            #restricted_timed_matrix = np.delete(capacity_time_matrix, remaining_airport_vertices, axis=0)
                 
+                    
+            #timed_capacities = self.sector_string_matrix(capacity_demand_diff_matrix) 
+
             timed_capacities = self.sector_string_matrix(capacity_demand_diff_matrix_restricted) 
+
+            # Investigate why it takes so long
+            edges_instance, airport_instance, timed_capacities = self.not_used_airports_removal_from_instance(fill_value, flights_affected, timed_capacities, capacity_demand_diff_matrix_restricted)
 
             timed_capacities_instance = '\n'.join(timed_capacities)
 
+            time_instance = f"additionalTime({additional_time_increase})."
+            instance = edges_instance + "\n" + timed_capacities_instance + "\n" + flight_plan_instance + "\n" + airport_instance + "\n" + time_instance
 
-            instance = edges_instance + "\n" + timed_capacities_instance + "\n" + flight_plan_instance + "\n" + airport_instance
+            #open("test_instance_3.lp","w").write(instance)
+            #quit()
 
             encoding = self.encoding
 
+            start_time = time.time()
+
             solver: Model = Solver(encoding, instance)
             model = solver.solve()
+
+            end_time = time.time()
+            print(f">> Elapsed solving time: {end_time - start_time}")
 
             for flight in model.get_flights():
                 #print(flight)
@@ -207,10 +241,15 @@ class Main:
                 time_id = int(str(flight.arguments[1]))
                 position_id = int(str(flight.arguments[2]))
 
+                if time_id >= converted_instance_matrix.shape[1]:
+                    extra_col = -1 * np.ones((converted_instance_matrix.shape[0], 1), dtype=int)
+                    converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+
                 converted_instance_matrix[flight_id, time_id] = position_id
 
             # Rerun check if there are still things to solve:
             system_loads = self.bucket_histogram(converted_instance_matrix, self.capacity.shape[0])
+            capacity_time_matrix = self.capacity_time_matrix(self.capacity,system_loads.shape[1])
             capacity_demand_diff_matrix = capacity_time_matrix - system_loads
             capacity_overload_mask = capacity_demand_diff_matrix < 0
 
@@ -220,12 +259,42 @@ class Main:
 
             iteration += 1
 
+    def not_used_airports_removal_from_instance(self, fill_value, flights_affected, timed_capacities,capacity_demand_diff_matrix_restricted):
 
+        affected_flights_1D = flights_affected[flights_affected != fill_value] 
+        affected_flights_unique = np.unique(affected_flights_1D)                        
+        remaining_airport_vertices = np.setdiff1d(self.airport_vertices, affected_flights_unique, assume_unique=True)
 
-            # RECOMPUTE OVERALL CAPACITY PROBLEMS!
-            # FIX IN LATER ITERATION 
-            #capacity_overload_mask = capacity_demand_diff_matrix < -100
+        timed_capacities = timed_capacities.reshape(capacity_demand_diff_matrix_restricted.shape)
+        timed_capacities = np.delete(timed_capacities, remaining_airport_vertices, axis=0)
+        timed_capacities = timed_capacities.flatten()
 
+        remaining_airport_vertices_lookup_table = {}
+        for airport_vertex in remaining_airport_vertices:
+            remaining_airport_vertices_lookup_table[str(airport_vertex)] = False
+
+        edges_instance = []
+        for row_index in range(self.graph.shape[0]):
+            row = self.graph[row_index,: ]
+
+            if str(row[0]) in remaining_airport_vertices_lookup_table or str(row[1])  in remaining_airport_vertices_lookup_table:
+                continue
+
+            edges_instance.append(f"sectorEdge({row[0]},{row[1]}).")
+
+        edges_instance = "\n".join(edges_instance)
+
+        airport_instance = []
+        for row_index in range(self.airport_vertices.shape[0]):
+            row = self.airport_vertices[row_index]
+
+            if str(row) in remaining_airport_vertices_lookup_table:
+                continue
+
+            airport_instance.append(f"airport({row}).")
+
+        airport_instance = "\n".join(airport_instance)
+        return edges_instance,airport_instance,timed_capacities
 
         # 1.) Create matrix for capacities
         # 2.) Subtract: capacities-system_loads
@@ -324,6 +393,7 @@ class Main:
 
         # np.nonzero --> Get indices of non-zero elements of valid_mask (non false)
         # --> with np.nonzero(valid_mask)[1] we take the time indices
+
         times   = np.nonzero(valid_mask)[1]              # (K,) time index
 
         # ------------------------------------------------------------------

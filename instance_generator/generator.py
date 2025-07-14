@@ -87,11 +87,11 @@ def sample_start_time(mu=10, sigma=4, low=0, high=24):
 if __name__ == "__main__":
 
     G, airport_nodes = generate_grid()
-    #pd.DataFrame(G.edges(), columns=["source", "target"]).to_csv("edges.csv", index=False)
+    pd.DataFrame(G.edges(), columns=["source", "target"]).to_csv("edges.csv", index=False)
 
-    #draw_graph(G)
+    draw_graph(G)
 
-    for flights in range(200,201,2):
+    for flights in range(100,301,100):
 
         flight_list = []
 
@@ -133,11 +133,11 @@ if __name__ == "__main__":
 
         #capacity = math.ceil(flights/len(list(G.nodes())))
         non_airport_nodes = set(G.nodes()).difference(set(airport_nodes))
-        non_airport_capacity = 1
+        non_airport_capacity = 4
         airport_capacity = 100
         capacities = [(vertex,non_airport_capacity) for vertex in non_airport_nodes] + [(vertex,airport_capacity) for vertex in airport_nodes]
-        #pd.DataFrame(capacities, columns=["Sector_ID", "Capacity"]).to_csv(f"capacity_{flights}.csv", index=False)
+        pd.DataFrame(capacities, columns=["Sector_ID", "Capacity"]).to_csv(f"capacity_{flights}.csv", index=False)
 
-        #pd.DataFrame(airport_nodes, columns=["Airport_Vertex"]).to_csv("airport_vertices.csv",index=False)
+        pd.DataFrame(airport_nodes, columns=["Airport_Vertex"]).to_csv("airport_vertices.csv",index=False)
         
 
