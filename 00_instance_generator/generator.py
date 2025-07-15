@@ -46,8 +46,8 @@ def draw_graph(G):
 
 def generate_grid():
     # --- parameters -------------------------------------------------------------
-    width  = 11      # number of columns
-    height = 11      # number of rows
+    width  = 19      # number of columns
+    height = 19      # number of rows
     # ----------------------------------------------------------------------------
 
     # Create a 2-D grid with (row, col) node labels
@@ -89,10 +89,13 @@ if __name__ == "__main__":
     G, airport_nodes = generate_grid()
     pd.DataFrame(G.edges(), columns=["source", "target"]).to_csv("edges.csv", index=False)
 
-    draw_graph(G)
+    print(f">> TOTAL GENERATED VERTICES: {G.nodes()}")
+
+    #draw_graph(G)
 
     for flights in range(30000,30001,100):
 
+        """
         flight_list = []
 
         number_flights_added = 0
@@ -130,13 +133,15 @@ if __name__ == "__main__":
                 number_flights_added += 1
 
         pd.DataFrame(flight_list, columns=["Flight_ID", "Position", "Time"]).to_csv(f"instance_{flights}.csv", index=False)
+        """
 
         #capacity = math.ceil(flights/len(list(G.nodes())))
+
         non_airport_nodes = set(G.nodes()).difference(set(airport_nodes))
-        non_airport_capacity = 400
+        non_airport_capacity = 200
         airport_capacity = 10000
         capacities = [(vertex,non_airport_capacity) for vertex in non_airport_nodes] + [(vertex,airport_capacity) for vertex in airport_nodes]
-        pd.DataFrame(capacities, columns=["Sector_ID", "Capacity"]).to_csv(f"capacity_{flights}.csv", index=False)
+        pd.DataFrame(capacities, columns=["Sector_ID", "Capacity"]).to_csv(f"capacity_{flights}_2.csv", index=False)
 
         pd.DataFrame(airport_nodes, columns=["Airport_Vertex"]).to_csv("airport_vertices.csv",index=False)
         
