@@ -13,8 +13,12 @@ from __future__ import annotations
 
 import argparse
 import sys
-import numpy as np
 import time
+
+import numpy as np
+import pickle
+
+import multiprocessing as mp
 
 from pathlib import Path
 from typing import Any, Final, List, Optional
@@ -23,11 +27,27 @@ from solver import Solver, Model
 
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import shortest_path
+    
+from concurrent.futures import ProcessPoolExecutor
+
+
+
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
 
 
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
+
+def _run(job):
+
+    from optimize_flights import OptimizeFlights
+    optimizer = OptimizeFlights(*job)
+    model = optimizer.start()
+
+    return model
+
 
 def _load_csv(path: Path, *, dtype: Any = int, delimiter: str = ",") -> np.ndarray:
     """Return *path* as a NumPy array.
@@ -54,7 +74,6 @@ def _load_csv(path: Path, *, dtype: Any = int, delimiter: str = ",") -> np.ndarr
     except ValueError as exc:
         raise ValueError(f"Could not parse {path}: {exc}") from exc
 
-
 # ---------------------------------------------------------------------------
 # Main application class
 # ---------------------------------------------------------------------------
@@ -71,12 +90,16 @@ class Main:
         instance_path: Optional[Path],
         airport_vertices_path: Optional[Path],
         encoding_path: Optional[Path],
+        seed: Optional[int],
+        number_threads: Optional[int]
     ) -> None:
         self._graph_path: Optional[Path] = graph_path
         self._capacity_path: Optional[Path] = capacity_path
         self._instance_path: Optional[Path] = instance_path
         self._airport_vertices_path: Optional[Path] = airport_vertices_path
         self._encoding_path: Optional[Path] = encoding_path
+        self._seed: Optional[int] = seed
+        self._number_threads: Optional[int] = number_threads
 
         # Data containers — populated by :pymeth:`load_data`.
         self.graph: Optional[np.ndarray] = None
@@ -139,7 +162,8 @@ class Main:
         # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
         converted_instance_matrix = self.instance_to_matrix(self.instance)
         # 2.) Create demand matrix (|R|x|T|)
-        system_loads = self.bucket_histogram(converted_instance_matrix, self.capacity.shape[0])
+        from optimize_flights import OptimizeFlights as OptimizeFlightsClass
+        system_loads = OptimizeFlightsClass.bucket_histogram(converted_instance_matrix, self.capacity.shape[0])
         # 3.) Create capacity matrix (|R|x|T|)
         capacity_time_matrix = self.capacity_time_matrix(self.capacity,system_loads.shape[1])
         # 4.) Subtract demand from capacity (|R|x|T|)
@@ -156,33 +180,20 @@ class Main:
         max_number_airplanes_considered_in_ASP = 2
 
         iteration = 0
-
         fill_value = -1
+
+        max_number_processors = self._number_threads
+        seed = self._seed
 
         np.savetxt("00_initial_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
         original_converted_instance_matrix = converted_instance_matrix.copy()
 
         while np.any(capacity_overload_mask, where=True):
-            print(f"<ITER:{iteration}> REMAINING ISSUES: {str(number_of_conflicts)}")
-
-            # Possible improvements:
-            # 1.) Efficiency:
-            #   a.) remove unnecessary airports
-            #   b.) remove all sector/stuff prior to earliest airplane in conflict (we consider them to be fixed)
-            #   ----> Reduce search space!
-            # 2.) Correctness:
-            #   a.) (?) Increase max time (from 24h successively to more)
-            #   b.) Add whole capacity matrix? --> But is way harder to solve!
-            # 
-            # For efficiency, we can still improve stuff a lot here
-            # Like, only provide graph space that is actually necessary 
-            # And constrain sectors to relevant section of time
-            # ... many other things, like hot-starting clingo solver with multi-shot-solving, etc.
-            # maybe iteratively increase max-time (from 24h to sth. else...)
+            print(f"<ITER:{iteration}><REMAINING ISSUES:{str(number_of_conflicts)}>")
 
             time_index,bucket_index = self.first_overload(capacity_overload_mask)
 
-
+            """
             rows = np.flatnonzero(converted_instance_matrix[:, time_index] == bucket_index)
 
             if len(rows) > max_number_airplanes_considered_in_ASP:
@@ -190,126 +201,58 @@ class Main:
 
             flights_affected = converted_instance_matrix[rows, :]
 
-            flight_sector_instances = []
-            flight_times_instance = []
+            from optimize_flights import OptimizeFlights
+            optimizer = OptimizeFlights(self.encoding, self.capacity, self.graph, self.airport_vertices,
+                                        flights_affected, rows, edge_distances, converted_instance_matrix, time_index,
+                                        bucket_index, capacity_time_matrix, capacity_demand_diff_matrix,
+                                        additional_time_increase, fill_value = fill_value)
+            model = optimizer.start()
+            """
 
-            for flight_affected_index in range(flights_affected.shape[0]):
+            """ 
+            models = []
+            for job in jobs:
+                model = job.start()
 
-                flight_index = rows[flight_affected_index]
-
-                flight_affected = flights_affected[flight_affected_index,:]
-
-                flight_affected = flight_affected[flight_affected != fill_value]
-
-                source = flight_affected[0]
-                destination = flight_affected[-1]
-
-                source_to_target_time = edge_distances[source,destination]
-
-
-                for from_source_time in range(1,source_to_target_time + 1):
-                    # The +1 means that we add the destination airport
-                    time_to_target_diff = source_to_target_time - from_source_time
-
-                    source_vertices = edge_distances[source,:] == from_source_time
-                    target_vertices = edge_distances[destination,:] == time_to_target_diff
-
-                    matching_vertices = source_vertices & target_vertices
-
-                    vertex_ids = np.where(matching_vertices)[0]
-
-                    vertex_instances = [f"sectorFlight({flight_index},{from_source_time},{vertex_id})." for vertex_id in vertex_ids]
-
-                    flight_times_instance.append(f"flightTime({flight_index},{from_source_time}).")
-
-                    flight_sector_instances += vertex_instances
-
-            flight_sector_instances = "\n".join(flight_sector_instances)
-            flight_times_instance = "\n".join(flight_times_instance)
-
-            #print(flight_sector_instances)
-            #print(flight_times)
-            print(f">> NUMBER AFFECTED FLIGHTS: {len(rows)}")
-
-            flight_plan_instance = self.flight_plan_strings(rows, flights_affected)
-            flight_plan_instance = "\n".join(flight_plan_instance)
-
-            restricted_loads = self.system_loads_restricted(converted_instance_matrix, self.capacity.shape[0], time_idx = time_index, bucket_idx = bucket_index)
-
-            # CHANGE INSTANCES ACCORDINGLY: GRAPH DS and AIRPORTS
-            #print(restricted_timed_matrix.shape)
-            #print(capacity_time_matrix.shape)
- 
-            capacity_demand_diff_matrix_restricted = capacity_time_matrix - restricted_loads
-
-            # HEURISTIC SELECTION OF COMPLEXITY OF TASK
-            if number_of_conflicts is not None and number_of_conflicts_prev is not None:
-                if number_of_conflicts >= number_of_conflicts_prev:
-                    counter_equal_solutions += 1
-
-                    if max_number_airplanes_considered_in_ASP > 3:
-                        max_number_airplanes_considered_in_ASP = 2
-                        additional_time_increase += 1
-                        counter_equal_solutions = 0
-                        print(f">>> INCREASED TIME TO:{additional_time_increase}")
-
-                    elif counter_equal_solutions > 5:
-                        max_number_airplanes_considered_in_ASP += 1
-                        counter_equal_solutions = 0
-                        print(f">>> INCREASED AIRPLANES CONSIDERED TO:{max_number_airplanes_considered_in_ASP}")
-                else:
-                    counter_equal_solutions = 0
-
-
-            #restricted_loads_optimized = np.array(restricted_loads, copy=True)
-            #restricted_loads_optimized = np.delete(restricted_loads_optimized, remaining_airport_vertices, axis=0)
-            #restricted_loads = restricted_loads_optimized
-
-            #restricted_timed_matrix = np.array(capacity_time_matrix, copy=True)
-            #restricted_timed_matrix = np.delete(capacity_time_matrix, remaining_airport_vertices, axis=0)
-                
-                    
-
-            #timed_capacities = self.sector_string_matrix(capacity_demand_diff_matrix_restricted) 
-            timed_capacities = self.sector_string_matrix(capacity_demand_diff_matrix) 
-
-            # Investigate why it takes so long
-            edges_instance, airport_instance, timed_capacities = self.not_used_airports_removal_from_instance(fill_value, flights_affected, timed_capacities, capacity_demand_diff_matrix_restricted)
-
-            timed_capacities_instance = '\n'.join(timed_capacities)
-
-            time_instance = f"additionalTime({additional_time_increase})."
-            instance = edges_instance + "\n" + timed_capacities_instance + "\n" + airport_instance + "\n" + time_instance + "\n" + flight_plan_instance + "\n" + flight_sector_instances + "\n" + flight_times_instance
-
-            #open("test_instance_4.lp","w").write(instance)
-
-            encoding = self.encoding
+                models.append(model)
+            """
 
             start_time = time.time()
 
-            solver: Model = Solver(encoding, instance)
-            model = solver.solve()
+            jobs = self.build_jobs(time_index, bucket_index, edge_distances, converted_instance_matrix, capacity_time_matrix,
+                            capacity_demand_diff_matrix, additional_time_increase, fill_value, 
+                            max_number_airplanes_considered_in_ASP, max_number_processors, seed)
+
+
+            from joblib import Parallel, delayed
+            models = Parallel(n_jobs=max_number_processors, backend="loky")(
+                        delayed(_run)(job) for job in jobs)
 
             end_time = time.time()
             print(f">> Elapsed solving time: {end_time - start_time}")
-            #print(model.get_flights())
-            #quit()
 
-            for flight in model.get_flights():
-                #print(flight)
+            
+            #models = self.run_parallel(jobs)
 
-                flight_id = int(str(flight.arguments[0]))
-                time_id = int(str(flight.arguments[1]))
-                position_id = int(str(flight.arguments[2]))
+            for model in models:
 
-                if time_id >= converted_instance_matrix.shape[1]:
-                    extra_col = -1 * np.ones((converted_instance_matrix.shape[0], 1), dtype=int)
-                    converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+                for flight in model.get_flights():
+                    #print(flight)
 
-                converted_instance_matrix[flight_id, time_id] = position_id
+                    flight_id = int(str(flight.arguments[0]))
+                    time_id = int(str(flight.arguments[1]))
+                    position_id = int(str(flight.arguments[2]))
+
+                    if time_id >= converted_instance_matrix.shape[1]:
+                        extra_col = -1 * np.ones((converted_instance_matrix.shape[0], 1), dtype=int)
+                        converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+
+                    converted_instance_matrix[flight_id, time_id] = position_id
 
             # Rerun check if there are still things to solve:
-            system_loads = self.bucket_histogram(converted_instance_matrix, self.capacity.shape[0])
+
+            from optimize_flights import OptimizeFlights as OptimizeFlightsClass
+            system_loads = OptimizeFlightsClass.bucket_histogram(converted_instance_matrix, self.capacity.shape[0])
             capacity_time_matrix = self.capacity_time_matrix(self.capacity,system_loads.shape[1])
             capacity_demand_diff_matrix = capacity_time_matrix - system_loads
             capacity_overload_mask = capacity_demand_diff_matrix < 0
@@ -322,14 +265,34 @@ class Main:
             number_of_conflicts_prev = number_of_conflicts
             number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
 
+            # HEURISTIC SELECTION OF COMPLEXITY OF TASK
+            # -----------------------------------------------------------------------------
+            if number_of_conflicts is not None and number_of_conflicts_prev is not None:
+                if number_of_conflicts >= number_of_conflicts_prev:
+                    counter_equal_solutions += 1
+
+                    if counter_equal_solutions >= 5 and counter_equal_solutions % 5 == 0:
+                        max_number_processors = max(1,int(max_number_processors / 2))
+                        print(f">>> PARALLEL PROCESSORS REDUCED TO:{max_number_processors}")
+                    elif counter_equal_solutions >= 11 and counter_equal_solutions % 11 == 0:
+                        additional_time_increase += 1
+                        print(f">>> INCREASED TIME TO:{additional_time_increase}")
+                    elif counter_equal_solutions >= 23 and counter_equal_solutions % 23 == 0:
+                        max_number_airplanes_considered_in_ASP += 1
+                        print(f">>> INCREASED AIRPLANES CONSIDERED TO:{max_number_airplanes_considered_in_ASP}")
+                else:
+                    counter_equal_solutions = 0
+                    max_number_processors = 20
+                    max_number_airplanes_considered_in_ASP = 2
+
+                    if max_number_processors < 20 or max_number_airplanes_considered_in_ASP > 2:
+                        print(f">>> RESET PROCESSOR COUNT TO:{max_number_processors}; AIRPLANES TO: {max_number_airplanes_considered_in_ASP}")
+            # -----------------------------------------------------------------------------
+
             iteration += 1
 
 
         np.savetxt("01_final_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
-
-        # --- 1. load the two schedules ------------------------------------------------
-        # remove "header=None" if your files already have a header row
-
 
         t_init  = self.last_valid_pos(original_converted_instance_matrix)      # last non--1 in the *initial* schedule
         t_final = self.last_valid_pos(converted_instance_matrix)     # last non--1 in the *final* schedule
@@ -342,13 +305,81 @@ class Main:
         total_delay  = delay.sum()
         mean_delay   = delay.mean()
         max_delay    = delay.max()
-        per_flight   = delay.tolist()        # Python list if you want it
+        #per_flight   = delay.tolist()
 
+        print("<<<<<<<<<<<<<<<<----------------->>>>>>>>>>>>>>>>")
+        print("                  FINAL RESULTS")
+        print("<<<<<<<<<<<<<<<<----------------->>>>>>>>>>>>>>>>")
         print(f"Total delay (all flights): {total_delay}")
         print(f"Average delay per flight:  {mean_delay:.2f}")
         print(f"Maximum single-flight delay: {max_delay}")
 
 
+    def build_jobs(self, time_index: int,
+                bucket_index: int,
+                edge_distances: np.ndarray,
+                converted_instance_matrix: np.ndarray,
+                capacity_time_matrix: np.ndarray,
+                capacity_demand_diff_matrix: np.ndarray,
+                additional_time_increase: int,
+                fill_value: int,
+                max_rows: int,
+                n_proc: int,
+                seed: int):
+        """
+        Split the candidate rows into *n_proc* equally‑sized chunks
+        (≤ max_rows each) and build one ``OptimizeFlights`` instance per chunk.
+        """
+        rng = np.random.default_rng(seed)
+
+        # --- all rows belonging to this (time, bucket) -------------------
+        candidate = np.flatnonzero(converted_instance_matrix[:, time_index]
+                                == bucket_index)
+        rng.shuffle(candidate)
+
+        capacity_difference = abs(capacity_demand_diff_matrix[bucket_index, time_index])
+        if capacity_difference < 2:
+            capacity_difference = 2
+
+        needed   = n_proc * max_rows
+        needed = min(needed, capacity_difference)
+
+        print(f"---> ACTUALLY INVESTIGATED AIRPLANES: <<{needed}>>")
+
+        rows_pool = candidate[:needed]
+
+        chunk_size = max_rows
+        n_chunks   = min(n_proc, len(rows_pool) // chunk_size)
+
+        jobs = []
+        for i in range(n_chunks):
+            rows = rows_pool[i*chunk_size:(i+1)*chunk_size]
+
+            # Slice flights for this chunk.  If your solver mutates it,
+            # `.copy()` keeps chunks isolated; otherwise a view is fine.
+            flights = converted_instance_matrix[rows, :]
+
+            jobs.append((self.encoding, self.capacity, self.graph, self.airport_vertices,
+                                        flights, rows, edge_distances, converted_instance_matrix, time_index,
+                                        bucket_index, capacity_time_matrix, capacity_demand_diff_matrix,
+                                        additional_time_increase, fill_value)
+            )
+        return jobs
+
+
+    def run_parallel(self, jobs):
+        """
+        Fire ``start()`` for every ``OptimizeFlights`` instance in parallel.
+        """
+        ctx = mp.get_context("spawn")          # <- fork‑safe
+        with ProcessPoolExecutor(
+            max_workers=len(jobs),
+            mp_context=ctx
+        ) as pool:
+            futures = [pool.submit(job.start) for job in jobs]
+            return [f.result() for f in futures]
+        
+   
     # --- 2. helper: last non--1 position for every row, fully vectorised ----------
     def last_valid_pos(self, arr: np.ndarray) -> np.ndarray:
         """
@@ -444,58 +475,6 @@ class Main:
 
         return dist
 
-
-    def not_used_airports_removal_from_instance(self, fill_value, flights_affected, timed_capacities,capacity_demand_diff_matrix_restricted):
-
-        affected_flights_1D = flights_affected[flights_affected != fill_value] 
-        affected_flights_unique = np.unique(affected_flights_1D)                        
-        remaining_airport_vertices = np.setdiff1d(self.airport_vertices, affected_flights_unique, assume_unique=True)
-
-        timed_capacities = timed_capacities.reshape(capacity_demand_diff_matrix_restricted.shape)
-        timed_capacities = np.delete(timed_capacities, remaining_airport_vertices, axis=0)
-        timed_capacities = timed_capacities.flatten()
-
-        remaining_airport_vertices_lookup_table = {}
-        for airport_vertex in remaining_airport_vertices:
-            remaining_airport_vertices_lookup_table[str(airport_vertex)] = False
-
-        edges_instance = []
-        for row_index in range(self.graph.shape[0]):
-            row = self.graph[row_index,: ]
-
-            if str(row[0]) in remaining_airport_vertices_lookup_table or str(row[1])  in remaining_airport_vertices_lookup_table:
-                continue
-
-            edges_instance.append(f"sectorEdge({row[0]},{row[1]}).")
-
-        edges_instance = "\n".join(edges_instance)
-
-        airport_instance = []
-        for row_index in range(self.airport_vertices.shape[0]):
-            row = self.airport_vertices[row_index]
-
-            if str(row) in remaining_airport_vertices_lookup_table:
-                continue
-
-            airport_instance.append(f"airport({row}).")
-
-        airport_instance = "\n".join(airport_instance)
-        return edges_instance,airport_instance,timed_capacities
-
-        # 1.) Create matrix for capacities
-        # 2.) Subtract: capacities-system_loads
-        # 3.) If anything below 0 -> Capacity problem!
-        # 4.) Then iterate over time t:
-        #   a.) If at time t, there is a problem with sector x
-        #   b.) Consider all flights that have already landed, prior (and including?) to t, as fixed
-        #   c.) Ignore all flights that have not been started yet (starting time > t) (STRICTLY GREATER!)
-        #   d.) From this, create an ASP instance with a handful of flights that can be re-scheduled accordingly
-
-        #print(system_loads)
-        #print(system_loads.shape)
-        #np.savetxt("test.csv", converted_instance_matrix,delimiter=",",fmt="%i")
-        #np.savetxt("test_loads.csv", capacity_demand_diff_matrix,delimiter=",",fmt="%i")
-
     def instance_to_matrix(self, inst: np.ndarray,
                         *,
                         fill_value: int = -1,
@@ -535,65 +514,29 @@ class Main:
 
         return out
 
-
-    def bucket_histogram(self, mat: np.ndarray,
-                        num_buckets: int,
-                        *,
-                        fill_value: int = -1) -> np.ndarray:
+   
+    def first_overload(self, mask: np.ndarray):
         """
-        Count how many elements occupy each *bucket* at each *time step*.
+        Return (time, bucket) of the first *True* entry in `mask`
+        using lexicographic order (time, bucket).  If none found
+        return `None`.
 
-        Parameters
-        ----------
-        mat
-            2-D array produced by `instance_to_matrix`  
-            shape = (num_elements, num_time_steps)
-        num_buckets
-            Equals `self.capacity.shape[0]`
-        fill_value
-            The placeholder used for “no assignment” (default −1)
-
-        Returns
-        -------
-        counts : np.ndarray
-            shape = (num_buckets, num_time_steps)  
-            `counts[bucket, t]` is the occupancy of *bucket* at time *t*.
+        `mask` shape: (num_buckets, num_times)
+                    rows   → bucket IDs
+                    columns→ time steps
         """
-        n_elems, n_times = mat.shape
+        # 1. Find the first time step that has *any* overload
+        time_candidates = np.flatnonzero(mask.any(axis=0))
+        if time_candidates.size == 0:
+            return None                # no overloads at all
 
-        # ------------------------------------------------------------------
-        # 1.  Mask out empty cells (if any)
-        # ------------------------------------------------------------------
+        t = time_candidates[0]         # earliest time
 
-        # Generate mask of values that differ from fill_value = -1
-        valid_mask = mat != fill_value
-        if not np.any(valid_mask):                       
-            # Shortcut if all cells empty
-            return np.zeros((num_buckets, n_times), dtype=int)
+        # 2. Within that column, find the first bucket
+        b = np.flatnonzero(mask[:, t])[0]
 
-        # ------------------------------------------------------------------
-        # 2.  Gather bucket IDs and their time indices
-        # ------------------------------------------------------------------
-        buckets = mat[valid_mask]                        # (K,) bucket id
-        # 
+        return (t, b)                  # (time, bucket)
 
-        # np.nonzero --> Get indices of non-zero elements of valid_mask (non false)
-        # --> with np.nonzero(valid_mask)[1] we take the time indices
-
-        times   = np.nonzero(valid_mask)[1]              # (K,) time index
-
-        # ------------------------------------------------------------------
-        # 3.  Vectorised scatter using `np.add.at`
-        # ------------------------------------------------------------------
-        counts = np.zeros((num_buckets, n_times), dtype=int)
-
-        # Performs unbuffered in place operation on operand ‘a’ for elements specified by ‘indices’.
-        # ufunc.at(a, indices, b=None, /)
-        # --> Buckets and times specify the indices
-        np.add.at(counts, (buckets, times), 1)
-
-        return counts
-    
     def capacity_time_matrix(self, cap: np.ndarray,
                             n_times: int,
                             *,
@@ -628,169 +571,7 @@ class Main:
         # cap_mat = cap_mat.copy()
 
         return cap_mat
-    
-    def first_overload(self, mask: np.ndarray):
-        """
-        Return (time, bucket) of the first *True* entry in `mask`
-        using lexicographic order (time, bucket).  If none found
-        return `None`.
-
-        `mask` shape: (num_buckets, num_times)
-                    rows   → bucket IDs
-                    columns→ time steps
-        """
-        # 1. Find the first time step that has *any* overload
-        time_candidates = np.flatnonzero(mask.any(axis=0))
-        if time_candidates.size == 0:
-            return None                # no overloads at all
-
-        t = time_candidates[0]         # earliest time
-
-        # 2. Within that column, find the first bucket
-        b = np.flatnonzero(mask[:, t])[0]
-
-        return (t, b)                  # (time, bucket)
-
-
-    def system_loads_restricted(self, mat: np.ndarray,
-                                num_buckets: int,
-                                *,
-                                time_idx: int,
-                                bucket_idx: int,
-                                fill_value: int = -1) -> np.ndarray:
-        """
-        Build a |B| × |T| bucket-occupancy matrix *excluding*:
-
-        • every element sitting in `bucket_idx` at `time_idx`
-        • every element whose first scheduled time step is > `time_idx`
-
-        Parameters
-        ----------
-        mat
-            converted_instance_matrix  (shape = |F| × |T|)
-        num_buckets
-            Equals `self.capacity.shape[0]`
-        time_idx
-            The reference time step
-        bucket_idx
-            The reference bucket
-        fill_value
-            Placeholder that means “empty slot” (default –1)
-
-        Returns
-        -------
-        loads : np.ndarray
-            Bucket-by-time step counts with the requested rows removed.
-        """
-        n_elems, n_times = mat.shape
-
-        # ---------------------------------------------------------------
-        # 1.  Identify *all* rows to drop
-        # ---------------------------------------------------------------
-        #
-        # 1a. Elements located in (time_idx, bucket_idx)
-        offending_mask = mat[:, time_idx] == bucket_idx       # shape (|F|,)
-
-        # 1b. Elements that *start* after `time_idx`
-        #
-        #     First non-fill_value column for each row.
-        valid_mask   = mat != fill_value                      # True where real data
-        has_any      = valid_mask.any(axis=1)                 # rows that are not empty
-        # np.where is ternary operator (np.where(condition,x,y)): result[i] = x[i] if condition[i] else y[i]
-        first_nonneg = np.where(has_any,
-                                valid_mask.argmax(axis=1),    # first True along row
-                                n_times)                      # unused rows ⇒ > time_idx
-
-        late_start_mask = first_nonneg > time_idx
-
-        # Consolidate the exclusion rule
-        keep_mask = ~(offending_mask | late_start_mask)       # rows we *keep*
-
-        # Quick exit if nothing survives
-        if not np.any(keep_mask):
-            return np.zeros((num_buckets, n_times), dtype=int)
-
-        mat_keep = mat[keep_mask]
-
-        # ---------------------------------------------------------------
-        # 2.  Re-use the earlier bucket-histogram
-        # ---------------------------------------------------------------
-        return self.bucket_histogram(mat_keep,
-                                num_buckets=num_buckets,
-                                fill_value=fill_value)
-    
-    def sector_string_matrix(self, values: np.ndarray) -> np.ndarray:
-        """
-        Return a `dtype=object` array of the same shape as *values*
-        whose entries are the strings ``"bucket(r,c,v)"``.
-
-        Parameters
-        ----------
-        values : np.ndarray
-            Your numeric matrix (e.g. `capacity_demand_diff_matrix_restricted`).
-
-        Notes
-        -----
-        *Pure* NumPy — no Python‐level loops — by chaining `np.char.add`.
-        """
-        rows, cols = np.indices(values.shape)       # same shape as `values`
-
-        # Flatten once to keep the broadcasting simple
-        r, c, v = rows.ravel(), cols.ravel(), values.ravel()
-
-        s = np.char.add('sector(', r.astype(str))
-        s = np.char.add(np.char.add(s, ','), c.astype(str))
-        s = np.char.add(np.char.add(s, ','), v.astype(str))
-        s = np.char.add(s, ').')
-
-        #return s.reshape(values.shape)              # back to 2-D
-        return s
-
-    def flight_plan_strings(self, rows_original_indices, mat: np.ndarray,
-                        *,
-                        fill_value: int = -1) -> np.ndarray:
-        """
-        Build a 1-D array of strings ``"instance(r,c,v)."``
-        for every cell whose value ≥ 0 (i.e., `!= fill_value`).
-
-        Parameters
-        ----------
-        mat
-            Your (possibly sliced) `converted_instance_matrix`
-            – shape = (n_rows, n_cols)
-        fill_value
-            Placeholder that marks “empty” entries (default −1)
-
-        Returns
-        -------
-        out : np.ndarray
-            1-D array (dtype=object) where each element is an
-            `"instance(r,c,v)."` string.
-        """
-        # ------------------------------------------------------------------
-        # 1.  Locate valid positions
-        # ------------------------------------------------------------------
-        mask = mat != fill_value                # Boolean matrix
-        if not np.any(mask):
-            return np.empty(0, dtype=object)    # nothing to report
-
-        r, c = np.nonzero(mask)                 # row/col indices (1-D)
-
-        rows_original_indices = np.asarray(rows_original_indices)
-        r = rows_original_indices[r]
-        v = mat[mask]                           # corresponding values
-
-        # ------------------------------------------------------------------
-        # 2.  Element-wise concatenation (pure NumPy, no Python loop)
-        # ------------------------------------------------------------------
-        s = np.char.add('flightPlan(', r.astype(str))
-        s = np.char.add(np.char.add(s, ','), c.astype(str))
-        s = np.char.add(np.char.add(s, ','), v.astype(str))
-        s = np.char.add(s, ').')                # final dot
-
-        return s            # shape (K,)  —  K = number of non-empty cells
-
-
+ 
 # ---------------------------------------------------------------------------
 # CLI utilities
 # ---------------------------------------------------------------------------
@@ -837,6 +618,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help="Location of the encoding for the optimization problem.",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=11904657,
+        help="Set the random see."
+    )
+    parser.add_argument(
+        "--number-threads",
+        type=int,
+        default=20,
+        help="Number of parallel ASP solving threads."
+    )
 
     return parser
 
@@ -855,7 +648,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     """Script entry‑point compatible with both `python -m` and `poetry run`."""
     args = parse_cli(argv)
 
-    app = Main(args.path_graph, args.path_capacity, args.path_instance, args.airport_vertices_path, args.encoding_path)
+    app = Main(args.path_graph, args.path_capacity, args.path_instance,
+               args.airport_vertices_path, args.encoding_path,
+               args.seed,args.number_threads)
     app.run()
 
 
@@ -863,3 +658,4 @@ if __name__ == "__main__":  # pragma: no cover — direct execution guard
     main()
 
 
+ 

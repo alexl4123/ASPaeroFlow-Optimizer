@@ -76,12 +76,23 @@ class Solver:
         self.final_model = Model(flights, reroutes, arrival_delays)
 
 
+class PickleAbleSymbol:
+
+    def __init__(self, symbol):
+
+        self.name = symbol.name
+        self.arguments = []
+
+        for argument in symbol.arguments:
+            self.arguments.append(str(argument))
+
+
 class Model:
 
     def __init__(self, flights, reroutes, atfm_delays):
-        self.flights = flights
-        self.reroutes = reroutes
-        self.atfm_delays = atfm_delays
+        self.flights = [PickleAbleSymbol(flight) for flight in flights]
+        self.reroutes = [PickleAbleSymbol(reroute) for reroute in reroutes]
+        self.atfm_delays = [PickleAbleSymbol(atfm_delay) for atfm_delay in atfm_delays]
         self.computation_time = -1
 
     def get_flights(self):
