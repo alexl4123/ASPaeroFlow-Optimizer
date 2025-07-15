@@ -29,11 +29,8 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import shortest_path
     
 from concurrent.futures import ProcessPoolExecutor
-
-
-
-from concurrent.futures import ProcessPoolExecutor, as_completed
-
+from optimize_flights import OptimizeFlights
+from concurrent.futures import ProcessPoolExecutor
 
 
 # ---------------------------------------------------------------------------
@@ -41,8 +38,14 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 # ---------------------------------------------------------------------------
 
 def _run(job):
+    """Run parallelized job.
 
-    from optimize_flights import OptimizeFlights
+    Parameters
+    ----------
+    job
+        Tuple of arguments for OptimizeFlights
+    """
+
     optimizer = OptimizeFlights(*job)
     model = optimizer.start()
 
@@ -91,7 +94,8 @@ class Main:
         airport_vertices_path: Optional[Path],
         encoding_path: Optional[Path],
         seed: Optional[int],
-        number_threads: Optional[int]
+        number_threads: Optional[int],
+        timestep_granularity: Optional[int],
     ) -> None:
         self._graph_path: Optional[Path] = graph_path
         self._capacity_path: Optional[Path] = capacity_path
@@ -100,6 +104,7 @@ class Main:
         self._encoding_path: Optional[Path] = encoding_path
         self._seed: Optional[int] = seed
         self._number_threads: Optional[int] = number_threads
+        self._timestep_granularity: Optional[int] = timestep_granularity
 
         # Data containers — populated by :pymeth:`load_data`.
         self.graph: Optional[np.ndarray] = None
@@ -162,8 +167,7 @@ class Main:
         # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
         converted_instance_matrix = self.instance_to_matrix(self.instance)
         # 2.) Create demand matrix (|R|x|T|)
-        from optimize_flights import OptimizeFlights as OptimizeFlightsClass
-        system_loads = OptimizeFlightsClass.bucket_histogram(converted_instance_matrix, self.capacity.shape[0])
+        system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.capacity.shape[0], self._timestep_granularity)
         # 3.) Create capacity matrix (|R|x|T|)
         capacity_time_matrix = self.capacity_time_matrix(self.capacity,system_loads.shape[1])
         # 4.) Subtract demand from capacity (|R|x|T|)
@@ -221,9 +225,11 @@ class Main:
 
             jobs = self.build_jobs(time_index, bucket_index, edge_distances, converted_instance_matrix, capacity_time_matrix,
                             capacity_demand_diff_matrix, additional_time_increase, fill_value, 
-                            max_number_airplanes_considered_in_ASP, max_number_processors, seed)
-
-
+                            max_number_airplanes_considered_in_ASP, max_number_processors, seed, self._timestep_granularity)
+            
+            if len(jobs) == 0:
+                print("DETECTED 0 JOBS")
+            
             from joblib import Parallel, delayed
             models = Parallel(n_jobs=max_number_processors, backend="loky")(
                         delayed(_run)(job) for job in jobs)
@@ -231,8 +237,11 @@ class Main:
             end_time = time.time()
             print(f">> Elapsed solving time: {end_time - start_time}")
 
-            
             #models = self.run_parallel(jobs)
+
+            if (additional_time_increase + 24) * self._timestep_granularity > converted_instance_matrix.shape[1]:
+                extra_col = -1 * np.ones((converted_instance_matrix.shape[0], 1), dtype=int)
+                converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
 
             for model in models:
 
@@ -251,8 +260,7 @@ class Main:
 
             # Rerun check if there are still things to solve:
 
-            from optimize_flights import OptimizeFlights as OptimizeFlightsClass
-            system_loads = OptimizeFlightsClass.bucket_histogram(converted_instance_matrix, self.capacity.shape[0])
+            system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.capacity.shape[0], self._timestep_granularity)
             capacity_time_matrix = self.capacity_time_matrix(self.capacity,system_loads.shape[1])
             capacity_demand_diff_matrix = capacity_time_matrix - system_loads
             capacity_overload_mask = capacity_demand_diff_matrix < 0
@@ -277,6 +285,9 @@ class Main:
                     elif counter_equal_solutions >= 11 and counter_equal_solutions % 11 == 0:
                         additional_time_increase += 1
                         print(f">>> INCREASED TIME TO:{additional_time_increase}")
+
+                        if additional_time_increase > 15:
+                            print("DANGER ADDITIONAL TIME INCREASE > 15")
                     elif counter_equal_solutions >= 23 and counter_equal_solutions % 23 == 0:
                         max_number_airplanes_considered_in_ASP += 1
                         print(f">>> INCREASED AIRPLANES CONSIDERED TO:{max_number_airplanes_considered_in_ASP}")
@@ -325,16 +336,21 @@ class Main:
                 fill_value: int,
                 max_rows: int,
                 n_proc: int,
-                seed: int):
+                seed: int,
+                timestep_granularity: int):
         """
         Split the candidate rows into *n_proc* equally‑sized chunks
         (≤ max_rows each) and build one ``OptimizeFlights`` instance per chunk.
         """
         rng = np.random.default_rng(seed)
 
+
         # --- all rows belonging to this (time, bucket) -------------------
-        candidate = np.flatnonzero(converted_instance_matrix[:, time_index]
-                                == bucket_index)
+        bucket_index_mask = converted_instance_matrix[:, time_index:min(time_index+timestep_granularity,converted_instance_matrix.shape[1])] == bucket_index
+        #bucket_index_mask = converted_instance_matrix[:, time_index] == bucket_index
+        bucket_index_mask = bucket_index_mask.any(axis=1)
+        candidate = np.flatnonzero(bucket_index_mask)
+
         rng.shuffle(candidate)
 
         capacity_difference = abs(capacity_demand_diff_matrix[bucket_index, time_index])
@@ -350,6 +366,7 @@ class Main:
 
         chunk_size = max_rows
         n_chunks   = min(n_proc, len(rows_pool) // chunk_size)
+        n_chunks = max(n_chunks, 1)
 
         jobs = []
         for i in range(n_chunks):
@@ -362,7 +379,7 @@ class Main:
             jobs.append((self.encoding, self.capacity, self.graph, self.airport_vertices,
                                         flights, rows, edge_distances, converted_instance_matrix, time_index,
                                         bucket_index, capacity_time_matrix, capacity_demand_diff_matrix,
-                                        additional_time_increase, fill_value)
+                                        additional_time_increase, fill_value, timestep_granularity, seed)
             )
         return jobs
 
@@ -630,6 +647,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=20,
         help="Number of parallel ASP solving threads."
     )
+    parser.add_argument(
+        "--timestep-granularity",
+        type=int,
+        default=1,
+        help="Specifies how long one stimulated timestep is (time-step=1h/granularity). So granularity=1 means 1h, granularity=4 means 15 minutes."
+    )
 
     return parser
 
@@ -650,7 +673,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     app = Main(args.path_graph, args.path_capacity, args.path_instance,
                args.airport_vertices_path, args.encoding_path,
-               args.seed,args.number_threads)
+               args.seed,args.number_threads, args.timestep_granularity)
     app.run()
 
 

@@ -16,7 +16,10 @@ class OptimizeFlights:
                  flights_affected, rows, edge_distances,
                  converted_instance_matrix, time_index, bucket_index,
                  capacity_time_matrix, capacity_demand_diff_matrix,
-                 additional_time_increase, fill_value = -1
+                 additional_time_increase,
+                 fill_value = -1,
+                 timestep_granularity = 1,
+                 seed = 11904657
                  ):
         self.encoding = encoding
         self.capacity = capacity
@@ -33,6 +36,8 @@ class OptimizeFlights:
         self.capacity_demand_diff_matrix = capacity_demand_diff_matrix
         self.additional_time_increase = additional_time_increase
         self.fill_value = fill_value
+        self.timestep_granularity = timestep_granularity
+        self.seed = seed
  
     def start(self):
 
@@ -47,9 +52,13 @@ class OptimizeFlights:
         additional_time_increase = self.additional_time_increase
         fill_value = self.fill_value
 
+        print("!!!!!!!!!!!!!!!")
+        print(f"======== ADDITIONAL TIME INCREASE: {additional_time_increase}")
+
 
         flight_sector_instances = []
         flight_times_instance = []
+        timed_capacities = []
 
         considered_vertices = set()
 
@@ -59,17 +68,50 @@ class OptimizeFlights:
 
             flight_affected = flights_affected[flight_affected_index,:]
 
+            start_time = np.flatnonzero(flight_affected != fill_value)
+            start_time = start_time[0] if start_time.size else 0
+            
             flight_affected = flight_affected[flight_affected != fill_value]
 
             source = flight_affected[0]
             destination = flight_affected[-1]
 
+            delay = 0
+            for tmp_index in range(1,flight_affected.shape[0]):
+
+                flight_sector_instances.append(f"sectorFlight({flight_index},{delay},{source}).")
+                flight_times_instance.append(f"flightTime({flight_index},{delay}).")
+
+                if flight_affected[tmp_index] != source:
+                    break
+            
+                delay += 1
+
+            max_delay_parameter = 4
+
             source_to_target_time = edge_distances[source,destination]
 
             considered_vertices = considered_vertices.union(set([source,destination]))
 
-            for from_source_time in range(1,source_to_target_time + 1):
-                # The +1 means that we add the destination airport
+            for additional_time in range(-self.timestep_granularity,self.timestep_granularity * (additional_time_increase + max_delay_parameter + delay)):
+                current_time = start_time + additional_time
+                if current_time >= self.timestep_granularity * (24 + additional_time_increase):
+                    break
+                elif current_time < 0:
+                    continue
+
+                if current_time >= capacity_demand_diff_matrix.shape[1]:
+                    current_time = capacity_demand_diff_matrix.shape[1] - 1
+
+                sector_time = f"sector({source},{current_time},{capacity_demand_diff_matrix[source,current_time]})."
+                timed_capacities.append(sector_time)
+
+
+
+            prev_vertices = None
+
+            for from_source_time in range(1,source_to_target_time + 1): # The +1 means that we add the destination airport
+                
                 time_to_target_diff = source_to_target_time - from_source_time
 
                 source_vertices = edge_distances[source,:] == from_source_time
@@ -79,13 +121,74 @@ class OptimizeFlights:
 
                 vertex_ids = np.where(matching_vertices)[0]
 
-                vertex_instances = [f"sectorFlight({flight_index},{from_source_time},{vertex_id})." for vertex_id in vertex_ids]
+                #print(f"BEFORE: {len(vertex_ids)}")
+
+                # ------------------------------------------------
+                # START PATH STUFF:
+                cutoff_value = 3
+
+                if len(vertex_ids) > cutoff_value:
+                    # GO INTO PATH MODE:
+                    if prev_vertices is None:
+                        # FALLBACK
+                        rng = np.random.default_rng(seed = self.seed)
+                        vertex_ids = rng.choice(vertex_ids, size=cutoff_value, replace=False)
+                    else:
+                        # prev_vertices is not None
+                        # Create path
+
+                        used_vertices = []
+
+                        if len(prev_vertices) >= cutoff_value:
+                            del prev_vertices[-1]
+
+                        for prev_vertex in prev_vertices:
+
+                            path_vertices_mask = edge_distances[prev_vertex,:] == 1 & matching_vertices
+                            path_vertices_ids = np.where(path_vertices_mask)[0]
+
+                            rng = np.random.default_rng(seed = self.seed)
+                            used_vertex_id = rng.choice(path_vertices_ids, size=1, replace=False)
+                            used_vertices.append(int(used_vertex_id))
+
+                        flightPathVertex = int(flight_affected[from_source_time + delay])
+                        if flightPathVertex not in used_vertices:
+                            if len(used_vertices) >= cutoff_value:
+                                del used_vertices[-1]
+                            used_vertices.append(int(flightPathVertex))
+
+                        vertex_ids = used_vertices
+
+                else:
+                    pass
+                # -------------------------------------------------------
+                
+                #print(f"AFTER: {len(vertex_ids)}")
+
+                prev_vertices = list(vertex_ids)
+
+                vertex_instances = [f"sectorFlight({flight_index},{from_source_time + delay},{vertex_id})." for vertex_id in vertex_ids]
 
                 considered_vertices = considered_vertices.union(set(vertex_ids))
 
-                flight_times_instance.append(f"flightTime({flight_index},{from_source_time}).")
+                flight_times_instance.append(f"flightTime({flight_index},{from_source_time + delay}).")
 
                 flight_sector_instances += vertex_instances
+
+
+                for additional_time in range(-self.timestep_granularity,self.timestep_granularity * (additional_time_increase + max_delay_parameter + delay)):
+                    current_time = start_time + additional_time + from_source_time
+                    if current_time >= self.timestep_granularity * (24 + additional_time_increase):
+                        break
+                    elif current_time < 0:
+                        continue
+
+                    if current_time >= capacity_demand_diff_matrix.shape[1]:
+                        current_time = capacity_demand_diff_matrix.shape[1] - 1
+
+                    sector_times = [f"sector({vertex_id},{current_time},{capacity_demand_diff_matrix[vertex_id,current_time]})." for vertex_id in vertex_ids]
+
+                    timed_capacities += sector_times
 
         flight_sector_instances = "\n".join(flight_sector_instances)
         flight_times_instance = "\n".join(flight_times_instance)
@@ -95,22 +198,20 @@ class OptimizeFlights:
         flight_plan_instance = self.flight_plan_strings(rows, flights_affected)
         flight_plan_instance = "\n".join(flight_plan_instance)
 
-        restricted_loads = self.system_loads_restricted(converted_instance_matrix, self.capacity.shape[0], time_idx = time_index, bucket_idx = bucket_index)
-
-        capacity_demand_diff_matrix_restricted = capacity_time_matrix - restricted_loads
-
+        #restricted_loads = self.system_loads_restricted(converted_instance_matrix, self.capacity.shape[0], time_idx = time_index, bucket_idx = bucket_index)
+        #capacity_demand_diff_matrix_restricted = capacity_time_matrix - restricted_loads
         #timed_capacities = self.sector_string_matrix(capacity_demand_diff_matrix_restricted) 
-        timed_capacities = self.sector_string_matrix(capacity_demand_diff_matrix) 
 
+        #timed_capacities = self.sector_string_matrix(capacity_demand_diff_matrix)
 
-        edges_instance, airport_instance, timed_capacities = self.not_used_airports_removal_from_instance(fill_value, flights_affected, timed_capacities, capacity_demand_diff_matrix_restricted, considered_vertices, self.graph)
-
+        edges_instance, airport_instance, timed_capacities = self.not_used_airports_removal_from_instance(fill_value, flights_affected, timed_capacities, capacity_demand_diff_matrix, considered_vertices, self.graph)
         timed_capacities_instance = '\n'.join(timed_capacities)
 
         time_instance = f"additionalTime({additional_time_increase})."
-        instance = edges_instance + "\n" + timed_capacities_instance + "\n" + airport_instance + "\n" + time_instance + "\n" + flight_plan_instance + "\n" + flight_sector_instances + "\n" + flight_times_instance
+        timestep_granularity_instance = f"timestepGranularity({self.timestep_granularity})."
+        instance = edges_instance + "\n" + timed_capacities_instance + "\n" + airport_instance + "\n" + time_instance + "\n" + flight_plan_instance + "\n" + flight_sector_instances + "\n" + flight_times_instance + "\n" + timestep_granularity_instance
 
-        #open("test_instance_4.lp","w").write(instance)
+        open("test_instance_4.lp","w").write(instance)
 
         encoding = self.encoding
 
@@ -235,7 +336,8 @@ class OptimizeFlights:
         # 2.  Re-use the earlier bucket-histogram
         # ---------------------------------------------------------------
         return OptimizeFlights.bucket_histogram(mat_keep,
-                                num_buckets=num_buckets,
+                                num_buckets,
+                                self.timestep_granularity,
                                 fill_value=fill_value)
     
     def sector_string_matrix(self, values: np.ndarray) -> np.ndarray:
@@ -279,9 +381,9 @@ class OptimizeFlights:
         
         to_delete_vertices = np.array(list(to_delete_vertices))
 
-        timed_capacities = timed_capacities.reshape(capacity_demand_diff_matrix_restricted.shape)
-        timed_capacities = np.delete(timed_capacities, to_delete_vertices, axis=0)
-        timed_capacities = timed_capacities.flatten()
+        #timed_capacities = timed_capacities.reshape(capacity_demand_diff_matrix_restricted.shape)
+        #timed_capacities = np.delete(timed_capacities, to_delete_vertices, axis=0)
+        #timed_capacities = timed_capacities.flatten()
         
         remaining_airport_vertices_lookup_table = {}
         for airport_vertex in remaining_airport_vertices:
@@ -328,8 +430,9 @@ class OptimizeFlights:
         #np.savetxt("test_loads.csv", capacity_demand_diff_matrix,delimiter=",",fmt="%i")
 
     @classmethod
-    def bucket_histogram(cls, mat: np.ndarray,
+    def bucket_histogram(cls, instance_matrix: np.ndarray,
                         num_buckets: int,
+                        timestep_granularity: int,
                         *,
                         fill_value: int = -1) -> np.ndarray:
         """
@@ -337,7 +440,7 @@ class OptimizeFlights:
 
         Parameters
         ----------
-        mat
+        instance_matrix
             2-D array produced by `instance_to_matrix`  
             shape = (num_elements, num_time_steps)
         num_buckets
@@ -351,14 +454,14 @@ class OptimizeFlights:
             shape = (num_buckets, num_time_steps)  
             `counts[bucket, t]` is the occupancy of *bucket* at time *t*.
         """
-        n_elems, n_times = mat.shape
+        n_elems, n_times = instance_matrix.shape
 
         # ------------------------------------------------------------------
         # 1.  Mask out empty cells (if any)
         # ------------------------------------------------------------------
 
         # Generate mask of values that differ from fill_value = -1
-        valid_mask = mat != fill_value
+        valid_mask = instance_matrix != fill_value
         if not np.any(valid_mask):                       
             # Shortcut if all cells empty
             return np.zeros((num_buckets, n_times), dtype=int)
@@ -366,7 +469,7 @@ class OptimizeFlights:
         # ------------------------------------------------------------------
         # 2.  Gather bucket IDs and their time indices
         # ------------------------------------------------------------------
-        buckets = mat[valid_mask]                        # (K,) bucket id
+        buckets = instance_matrix[valid_mask]                        # (K,) bucket id
         # 
 
         # np.nonzero --> Get indices of non-zero elements of valid_mask (non false)
@@ -384,5 +487,18 @@ class OptimizeFlights:
         # --> Buckets and times specify the indices
         np.add.at(counts, (buckets, times), 1)
 
-        return counts
+        # Performs a sliding window aggregation according to timestep-granularity
+        # To account for hour/minute/etc. computation
+        axis = 1
+
+        pad_width = [(0, 0)] * counts.ndim
+        pad_width[axis] = (0, timestep_granularity - 1)
+        padded = np.pad(counts, pad_width, mode="constant")
+
+        windows = np.lib.stride_tricks.sliding_window_view(padded,
+                                                    window_shape=timestep_granularity,
+                                                    axis=axis)
+        windows = windows.sum(axis=2)
+
+        return windows
 

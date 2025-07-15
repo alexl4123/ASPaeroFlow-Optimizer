@@ -40,16 +40,20 @@ flight(ID,T,X) :- flightPlan(ID,T,X), not reroute(ID).
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%% XAI %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % LIMIT SECTOR CAPACITY (soft constraint for XAI):
-overload(X,T,LOAD-C) :- sector(X,T,C), time(T), #count{ID:flight(ID,T,X)} = LOAD, LOAD > C.
+
+timeStepGranularities(0..TGRAN) :- timestepGranularity(TGRAN).
+
+%overload(X,T,LOAD-C) :- sector(X,T,C), time(T), #count{ID:flight(ID,T',X),time(T'),timestepGranularity(TGRAN),T'>=T,T'<TGRAN+T} = LOAD, LOAD > C.
+overload(X,T,LOAD-C) :- sector(X,T,C), time(T), #count{ID:flight(ID,T',X),T' = T + TG, timeStepGranularities(TG)} = LOAD, LOAD > C.
+% OLD TIMESTEP GRANULARITY 1:
+%overload(X,T,LOAD-C) :- sector(X,T,C), time(T), #count{ID:flight(ID,T,X)} = LOAD, LOAD > C.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 % REROUTE - YES/NO:
 {reroute(ID)} :- flightPlan(ID,_,_).
 1{flight(ID,T+T',X):sectorFlight(ID,T',X)}1 :- reroute(ID), flightTime(ID,T'), actualDepartureTime(ID, T).
-
 % DELAY ONLY:
 %flight(ID,T + T_DIFF,X) :- reroute(ID), actualDepartureTime(ID, T), flightPlan(ID,T_ORIG,X), plannedDepartureTime(ID,T_ORIG_START), T_ORIG - T_ORIG_START = T_DIFF.
-
 
 % FLIGHT MUST OCCUR:
 flightOccurs(ID) :- flight(ID,_,_).
@@ -83,8 +87,8 @@ actualDestiantionFirstReachedTime(ID,T) :- reroute(ID), plannedDestination(ID,X)
 % NO GAPS:
 %actualDepartureTime(ID,T) :- reroute(ID), flightPlan(ID,T-1,AIRPORT), flightPlan(ID,T,FIRST_OTHER), airport(AIRPORT), not airport(FIRST_OTHER).
 1{actualDepartureTime(ID,T):time(T), T >= TP}1 :- plannedDepartureTime(ID,TP).
-%:- time(T), actualDepartureTime(ID,T'), T > T', actualArrivalTime(ID,T''), T < T'', not flight(ID,T,_).
-:- time(T), plannedDepartureTime(ID,T'), T > T', actualArrivalTime(ID,T''), T < T'', not flight(ID,T,_).
+:- time(T), actualDepartureTime(ID,T'), T > T', actualArrivalTime(ID,T''), T < T'', not flight(ID,T,_).
+%:- time(T), plannedDepartureTime(ID,T'), T > T', actualArrivalTime(ID,T''), T < T'', not flight(ID,T,_).
 
 
 % ------------- OPTIMIZATION ----------------
@@ -98,10 +102,10 @@ arrivalDelay(ID,Y-T) :- plannedArrivalTime(ID,T), actualArrivalTime(ID,Y).
 :~ arrivalDelay(ID,DIFF). [DIFF@1,ID]
 
 #show flight/3.
-#show reroute/1.
+%#show reroute/1.
 %#show actualArrivalTime/2.
 %#show plannedArrivalTime/2.
 %#show arrivalDelay/2.
-%#show overload/3.
+#show overload/3.
 %#show arrivalDelay/2.
 %#show time/1.
