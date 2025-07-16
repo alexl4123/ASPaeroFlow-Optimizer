@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import argparse
-import sys
 import time
 
 import numpy as np
@@ -19,8 +17,12 @@ class OptimizeFlights:
                  additional_time_increase,
                  fill_value = -1,
                  timestep_granularity = 1,
-                 seed = 11904657
+                 seed = 11904657,
+                 max_vertices_cutoff_value = 6,
+                 max_delay_parameter = 4,
+                 original_max_time = 24,
                  ):
+
         self.encoding = encoding
         self.capacity = capacity
         self.graph = graph
@@ -38,6 +40,10 @@ class OptimizeFlights:
         self.fill_value = fill_value
         self.timestep_granularity = timestep_granularity
         self.seed = seed
+
+        self.max_vertices_cutoff_value = max_vertices_cutoff_value
+        self.max_delay_parameter = max_delay_parameter
+        self.original_max_time = original_max_time
  
     def start(self):
 
@@ -52,9 +58,8 @@ class OptimizeFlights:
         additional_time_increase = self.additional_time_increase
         fill_value = self.fill_value
 
-        print("!!!!!!!!!!!!!!!")
-        print(f"======== ADDITIONAL TIME INCREASE: {additional_time_increase}")
-
+        max_vertices_cutoff_value = self.max_vertices_cutoff_value
+        max_delay_parameter = self.max_delay_parameter
 
         flight_sector_instances = []
         flight_times_instance = []
@@ -73,136 +78,49 @@ class OptimizeFlights:
             
             flight_affected = flight_affected[flight_affected != fill_value]
 
-            source = flight_affected[0]
+            origin = flight_affected[0]
             destination = flight_affected[-1]
 
-            delay = 0
-            for tmp_index in range(1,flight_affected.shape[0]):
+            delay, flight_sector_instances, flight_times_instance = self.handle_delay(flight_sector_instances, flight_times_instance, flight_index, flight_affected, origin)
 
-                flight_sector_instances.append(f"sectorFlight({flight_index},{delay},{source}).")
-                flight_times_instance.append(f"flightTime({flight_index},{delay}).")
+            origin_to_destination_time = edge_distances[origin,destination]
 
-                if flight_affected[tmp_index] != source:
-                    break
-            
-                delay += 1
+            considered_vertices = considered_vertices.union(set([origin,destination]))
 
-            max_delay_parameter = 4
-
-            source_to_target_time = edge_distances[source,destination]
-
-            considered_vertices = considered_vertices.union(set([source,destination]))
-
-            for additional_time in range(-self.timestep_granularity,self.timestep_granularity * (additional_time_increase + max_delay_parameter + delay)):
-                current_time = start_time + additional_time
-                if current_time >= self.timestep_granularity * (24 + additional_time_increase):
-                    break
-                elif current_time < 0:
-                    continue
-
-                if current_time >= capacity_demand_diff_matrix.shape[1]:
-                    current_time = capacity_demand_diff_matrix.shape[1] - 1
-
-                sector_time = f"sector({source},{current_time},{capacity_demand_diff_matrix[source,current_time]})."
-                timed_capacities.append(sector_time)
-
+            timed_capacities += self.handle_origin_sector_instance_generation(capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, origin, delay)
 
 
             prev_vertices = None
 
-            for from_source_time in range(1,source_to_target_time + 1): # The +1 means that we add the destination airport
+            for from_origin_time in range(1,origin_to_destination_time + 1): # The +1 means that we add the destination airport
                 
-                time_to_target_diff = source_to_target_time - from_source_time
+                time_to_destination_diff = origin_to_destination_time - from_origin_time
 
-                source_vertices = edge_distances[source,:] == from_source_time
-                target_vertices = edge_distances[destination,:] == time_to_target_diff
+                origin_vertices = edge_distances[origin,:] == from_origin_time
+                destination_vertices = edge_distances[destination,:] == time_to_destination_diff
 
-                matching_vertices = source_vertices & target_vertices
+                matching_vertices = origin_vertices & destination_vertices
 
                 vertex_ids = np.where(matching_vertices)[0]
-
-                #print(f"BEFORE: {len(vertex_ids)}")
-
-                # ------------------------------------------------
-                # START PATH STUFF:
-                cutoff_value = 3
-
-                if len(vertex_ids) > cutoff_value:
-                    # GO INTO PATH MODE:
-                    if prev_vertices is None:
-                        # FALLBACK
-                        rng = np.random.default_rng(seed = self.seed)
-                        vertex_ids = rng.choice(vertex_ids, size=cutoff_value, replace=False)
-                    else:
-                        # prev_vertices is not None
-                        # Create path
-
-                        used_vertices = []
-
-                        if len(prev_vertices) >= cutoff_value:
-                            del prev_vertices[-1]
-
-                        for prev_vertex in prev_vertices:
-
-                            path_vertices_mask = edge_distances[prev_vertex,:] == 1 & matching_vertices
-                            path_vertices_ids = np.where(path_vertices_mask)[0]
-
-                            rng = np.random.default_rng(seed = self.seed)
-                            used_vertex_id = rng.choice(path_vertices_ids, size=1, replace=False)
-                            used_vertices.append(int(used_vertex_id))
-
-                        flightPathVertex = int(flight_affected[from_source_time + delay])
-                        if flightPathVertex not in used_vertices:
-                            if len(used_vertices) >= cutoff_value:
-                                del used_vertices[-1]
-                            used_vertices.append(int(flightPathVertex))
-
-                        vertex_ids = used_vertices
-
-                else:
-                    pass
-                # -------------------------------------------------------
-                
-                #print(f"AFTER: {len(vertex_ids)}")
+                vertex_ids = self.restrict_max_vertices(prev_vertices, vertex_ids, matching_vertices, flight_affected, from_origin_time, delay)
 
                 prev_vertices = list(vertex_ids)
 
-                vertex_instances = [f"sectorFlight({flight_index},{from_source_time + delay},{vertex_id})." for vertex_id in vertex_ids]
+                vertex_instances = [f"sectorFlight({flight_index},{from_origin_time + delay},{vertex_id})." for vertex_id in vertex_ids]
 
                 considered_vertices = considered_vertices.union(set(vertex_ids))
 
-                flight_times_instance.append(f"flightTime({flight_index},{from_source_time + delay}).")
+                flight_times_instance.append(f"flightTime({flight_index},{from_origin_time + delay}).")
 
                 flight_sector_instances += vertex_instances
 
-
-                for additional_time in range(-self.timestep_granularity,self.timestep_granularity * (additional_time_increase + max_delay_parameter + delay)):
-                    current_time = start_time + additional_time + from_source_time
-                    if current_time >= self.timestep_granularity * (24 + additional_time_increase):
-                        break
-                    elif current_time < 0:
-                        continue
-
-                    if current_time >= capacity_demand_diff_matrix.shape[1]:
-                        current_time = capacity_demand_diff_matrix.shape[1] - 1
-
-                    sector_times = [f"sector({vertex_id},{current_time},{capacity_demand_diff_matrix[vertex_id,current_time]})." for vertex_id in vertex_ids]
-
-                    timed_capacities += sector_times
+                timed_capacities += self.handle_sectors_instance_generation(capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, delay, from_origin_time, vertex_ids)
 
         flight_sector_instances = "\n".join(flight_sector_instances)
         flight_times_instance = "\n".join(flight_times_instance)
 
-        #print(f">> NUMBER AFFECTED FLIGHTS: {len(rows)}")
-
         flight_plan_instance = self.flight_plan_strings(rows, flights_affected)
         flight_plan_instance = "\n".join(flight_plan_instance)
-
-        #restricted_loads = self.system_loads_restricted(converted_instance_matrix, self.capacity.shape[0], time_idx = time_index, bucket_idx = bucket_index)
-        #capacity_demand_diff_matrix_restricted = capacity_time_matrix - restricted_loads
-        #timed_capacities = self.sector_string_matrix(capacity_demand_diff_matrix_restricted) 
-
-        #timed_capacities = self.sector_string_matrix(capacity_demand_diff_matrix)
 
         edges_instance, airport_instance, timed_capacities = self.not_used_airports_removal_from_instance(fill_value, flights_affected, timed_capacities, capacity_demand_diff_matrix, considered_vertices, self.graph)
         timed_capacities_instance = '\n'.join(timed_capacities)
@@ -226,6 +144,107 @@ class OptimizeFlights:
         #quit()
 
         return model
+
+    def handle_sectors_instance_generation(self, capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, delay, from_origin_time, vertex_ids):
+
+        timed_capacities = []
+
+        for additional_time in range(-self.timestep_granularity,self.timestep_granularity * (additional_time_increase + max_delay_parameter + delay)):
+            current_time = start_time + additional_time + from_origin_time
+            if current_time >= self.timestep_granularity * (self.original_max_time + additional_time_increase):
+                break
+            elif current_time < 0:
+                continue
+
+            if current_time >= capacity_demand_diff_matrix.shape[1]:
+                current_time = capacity_demand_diff_matrix.shape[1] - 1
+
+            sector_times = [f"sector({vertex_id},{current_time},{capacity_demand_diff_matrix[vertex_id,current_time]})." for vertex_id in vertex_ids]
+
+            timed_capacities += sector_times
+        return timed_capacities
+
+    def handle_origin_sector_instance_generation(self, capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, origin, delay):
+
+        timed_capacities = []
+
+        for additional_time in range(-self.timestep_granularity,self.timestep_granularity * (additional_time_increase + max_delay_parameter + delay)):
+            current_time = start_time + additional_time
+            if current_time >= self.timestep_granularity * (self.original_max_time + additional_time_increase):
+                break
+            elif current_time < 0:
+                continue
+
+            if current_time >= capacity_demand_diff_matrix.shape[1]:
+                current_time = capacity_demand_diff_matrix.shape[1] - 1
+
+            sector_time = f"sector({origin},{current_time},{capacity_demand_diff_matrix[origin,current_time]})."
+            timed_capacities.append(sector_time)
+
+            if current_time == capacity_demand_diff_matrix.shape[1] - 1:
+                break
+
+        return timed_capacities
+
+    def handle_delay(self, flight_sector_instances, flight_times_instance, flight_index, flight_affected, origin):
+        delay = 0
+
+        for tmp_index in range(1,flight_affected.shape[0]):
+            flight_sector_instances.append(f"sectorFlight({flight_index},{delay},{origin}).")
+            flight_times_instance.append(f"flightTime({flight_index},{delay}).")
+
+            if flight_affected[tmp_index] != origin:
+                break
+            
+            delay += 1
+
+        return delay, flight_sector_instances, flight_times_instance
+    
+    def restrict_max_vertices(self, prev_vertices, vertex_ids, matching_vertices, flight_affected, from_origin_time, delay):
+
+        max_vertices_cutoff_value = self.max_vertices_cutoff_value
+        edge_distances = self.edge_distances
+        # ------------------------------------------------
+        # START PATH STUFF:
+
+        if len(vertex_ids) > max_vertices_cutoff_value:
+            # GO INTO PATH MODE:
+            if prev_vertices is None:
+                # FALLBACK
+                rng = np.random.default_rng(seed = self.seed)
+                vertex_ids = rng.choice(vertex_ids, size=max_vertices_cutoff_value, replace=False)
+            else:
+                # prev_vertices is not None
+                # Create path
+
+                used_vertices = []
+
+                if len(prev_vertices) >= max_vertices_cutoff_value:
+                    del prev_vertices[-1]
+
+                for prev_vertex in prev_vertices:
+
+                    path_vertices_mask = edge_distances[prev_vertex,:] == 1 & matching_vertices
+                    path_vertices_ids = np.where(path_vertices_mask)[0]
+
+                    rng = np.random.default_rng(seed = self.seed)
+                    used_vertex_id = rng.choice(path_vertices_ids, size=1, replace=False)
+                    used_vertices.append(int(used_vertex_id))
+
+                flightPathVertex = int(flight_affected[from_origin_time + delay])
+                if flightPathVertex not in used_vertices:
+                    if len(used_vertices) >= max_vertices_cutoff_value:
+                        del used_vertices[-1]
+                    used_vertices.append(int(flightPathVertex))
+
+                vertex_ids = used_vertices
+
+        else:
+            pass
+        # -------------------------------------------------------
+
+        return vertex_ids
+        
 
 
     def flight_plan_strings(self, rows_original_indices, mat: np.ndarray,

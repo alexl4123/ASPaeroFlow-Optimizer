@@ -96,6 +96,8 @@ class Main:
         seed: Optional[int],
         number_threads: Optional[int],
         timestep_granularity: Optional[int],
+        max_explored_vertices: Optional[int],
+        max_delay_per_iteration: Optional[int],
     ) -> None:
         self._graph_path: Optional[Path] = graph_path
         self._capacity_path: Optional[Path] = capacity_path
@@ -105,6 +107,9 @@ class Main:
         self._seed: Optional[int] = seed
         self._number_threads: Optional[int] = number_threads
         self._timestep_granularity: Optional[int] = timestep_granularity
+
+        self._max_explored_vertices: Optional[int] = max_explored_vertices
+        self._max_delay_per_iteration: Optional[int] = max_delay_per_iteration
 
         # Data containers — populated by :pymeth:`load_data`.
         self.graph: Optional[np.ndarray] = None
@@ -192,43 +197,21 @@ class Main:
         np.savetxt("00_initial_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
         original_converted_instance_matrix = converted_instance_matrix.copy()
 
+        original_max_time = original_converted_instance_matrix.shape[1]
+
+        if self._max_delay_per_iteration < 0:
+            self._max_delay_per_iteration = original_max_time
+
         while np.any(capacity_overload_mask, where=True):
             print(f"<ITER:{iteration}><REMAINING ISSUES:{str(number_of_conflicts)}>")
 
             time_index,bucket_index = self.first_overload(capacity_overload_mask)
 
-            """
-            rows = np.flatnonzero(converted_instance_matrix[:, time_index] == bucket_index)
-
-            if len(rows) > max_number_airplanes_considered_in_ASP:
-                rows = rows[:max_number_airplanes_considered_in_ASP]
-
-            flights_affected = converted_instance_matrix[rows, :]
-
-            from optimize_flights import OptimizeFlights
-            optimizer = OptimizeFlights(self.encoding, self.capacity, self.graph, self.airport_vertices,
-                                        flights_affected, rows, edge_distances, converted_instance_matrix, time_index,
-                                        bucket_index, capacity_time_matrix, capacity_demand_diff_matrix,
-                                        additional_time_increase, fill_value = fill_value)
-            model = optimizer.start()
-            """
-
-            """ 
-            models = []
-            for job in jobs:
-                model = job.start()
-
-                models.append(model)
-            """
-
             start_time = time.time()
 
             jobs = self.build_jobs(time_index, bucket_index, edge_distances, converted_instance_matrix, capacity_time_matrix,
                             capacity_demand_diff_matrix, additional_time_increase, fill_value, 
-                            max_number_airplanes_considered_in_ASP, max_number_processors, seed, self._timestep_granularity)
-            
-            if len(jobs) == 0:
-                print("DETECTED 0 JOBS")
+                            max_number_airplanes_considered_in_ASP, max_number_processors, original_max_time)
             
             from joblib import Parallel, delayed
             models = Parallel(n_jobs=max_number_processors, backend="loky")(
@@ -239,8 +222,9 @@ class Main:
 
             #models = self.run_parallel(jobs)
 
-            if (additional_time_increase + 24) * self._timestep_granularity > converted_instance_matrix.shape[1]:
-                extra_col = -1 * np.ones((converted_instance_matrix.shape[0], 1), dtype=int)
+            if (additional_time_increase + original_max_time) * self._timestep_granularity > converted_instance_matrix.shape[1]:
+                diff = (additional_time_increase + original_max_time) * self._timestep_granularity - converted_instance_matrix.shape[1]
+                extra_col = -1 * np.ones((converted_instance_matrix.shape[0], diff), dtype=int)
                 converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
 
             for model in models:
@@ -280,14 +264,11 @@ class Main:
                     counter_equal_solutions += 1
 
                     if counter_equal_solutions >= 5 and counter_equal_solutions % 5 == 0:
-                        max_number_processors = max(1,int(max_number_processors / 2))
-                        print(f">>> PARALLEL PROCESSORS REDUCED TO:{max_number_processors}")
-                    elif counter_equal_solutions >= 11 and counter_equal_solutions % 11 == 0:
                         additional_time_increase += 1
                         print(f">>> INCREASED TIME TO:{additional_time_increase}")
-
-                        if additional_time_increase > 15:
-                            print("DANGER ADDITIONAL TIME INCREASE > 15")
+                    elif counter_equal_solutions >= 11 and counter_equal_solutions % 11 == 0:
+                        max_number_processors = max(1,int(max_number_processors / 2))
+                        print(f">>> PARALLEL PROCESSORS REDUCED TO:{max_number_processors}")
                     elif counter_equal_solutions >= 23 and counter_equal_solutions % 23 == 0:
                         max_number_airplanes_considered_in_ASP += 1
                         print(f">>> INCREASED AIRPLANES CONSIDERED TO:{max_number_airplanes_considered_in_ASP}")
@@ -336,12 +317,15 @@ class Main:
                 fill_value: int,
                 max_rows: int,
                 n_proc: int,
-                seed: int,
-                timestep_granularity: int):
+                original_max_time: int,
+                ):
         """
         Split the candidate rows into *n_proc* equally‑sized chunks
         (≤ max_rows each) and build one ``OptimizeFlights`` instance per chunk.
         """
+        seed = self._seed
+        timestep_granularity = self._timestep_granularity
+
         rng = np.random.default_rng(seed)
 
 
@@ -351,7 +335,15 @@ class Main:
         bucket_index_mask = bucket_index_mask.any(axis=1)
         candidate = np.flatnonzero(bucket_index_mask)
 
-        rng.shuffle(candidate)
+        start, stop, duration = self.flight_spans_contiguous(converted_instance_matrix, fill_value=-1)
+
+        candidate_duration = duration[candidate]
+
+        order = np.argsort(candidate_duration, kind="stable")
+        candidate_sorted = candidate[order]
+
+        candidate = candidate_sorted
+        #rng.shuffle(candidate)
 
         capacity_difference = abs(capacity_demand_diff_matrix[bucket_index, time_index])
         if capacity_difference < 2:
@@ -379,9 +371,47 @@ class Main:
             jobs.append((self.encoding, self.capacity, self.graph, self.airport_vertices,
                                         flights, rows, edge_distances, converted_instance_matrix, time_index,
                                         bucket_index, capacity_time_matrix, capacity_demand_diff_matrix,
-                                        additional_time_increase, fill_value, timestep_granularity, seed)
+                                        additional_time_increase, fill_value, self._timestep_granularity, self._seed,
+                                        self._max_explored_vertices, self._max_delay_per_iteration, 
+                                        original_max_time)
             )
         return jobs
+    
+    def flight_spans_contiguous(self, matrix: np.ndarray, *, fill_value: int = -1):
+        """
+        For each row (flight), find the first contiguous block of non-`fill_value`
+        entries and return (start, stop, duration), where `stop` is exclusive.
+
+        Assumes each flight occupies one contiguous block; if multiple blocks
+        exist, only the *first* is used. Rows with no non-`fill_value` data get
+        start = stop = -1 and duration = 0.
+        """
+        valid = matrix != fill_value              # shape (F, T)
+        F, T = valid.shape
+
+        # Pad False on both sides so every run has a start & end transition.
+        padded = np.zeros((F, T + 2), dtype=bool)
+        padded[:, 1:-1] = valid
+
+        left  = padded[:, :-1]
+        right = padded[:, 1:]
+
+        starts_mask = (~left) & right             # False->True transitions
+        ends_mask   = left & (~right)             # True->False transitions
+
+        has_run = starts_mask.any(axis=1)         # at least one active cell?
+
+        # argmax returns first True; safe because has_run tells us if any exist.
+        start = np.argmax(starts_mask, axis=1)    # index in 0..T  (T=exclusive)
+        stop  = np.argmax(ends_mask,   axis=1)    # index in 0..T
+
+        start = np.where(has_run, start, -1)
+        stop  = np.where(has_run,  stop,  -1)
+
+        duration = np.where(has_run, stop - start, 0)
+
+        return start, stop, duration
+
 
 
     def run_parallel(self, jobs):
@@ -653,6 +683,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=1,
         help="Specifies how long one stimulated timestep is (time-step=1h/granularity). So granularity=1 means 1h, granularity=4 means 15 minutes."
     )
+    parser.add_argument(
+        "--max-explored-vertices",
+        type=int,
+        default=6,
+        help="Maximum vertices explored in parallel - effectively restricts number of explored paths (larger=possibly better solution, but more compute time needed)."
+    )
+    parser.add_argument(
+        "--max-delay-per-iteration",
+        type=int,
+        default=-1,
+        help="Maximum hours of delay per solve iteration explored (larger=more compute time, but faster descent; -1 is automatically fetch  according to max. time steps)."
+    )
 
     return parser
 
@@ -673,7 +715,8 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     app = Main(args.path_graph, args.path_capacity, args.path_instance,
                args.airport_vertices_path, args.encoding_path,
-               args.seed,args.number_threads, args.timestep_granularity)
+               args.seed,args.number_threads, args.timestep_granularity,
+               args.max_explored_vertices, args.max_delay_per_iteration)
     app.run()
 
 

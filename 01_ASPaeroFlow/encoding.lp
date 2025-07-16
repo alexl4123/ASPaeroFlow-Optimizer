@@ -41,7 +41,7 @@ flight(ID,T,X) :- flightPlan(ID,T,X), not reroute(ID).
 %%%%%%%%%%%%%%%%%%%%%%% XAI %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % LIMIT SECTOR CAPACITY (soft constraint for XAI):
 
-timeStepGranularities(0..TGRAN) :- timestepGranularity(TGRAN).
+timeStepGranularities(0..TGRAN-1) :- timestepGranularity(TGRAN).
 
 %overload(X,T,LOAD-C) :- sector(X,T,C), time(T), #count{ID:flight(ID,T',X),time(T'),timestepGranularity(TGRAN),T'>=T,T'<TGRAN+T} = LOAD, LOAD > C.
 overload(X,T,LOAD-C) :- sector(X,T,C), time(T), #count{ID:flight(ID,T',X),T' = T + TG, timeStepGranularities(TG)} = LOAD, LOAD > C.
