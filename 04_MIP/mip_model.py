@@ -37,6 +37,8 @@ class MIPModel:
 
         model.update()
 
+        self.add_valid_inequalities(model, flight_variables_pd, converted_instance_matrix, edge_distances, max_delay)
+
         self.optimize(model, optimization_variables)
 
         converted_instance_matrix = self.reconstruct_solution(model, flight_variables_pd, converted_instance_matrix, max_delay)
@@ -308,9 +310,122 @@ class MIPModel:
         return optimization_variables
 
 
-    def add_valid_inequalities():
-        pass
+    def add_valid_inequalities(self, model: gp.Model, flight_variables_pd, converted_instance_matrix,
+                                                          edge_distances, max_delay, fill_value = -1):
 
+        optimization_variables = []
+
+        for flight in range(converted_instance_matrix.shape[0]):
+
+            flight_affected = converted_instance_matrix[flight,:]
+            flight_affected = flight_affected[flight_affected != fill_value]
+
+            origin = flight_affected[0]
+            destination = flight_affected[-1]
+
+            considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)]
+            for sector in list(set(considered_rows["V"])):
+
+                # VALID INEQUALITY 1)
+                considered_rows_2 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["V"]==sector))]
+                for time in list(set(considered_rows_2["T"])):
+
+                    considered_rows_constraint_8 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["T"]==time)&(flight_variables_pd["V"]==sector))]
+
+                    for _,variable_1_row in considered_rows_constraint_8.iterrows():
+                        sector_variable = variable_1_row["obj"]
+                        delay = variable_1_row["D"]
+
+                    considered_rows_constraint_8_prim = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["T"]==time+1)&(flight_variables_pd["D"]==delay))]
+                    considered_rows_constraint_8_prim_2 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["T"]==time)&(flight_variables_pd["D"]==delay))]
+
+                    next_vertices = list(set(considered_rows_constraint_8_prim["V"]))
+                    prev_vertices = list(set(considered_rows_constraint_8_prim_2["V"]))
+
+                    sector_is_fork = True
+
+                    fork_variables = []
+
+                    for vertex in next_vertices:
+
+                        if sector_is_fork is False:
+                            break
+
+                        if edge_distances[sector, vertex] == 1:
+
+                            for prev_vertex in prev_vertices:
+                                if edge_distances[prev_vertex,vertex] == 1 and prev_vertex != sector:
+                                    sector_is_fork = False
+                                    break
+
+                            considered_rows_temp = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["T"]==time+1)&(flight_variables_pd["D"]==delay)&(flight_variables_pd["V"]==vertex))]
+
+                            for _,row in considered_rows_temp.iterrows():
+                                fork_variables.append(row["obj"])
+
+                    if sector_is_fork is True:
+                        # Valid inequality 1)
+                        model.addConstr(sector_variable - gp.quicksum(fork_variables) >= 0)
+
+                # VALID INEQUALITY 2)
+                sector_max_delay_pd = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]==max_delay)&(flight_variables_pd["V"]==sector))]
+
+                for _,row in sector_max_delay_pd.iterrows():
+                    sector_variable = row["obj"]
+                    time = row["T"]
+
+                prev_sectors_pd = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]==max_delay)&(flight_variables_pd["T"]==time-1))]
+                cur_sectors_pd = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]==max_delay)&(flight_variables_pd["T"]==time))]
+
+                prev_vertices = list(set(prev_sectors_pd["V"]))
+                current_vertices = list(set(cur_sectors_pd["V"]))
+
+                sector_is_joint = True
+                joint_variables = []
+
+                for prev_vertex in prev_vertices:
+
+                    if sector_is_joint is False:
+                        break
+
+                    if edge_distances[prev_vertex,sector] == 1:
+                        for cur_vertex in current_vertices:
+                            if edge_distances[prev_vertex, cur_vertex] == 1 and cur_vertex != sector:
+                                sector_is_joint = False
+
+                        considered_rows_temp = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["T"]==time-1)&(flight_variables_pd["D"]==max_delay)&(flight_variables_pd["V"]==prev_vertex))]
+
+                        for _,row in considered_rows_temp.iterrows():
+                            joint_variables.append(row["obj"])
+
+                if sector_is_joint is True:
+                    #print(f"{['+'.join([var.VarName for var in joint_variables])]} - {sector_variable.VarName} <= 0") 
+                    model.addConstr(gp.quicksum(joint_variables) - sector_variable <= 0)
+
+
+
+            # VALID INEQUALITY 3):
+            for delay in range(max_delay):
+                considered_rows = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]==delay))]
+
+                for time in list(set(considered_rows["T"])):
+                    considered_rows_2 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]==delay)&(flight_variables_pd["T"]==time))]
+
+                    vertices_anti_chain = list(set(considered_rows_2["V"]))
+
+                    vertices_anti_chain_variables = []
+
+                    for vertex in vertices_anti_chain:
+                        considered_rows_3 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]==delay)&(flight_variables_pd["T"]==time)&(flight_variables_pd["V"]==vertex))]
+
+                        for _,row in considered_rows_3.iterrows():
+
+                            vertices_anti_chain_variables.append(row["obj"])
+
+                    # VALID INEQUALITY 3):
+                    #print(f"{['+'.join([var.VarName for var in vertices_anti_chain_variables])]} <= 1")
+                    model.addConstr(gp.quicksum(vertices_anti_chain_variables) <= 1)
+                               
 
     def optimize(self, model, optimization_variables):
             
