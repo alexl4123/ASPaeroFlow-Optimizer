@@ -85,7 +85,6 @@ actualDestiantionFirstReachedTime(ID,T) :- reroute(ID), plannedDestination(ID,X)
 :- flight(ID,T,X), flight(ID,T',X), T != T', not airport(X).
 
 % NO GAPS:
-%actualDepartureTime(ID,T) :- reroute(ID), flightPlan(ID,T-1,AIRPORT), flightPlan(ID,T,FIRST_OTHER), airport(AIRPORT), not airport(FIRST_OTHER).
 1{actualDepartureTime(ID,T):time(T), T >= TP}1 :- plannedDepartureTime(ID,TP).
 :- time(T), actualDepartureTime(ID,T'), T > T', actualArrivalTime(ID,T''), T < T'', not flight(ID,T,_).
 %:- time(T), plannedDepartureTime(ID,T'), T > T', actualArrivalTime(ID,T''), T < T'', not flight(ID,T,_).
