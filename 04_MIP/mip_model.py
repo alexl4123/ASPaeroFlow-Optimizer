@@ -47,11 +47,11 @@ class MIPModel:
             model = gp.Model(env=self.env, name="toy")
             model.Params.Threads = self._max_number_threads
 
-            flight_variables_pd = self.add_variables(model, converted_instance_matrix, edge_distances, max_delay)
+            flight_variables_pd, sector_variables_pd = self.add_variables(model, converted_instance_matrix, edge_distances, max_delay)
 
             model.update()
 
-            self.add_capacity_constraint(model, flight_variables_pd, capacity_time_matrix, edge_distances, converted_instance_matrix)
+            self.add_capacity_constraint(model, flight_variables_pd, sector_variables_pd, capacity_time_matrix, edge_distances, converted_instance_matrix)
 
             model.update()
 
@@ -63,7 +63,7 @@ class MIPModel:
 
             self.optimize(model, optimization_variables)
 
-            converted_instance_matrix = self.reconstruct_solution(model, flight_variables_pd, converted_instance_matrix, max_delay)
+            converted_instance_matrix = self.reconstruct_solution(model, flight_variables_pd, sector_variables_pd, converted_instance_matrix, max_delay)
 
             mask = converted_instance_matrix != -1                                        # same shape as arr
 
@@ -92,6 +92,7 @@ class MIPModel:
         # |F|x|D|x|T|x|V|
         # F=flights, D=possible-delays, T=time, V=vertices
         flight_variables_pd = pd.DataFrame(columns=["F","D","T","V","obj"])
+        sector_variables_pd = pd.DataFrame(columns=["F","D","T","V","obj"])
         considered_vertices = set()
 
         #max_delay = max_delay + 1
@@ -132,6 +133,15 @@ class MIPModel:
 
                 flight_variables_pd = pd.concat([flight_variables_pd,entry], ignore_index = True)
 
+                origin_variable = model.addVar(vtype=GRB.BINARY, name=f"y[{flight_affected_index},{delay},{possible_start_time},{origin}]")
+                entry = pd.DataFrame.from_dict({
+                    "F": [flight_affected_index],
+                    "D": [delay],
+                    "T": [possible_start_time],
+                    "V": [origin],
+                    "obj": [origin_variable]
+                })
+                sector_variables_pd = pd.concat([sector_variables_pd,entry], ignore_index = True)
 
             for from_origin_time in range(1,origin_to_destination_time + 1): # The +1 means that we add the destination airport
                 
@@ -164,10 +174,20 @@ class MIPModel:
 
                         flight_variables_pd = pd.concat([flight_variables_pd,entry], ignore_index = True)
 
-        return flight_variables_pd
+                        origin_variable = model.addVar(vtype=GRB.BINARY, name=f"y[{flight_affected_index},{delay},{possible_time},{vertex_id}]")
+                        entry = pd.DataFrame.from_dict({
+                            "F": [flight_affected_index],
+                            "D": [delay],
+                            "T": [possible_time],
+                            "V": [vertex_id],
+                            "obj": [origin_variable]
+                        })
+                        sector_variables_pd = pd.concat([sector_variables_pd,entry], ignore_index = True)
+
+        return flight_variables_pd, sector_variables_pd
 
 
-    def add_capacity_constraint(self, model, flight_variables_pd, capacity_time_matrix, edge_distances, converted_instance_matrix, fill_value = -1 ):
+    def add_capacity_constraint(self, model: gp.Model, flight_variables_pd, sector_variables_pd, capacity_time_matrix, edge_distances, converted_instance_matrix, fill_value = -1 ):
 
         ############################
         # CONSTRAINTS (1,2,3,4):
@@ -181,15 +201,15 @@ class MIPModel:
 
                 if considered_rows.shape[0] > 0:
 
-                    positive_capacity_variables = []
-                    negative_capacity_variables = []
+                    sector_variables = []
 
                     for _, row in considered_rows.iterrows():
 
                         flight = row["F"]
                         delay = row["D"]
 
-                        positive_capacity_variables.append(row["obj"])
+                        flight_variable = row['obj']
+                        negative_capacity_variables = []
 
                         next_considered_rows = flight_variables_pd.loc[(flight_variables_pd['F']==flight)&(flight_variables_pd['D']==delay)&(flight_variables_pd["T"]==time+1)]
 
@@ -206,15 +226,26 @@ class MIPModel:
                                 for _,vertex_row in next_considered_rows.iterrows():
                                     negative_capacity_variables.append(vertex_row["obj"])
 
-                    timestep_granularity_window.append((positive_capacity_variables, negative_capacity_variables))
+                        
+                        considered_rows_tmp = sector_variables_pd.loc[(sector_variables_pd["V"]==sector)&(sector_variables_pd["T"]==time)&(sector_variables_pd["F"]==flight)&(sector_variables_pd["D"]==delay)]
+                        for _,row in considered_rows_tmp.iterrows():
+                            sector_variable = row["obj"]
 
-                    all_pos_variables = []
-                    all_neg_variables = []
-                    for pos_vars, neg_vars in timestep_granularity_window:
-                        all_pos_variables += pos_vars
-                        all_neg_variables += neg_vars
+                        #print(f"{flight_variable.VarName} - ({'+'.join([var.VarName for var in negative_capacity_variables])}) <= {sector_variable.VarName}") 
+                        model.addConstr(flight_variable - gp.quicksum(negative_capacity_variables) <= sector_variable)
+                        model.addConstr(sector_variable <= flight_variable)
 
-                    model.addConstr(gp.quicksum(all_pos_variables) - gp.quicksum(all_neg_variables) <= capacity_time_matrix[sector, time]) 
+                        sector_variables.append(sector_variable)
+
+
+                    timestep_granularity_window.append(sector_variables)
+
+                    all_sector_variables = []
+                    for sector_vars in timestep_granularity_window:
+                        all_sector_variables += sector_vars
+
+                    #print(f"{'+'.join([var.VarName for var in all_sector_variables])} <= {capacity_time_matrix[sector, time]}")
+                    model.addConstr(gp.quicksum(all_sector_variables) <= capacity_time_matrix[sector, time]) 
 
 
                     if len(timestep_granularity_window) >= self._timestep_granularity:
@@ -503,7 +534,7 @@ class MIPModel:
         model.setObjective(gp.quicksum(optimization_variables), GRB.MINIMIZE)
         model.optimize()
 
-    def reconstruct_solution(self, model, flight_variables_pd,  converted_instance_matrix, max_delay, fill_value = -1):
+    def reconstruct_solution(self, model, flight_variables_pd, sector_variables_pd, converted_instance_matrix, max_delay, fill_value = -1):
  
 
         result_matrix = -1 * np.ones((converted_instance_matrix.shape[0], converted_instance_matrix.shape[1] + max_delay), dtype=int)

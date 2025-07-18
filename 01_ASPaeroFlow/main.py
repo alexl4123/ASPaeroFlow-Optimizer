@@ -199,7 +199,7 @@ class Main:
         max_number_processors = self._number_threads
         seed = self._seed
 
-        np.savetxt("00_initial_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
+        #np.savetxt("00_initial_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
         original_converted_instance_matrix = converted_instance_matrix.copy()
 
         original_max_time = original_converted_instance_matrix.shape[1]
@@ -309,7 +309,7 @@ class Main:
             iteration += 1
 
 
-        np.savetxt("01_final_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
+        #np.savetxt("01_final_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
 
         t_init  = self.last_valid_pos(original_converted_instance_matrix)      # last non--1 in the *initial* schedule
         t_final = self.last_valid_pos(converted_instance_matrix)     # last non--1 in the *final* schedule
@@ -398,9 +398,14 @@ class Main:
             # `.copy()` keeps chunks isolated; otherwise a view is fine.
             flights = converted_instance_matrix[rows, :]
 
+            instance_matrix_cpy = converted_instance_matrix.copy()
+            instance_matrix_cpy[rows,:] = -1
+            system_loads_tmp = OptimizeFlights.bucket_histogram(instance_matrix_cpy, self.capacity.shape[0], self._timestep_granularity)
+            capacity_demand_diff_matrix_tmp = capacity_time_matrix - system_loads_tmp
+
             jobs.append((self.encoding, self.capacity, self.graph, self.airport_vertices,
                                         flights, rows, edge_distances, converted_instance_matrix, time_index,
-                                        bucket_index, capacity_time_matrix, capacity_demand_diff_matrix,
+                                        bucket_index, capacity_time_matrix, capacity_demand_diff_matrix_tmp,
                                         additional_time_increase, fill_value, self._timestep_granularity, self._seed,
                                         self._max_explored_vertices, self._max_delay_per_iteration, 
                                         original_max_time)

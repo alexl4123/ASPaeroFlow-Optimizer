@@ -183,7 +183,7 @@ class Main:
         max_number_processors = self._number_threads
         seed = self._seed
 
-        np.savetxt("00_initial_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
+        #np.savetxt("00_initial_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
         original_converted_instance_matrix = converted_instance_matrix.copy()
 
 

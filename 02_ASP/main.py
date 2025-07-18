@@ -150,7 +150,6 @@ def main(argv: Optional[List[str]] = None) -> None:
     while model is None:
         instance = instance_asp_atoms + "\n" + f"maxTimeOriginal({max_time})."
 
-        open("instance_test.lp","w").write(instance)
         solver: Model = Solver(encoding, instance, seed=seed)
         model = solver.solve()
         max_time += adjusted_timesteps
