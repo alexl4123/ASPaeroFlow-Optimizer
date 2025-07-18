@@ -84,8 +84,8 @@ class Main:
         number_threads: Optional[int],
         timestep_granularity: Optional[int],
         max_explored_vertices: Optional[int],
-        max_delay_per_iteration: Optional[int],
         max_time: Optional[int],
+        verbosity: Optional[int],
     ) -> None:
         self._graph_path: Optional[Path] = graph_path
         self._capacity_path: Optional[Path] = capacity_path
@@ -95,9 +95,9 @@ class Main:
         self._seed: Optional[int] = seed
         self._number_threads: Optional[int] = number_threads
         self._timestep_granularity: Optional[int] = timestep_granularity
+        self._verbosity: Optional[int] = verbosity
 
         self._max_explored_vertices: Optional[int] = max_explored_vertices
-        self._max_delay_per_iteration: Optional[int] = max_delay_per_iteration
         self._max_time: Optional[int] = max_time
 
         # Data containers — populated by :pymeth:`load_data`.
@@ -121,20 +121,20 @@ class Main:
         if self._airport_vertices_path is not None:
             self.airport_vertices = _load_csv(self._airport_vertices_path)
         if self._encoding_path is not None:
-            print(self._encoding_path)
             with open(self._encoding_path, "r") as file:
                 self.encoding = file.read()
 
     def run(self) -> None:  # noqa: D401 – imperatives okay here
         """Run the application"""
         self.load_data()
-
-        # --- Demonstration output — remove/replace in production ---------
-        print("  graph   :", None if self.graph is None else self.graph.shape)
-        print("  capacity:", None if self.capacity is None else self.capacity.shape)
-        print("  instance:", None if self.instance is None else self.instance.shape)
-        print("  airport-vertices:", None if self.airport_vertices is None else self.airport_vertices.shape)
-        # -----------------------------------------------------------------
+        
+        if self._verbosity > 0:
+            # --- Demonstration output — remove/replace in production ---------
+            print("  graph   :", None if self.graph is None else self.graph.shape)
+            print("  capacity:", None if self.capacity is None else self.capacity.shape)
+            print("  instance:", None if self.instance is None else self.instance.shape)
+            print("  airport-vertices:", None if self.airport_vertices is None else self.airport_vertices.shape)
+            # -----------------------------------------------------------------
 
         edges_instance = []
 
@@ -186,40 +186,51 @@ class Main:
         np.savetxt("00_initial_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
         original_converted_instance_matrix = converted_instance_matrix.copy()
 
-        original_max_time = original_converted_instance_matrix.shape[1]
 
 
         start_time = time.time()
 
         converted_instance_matrix = self.build_MIP_model(edge_distances, converted_instance_matrix, capacity_time_matrix,
                         capacity_demand_diff_matrix, additional_time_increase, fill_value, 
-                        max_number_airplanes_considered_in_ASP, max_number_processors, original_max_time)
+                        max_number_airplanes_considered_in_ASP, max_number_processors)
 
         end_time = time.time()
-        print(f">> Elapsed solving time: {end_time - start_time}")
+        if self._verbosity > 0:
+            print(f">> Elapsed solving time: {end_time - start_time}")
 
 
-        np.savetxt("01_final_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
+        #np.savetxt("01_final_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
 
         t_init  = self.last_valid_pos(original_converted_instance_matrix)      # last non--1 in the *initial* schedule
         t_final = self.last_valid_pos(converted_instance_matrix)     # last non--1 in the *final* schedule
 
-        # --- 3. compute delays --------------------------------------------------------
-        # Flights that disappear completely (-1 in *both* files) get a delay of 0
-        delay = np.where(t_init >= 0, t_final - t_init, 0)          # shape (|I|,)
+        if self._verbosity > 0:
+            print("<<<<<<<<<<<<<<<<----------------->>>>>>>>>>>>>>>>")
+            print("                  FINAL RESULTS")
+            print("<<<<<<<<<<<<<<<<----------------->>>>>>>>>>>>>>>>")
 
-        # --- 4. aggregate in whichever way you need -----------------------------------
-        total_delay  = delay.sum()
-        mean_delay   = delay.mean()
-        max_delay    = delay.max()
-        #per_flight   = delay.tolist()
+        if t_final is not None:
+            # --- 3. compute delays --------------------------------------------------------
+            # Flights that disappear completely (-1 in *both* files) get a delay of 0
+            delay = np.where(t_init >= 0, t_final - t_init, 0)          # shape (|I|,)
 
-        print("<<<<<<<<<<<<<<<<----------------->>>>>>>>>>>>>>>>")
-        print("                  FINAL RESULTS")
-        print("<<<<<<<<<<<<<<<<----------------->>>>>>>>>>>>>>>>")
-        print(f"Total delay (all flights): {total_delay}")
-        print(f"Average delay per flight:  {mean_delay:.2f}")
-        print(f"Maximum single-flight delay: {max_delay}")
+            # --- 4. aggregate in whichever way you need -----------------------------------
+            total_delay  = delay.sum()
+            mean_delay   = delay.mean()
+            max_delay    = delay.max()
+            #per_flight   = delay.tolist()
+
+            if self._verbosity > 0:
+                print(f"Total delay (all flights): {total_delay}")
+                print(f"Average delay per flight:  {mean_delay:.2f}")
+                print(f"Maximum single-flight delay: {max_delay}")
+
+            print(total_delay)
+            np.savetxt(sys.stdout, converted_instance_matrix, delimiter=",", fmt="%i") 
+
+        else:
+            if self._verbosity > 0:
+                print("Could not find a solution.")
 
 
     def build_MIP_model(self,
@@ -230,17 +241,19 @@ class Main:
                 additional_time_increase: int,
                 fill_value: int,
                 max_rows: int,
-                n_proc: int,
-                original_max_time: int,
+                max_number_processors: int,
                 ):
         """
         Split the candidate rows into *n_proc* equally‑sized chunks
         (≤ max_rows each) and build one ``OptimizeFlights`` instance per chunk.
         """
 
+
+        max_time = max(self._max_time, converted_instance_matrix.shape[1])
+
         max_delay = 24
 
-        mipModel = MIPModel(self.airport_vertices, self._max_time, self._max_explored_vertices, self._seed)
+        mipModel = MIPModel(self.airport_vertices, max_time, self._max_explored_vertices, self._seed, self._timestep_granularity, max_number_processors, self.capacity, self._verbosity)
         converted_instance_matrix = mipModel.create_model(converted_instance_matrix, capacity_time_matrix, edge_distances, max_delay)
 
         return converted_instance_matrix
@@ -289,6 +302,9 @@ class Main:
         """
         # True where value ≠ -1
         mask = arr != -1                                        # same shape as arr
+
+        if not np.any(mask, where=True):
+            return None
 
         # Reverse columns so that the *first* True along axis=1 is really the last
         # in the original orientation
@@ -562,8 +578,8 @@ class Main:
 def _build_arg_parser() -> argparse.ArgumentParser:
     """Return a fully‑configured :pyclass:`argparse.ArgumentParser`."""
     parser = argparse.ArgumentParser(
-        prog="ATFM-NM-Tool",
-        description="Highly efficient ATFM problem solver for the network manager - including XAI.",
+        prog="ATFM-MIP-Implementation",
+        description="MIP implementation for solving the ATFM problem.",
     )
 
     parser.add_argument(
@@ -599,7 +615,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("encoding.lp"), 
         metavar="FILE",
-        help="Location of the encoding for the optimization problem.",
+        help="NOT USED",
     )
     parser.add_argument(
         "--seed",
@@ -629,13 +645,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--max-delay-per-iteration",
         type=int,
         default=-1,
-        help="Maximum hours of delay per solve iteration explored (larger=more compute time, but faster descent; -1 is automatically fetch  according to max. time steps)."
+        help="NOT USED"
     )
     parser.add_argument(
         "--max-time",
         type=int,
         default=24,
         help="Specifies how many timesteps are one day. "
+    )
+    parser.add_argument(
+        "--verbosity",
+        type=int,
+        default=0,
+        help="Verbosity levels (0,1)"
     )
    
     return parser
@@ -658,8 +680,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     app = Main(args.path_graph, args.path_capacity, args.path_instance,
                args.airport_vertices_path, args.encoding_path,
                args.seed,args.number_threads, args.timestep_granularity,
-               args.max_explored_vertices, args.max_delay_per_iteration,
-               args.max_time)
+               args.max_explored_vertices, args.max_time,
+               args.verbosity)
     app.run()
 
 

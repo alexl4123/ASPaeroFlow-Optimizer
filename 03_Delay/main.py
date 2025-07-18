@@ -73,6 +73,8 @@ class Main:
         encoding_path: Optional[Path],
         seed: Optional[int],
         timestep_granularity: Optional[int],
+        max_time: Optional[int],
+        verbosity: Optional[int],
     ) -> None:
         self._graph_path: Optional[Path] = graph_path
         self._capacity_path: Optional[Path] = capacity_path
@@ -81,6 +83,9 @@ class Main:
         self._encoding_path: Optional[Path] = encoding_path
         self._seed: Optional[int] = seed
         self._timestep_granularity: Optional[int] = timestep_granularity
+        self._verbosity: Optional[int] = verbosity
+
+        self._max_time: Optional[int] = max_time
 
         # Data containers — populated by :pymeth:`load_data`.
         self.graph: Optional[np.ndarray] = None
@@ -103,7 +108,6 @@ class Main:
         if self._airport_vertices_path is not None:
             self.airport_vertices = _load_csv(self._airport_vertices_path)
         if self._encoding_path is not None:
-            print(self._encoding_path)
             with open(self._encoding_path, "r") as file:
                 self.encoding = file.read()
 
@@ -111,12 +115,13 @@ class Main:
         """Run the application"""
         self.load_data()
 
-        # --- Demonstration output — remove/replace in production ---------
-        print("  graph   :", None if self.graph is None else self.graph.shape)
-        print("  capacity:", None if self.capacity is None else self.capacity.shape)
-        print("  instance:", None if self.instance is None else self.instance.shape)
-        print("  airport-vertices:", None if self.airport_vertices is None else self.airport_vertices.shape)
-        # -----------------------------------------------------------------
+        if self._verbosity > 0:
+            # --- Demonstration output — remove/replace in production ---------
+            print("  graph   :", None if self.graph is None else self.graph.shape)
+            print("  capacity:", None if self.capacity is None else self.capacity.shape)
+            print("  instance:", None if self.instance is None else self.instance.shape)
+            print("  airport-vertices:", None if self.airport_vertices is None else self.airport_vertices.shape)
+            # -----------------------------------------------------------------
 
         edges_instance = []
 
@@ -139,7 +144,7 @@ class Main:
         # |R| = number of regions (self.capacity.shape[0])
 
         # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
-        converted_instance_matrix = self.instance_to_matrix(self.instance)
+        converted_instance_matrix = self.instance_to_matrix(self.instance, self._max_time)
         # 2.) Create demand matrix (|R|x|T|)
         system_loads = self.bucket_histogram(converted_instance_matrix, self.capacity.shape[0], self._timestep_granularity)
         # 3.) Create capacity matrix (|R|x|T|)
@@ -154,11 +159,14 @@ class Main:
 
         iteration = 0
 
-        np.savetxt("00_initial_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
+        #np.savetxt("00_initial_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
         original_converted_instance_matrix = converted_instance_matrix.copy()
 
+        prev_number_of_conflicts = None
+
         while np.any(capacity_overload_mask, where=True):
-            print(f"<ITER:{iteration}><REMAINING ISSUES:{str(number_of_conflicts)}>")
+            if self._verbosity > 0:
+                print(f"<ITER:{iteration}><REMAINING ISSUES:{str(number_of_conflicts)}>")
 
             time_index,bucket_index = self.first_overload(capacity_overload_mask)
 
@@ -175,11 +183,17 @@ class Main:
             capacity_demand_diff_matrix = capacity_time_matrix - system_loads
             capacity_overload_mask = capacity_demand_diff_matrix < 0
 
+            prev_number_of_conflicts = number_of_conflicts
             number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
+
+            if number_of_conflicts >= prev_number_of_conflicts:
+                extra_col = -1 * np.ones((converted_instance_matrix.shape[0], 1), dtype=int)
+                converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+
 
             iteration += 1
 
-        np.savetxt("01_final_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
+        #np.savetxt("01_final_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
 
         t_init  = self.last_valid_pos(original_converted_instance_matrix)      # last non--1 in the *initial* schedule
         t_final = self.last_valid_pos(converted_instance_matrix)     # last non--1 in the *final* schedule
@@ -194,13 +208,16 @@ class Main:
         max_delay    = delay.max()
         #per_flight   = delay.tolist()
 
-        print("<<<<<<<<<<<<<<<<----------------->>>>>>>>>>>>>>>>")
-        print("                  FINAL RESULTS")
-        print("<<<<<<<<<<<<<<<<----------------->>>>>>>>>>>>>>>>")
-        print(f"Total delay (all flights): {total_delay}")
-        print(f"Average delay per flight:  {mean_delay:.2f}")
-        print(f"Maximum single-flight delay: {max_delay}")
+        if self._verbosity > 0:
+            print("<<<<<<<<<<<<<<<<----------------->>>>>>>>>>>>>>>>")
+            print("                  FINAL RESULTS")
+            print("<<<<<<<<<<<<<<<<----------------->>>>>>>>>>>>>>>>")
+            print(f"Total delay (all flights): {total_delay}")
+            print(f"Average delay per flight:  {mean_delay:.2f}")
+            print(f"Maximum single-flight delay: {max_delay}")
 
+        print(total_delay)
+        np.savetxt(sys.stdout, converted_instance_matrix, delimiter=",", fmt="%i") 
 
     def delay_flights(self, time_index: int,
                 bucket_index: int,
@@ -315,6 +332,7 @@ class Main:
         return last_pos.astype(np.int64)
 
     def instance_to_matrix(self, inst: np.ndarray,
+                           max_time: int,
                         *,
                         fill_value: int = -1,
                         compress: bool = False) -> np.ndarray:
@@ -350,6 +368,11 @@ class Main:
                         fill_value,
                         dtype=vals.dtype)
         out[rows, cols] = vals
+
+        if out.shape[1] < max_time:
+            diff = max_time - out.shape[1]
+            extra_col = -1 * np.ones((out.shape[0], diff), dtype=int)
+            out = np.hstack((out, extra_col)) 
 
         return out
 
@@ -493,8 +516,8 @@ class Main:
 def _build_arg_parser() -> argparse.ArgumentParser:
     """Return a fully‑configured :pyclass:`argparse.ArgumentParser`."""
     parser = argparse.ArgumentParser(
-        prog="ATFM-NM-Tool",
-        description="Highly efficient ATFM problem solver for the network manager - including XAI.",
+        prog="ATFM-NM-Tool-Delay",
+        description="Highly efficient ATFM problem solver which only considers DELAYS.",
     )
 
     parser.add_argument(
@@ -530,7 +553,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("encoding.lp"), 
         metavar="FILE",
-        help="Location of the encoding for the optimization problem.",
+        help="NOT USED",
     )
     parser.add_argument(
         "--seed",
@@ -539,10 +562,40 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Set the random see."
     )
     parser.add_argument(
+        "--number-threads",
+        type=int,
+        default=20,
+        help="NOT USED."
+    )
+    parser.add_argument(
         "--timestep-granularity",
         type=int,
         default=1,
         help="Specifies how long one stimulated timestep is (time-step=1h/granularity). So granularity=1 means 1h, granularity=4 means 15 minutes."
+    )
+    parser.add_argument(
+        "--max-explored-vertices",
+        type=int,
+        default=6,
+        help="NOT USED"
+    )
+    parser.add_argument(
+        "--max-delay-per-iteration",
+        type=int,
+        default=-1,
+        help="NOT USED"
+    )
+    parser.add_argument(
+        "--max-time",
+        type=int,
+        default=24,
+        help="Specifies how many timesteps are one day. "
+    )
+    parser.add_argument(
+        "--verbosity",
+        type=int,
+        default=0,
+        help="Verbosity levels (0,1)"
     )
 
     return parser
@@ -564,7 +617,8 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     app = Main(args.path_graph, args.path_capacity, args.path_instance,
                args.airport_vertices_path, args.encoding_path,
-               args.seed,args.timestep_granularity)
+               args.seed,args.timestep_granularity, args.max_time,
+               args.verbosity)
     app.run()
 
 

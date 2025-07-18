@@ -98,6 +98,8 @@ class Main:
         timestep_granularity: Optional[int],
         max_explored_vertices: Optional[int],
         max_delay_per_iteration: Optional[int],
+        max_time: Optional[int],
+        verbosity: Optional[int],
     ) -> None:
         self._graph_path: Optional[Path] = graph_path
         self._capacity_path: Optional[Path] = capacity_path
@@ -107,6 +109,8 @@ class Main:
         self._seed: Optional[int] = seed
         self._number_threads: Optional[int] = number_threads
         self._timestep_granularity: Optional[int] = timestep_granularity
+        self._max_time: Optional[int] = max_time
+        self.verbosity: Optional[int] = verbosity
 
         self._max_explored_vertices: Optional[int] = max_explored_vertices
         self._max_delay_per_iteration: Optional[int] = max_delay_per_iteration
@@ -116,6 +120,7 @@ class Main:
         self.capacity: Optional[np.ndarray] = None
         self.instance: Optional[np.ndarray] = None
         self.encoding: Optional[np.ndarray] = None
+
 
     # ---------------------------------------------------------------------
     # Public API
@@ -132,7 +137,6 @@ class Main:
         if self._airport_vertices_path is not None:
             self.airport_vertices = _load_csv(self._airport_vertices_path)
         if self._encoding_path is not None:
-            print(self._encoding_path)
             with open(self._encoding_path, "r") as file:
                 self.encoding = file.read()
 
@@ -140,12 +144,13 @@ class Main:
         """Run the application"""
         self.load_data()
 
-        # --- Demonstration output — remove/replace in production ---------
-        print("  graph   :", None if self.graph is None else self.graph.shape)
-        print("  capacity:", None if self.capacity is None else self.capacity.shape)
-        print("  instance:", None if self.instance is None else self.instance.shape)
-        print("  airport-vertices:", None if self.airport_vertices is None else self.airport_vertices.shape)
-        # -----------------------------------------------------------------
+        if self.verbosity > 0:
+            # --- Demonstration output ---------
+            print("  graph   :", None if self.graph is None else self.graph.shape)
+            print("  capacity:", None if self.capacity is None else self.capacity.shape)
+            print("  instance:", None if self.instance is None else self.instance.shape)
+            print("  airport-vertices:", None if self.airport_vertices is None else self.airport_vertices.shape)
+            # -----------------------------------------------------------------
 
         edges_instance = []
 
@@ -170,7 +175,7 @@ class Main:
         # |R| = number of regions (self.capacity.shape[0])
 
         # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
-        converted_instance_matrix = self.instance_to_matrix(self.instance)
+        converted_instance_matrix = self.instance_to_matrix(self.instance, self._max_time)
         # 2.) Create demand matrix (|R|x|T|)
         system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.capacity.shape[0], self._timestep_granularity)
         # 3.) Create capacity matrix (|R|x|T|)
@@ -203,7 +208,8 @@ class Main:
             self._max_delay_per_iteration = original_max_time
 
         while np.any(capacity_overload_mask, where=True):
-            print(f"<ITER:{iteration}><REMAINING ISSUES:{str(number_of_conflicts)}>")
+            if self.verbosity > 0:
+                print(f"<ITER:{iteration}><REMAINING ISSUES:{str(number_of_conflicts)}>")
 
             time_index,bucket_index = self.first_overload(capacity_overload_mask)
 
@@ -218,7 +224,8 @@ class Main:
                         delayed(_run)(job) for job in jobs)
 
             end_time = time.time()
-            print(f">> Elapsed solving time: {end_time - start_time}")
+            if self.verbosity > 1:
+                print(f">> Elapsed solving time: {end_time - start_time}")
 
             #models = self.run_parallel(jobs)
 
@@ -226,6 +233,8 @@ class Main:
                 diff = (additional_time_increase + original_max_time) * self._timestep_granularity - converted_instance_matrix.shape[1]
                 extra_col = -1 * np.ones((converted_instance_matrix.shape[0], diff), dtype=int)
                 converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+
+            old_converted_instance = converted_instance_matrix.copy()
 
             for model in models:
 
@@ -263,22 +272,38 @@ class Main:
                 if number_of_conflicts >= number_of_conflicts_prev:
                     counter_equal_solutions += 1
 
-                    if counter_equal_solutions >= 5 and counter_equal_solutions % 5 == 0:
+                    if counter_equal_solutions >= 2 and counter_equal_solutions % 2 == 0:
                         additional_time_increase += 1
-                        print(f">>> INCREASED TIME TO:{additional_time_increase}")
+                        if self.verbosity > 1:
+                            print(f">>> INCREASED TIME TO:{additional_time_increase}")
                     elif counter_equal_solutions >= 11 and counter_equal_solutions % 11 == 0:
                         max_number_processors = max(1,int(max_number_processors / 2))
-                        print(f">>> PARALLEL PROCESSORS REDUCED TO:{max_number_processors}")
+                        if self.verbosity > 1:
+                            print(f">>> PARALLEL PROCESSORS REDUCED TO:{max_number_processors}")
                     elif counter_equal_solutions >= 23 and counter_equal_solutions % 23 == 0:
                         max_number_airplanes_considered_in_ASP += 1
-                        print(f">>> INCREASED AIRPLANES CONSIDERED TO:{max_number_airplanes_considered_in_ASP}")
+                        if self.verbosity > 1:
+                            print(f">>> INCREASED AIRPLANES CONSIDERED TO:{max_number_airplanes_considered_in_ASP}")
+
+                    converted_instance_matrix = old_converted_instance
+                    system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.capacity.shape[0], self._timestep_granularity)
+                    capacity_time_matrix = self.capacity_time_matrix(self.capacity,system_loads.shape[1])
+                    capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+                    capacity_overload_mask = capacity_demand_diff_matrix < 0
+
+                    number_of_conflicts_prev = number_of_conflicts
+                    number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
+
+
                 else:
                     counter_equal_solutions = 0
                     max_number_processors = 20
                     max_number_airplanes_considered_in_ASP = 2
 
+
                     if max_number_processors < 20 or max_number_airplanes_considered_in_ASP > 2:
-                        print(f">>> RESET PROCESSOR COUNT TO:{max_number_processors}; AIRPLANES TO: {max_number_airplanes_considered_in_ASP}")
+                        if self.verbosity > 1:
+                            print(f">>> RESET PROCESSOR COUNT TO:{max_number_processors}; AIRPLANES TO: {max_number_airplanes_considered_in_ASP}")
             # -----------------------------------------------------------------------------
 
             iteration += 1
@@ -299,12 +324,16 @@ class Main:
         max_delay    = delay.max()
         #per_flight   = delay.tolist()
 
-        print("<<<<<<<<<<<<<<<<----------------->>>>>>>>>>>>>>>>")
-        print("                  FINAL RESULTS")
-        print("<<<<<<<<<<<<<<<<----------------->>>>>>>>>>>>>>>>")
-        print(f"Total delay (all flights): {total_delay}")
-        print(f"Average delay per flight:  {mean_delay:.2f}")
-        print(f"Maximum single-flight delay: {max_delay}")
+        if self.verbosity > 0:
+            print("<<<<<<<<<<<<<<<<----------------->>>>>>>>>>>>>>>>")
+            print("                  FINAL RESULTS")
+            print("<<<<<<<<<<<<<<<<----------------->>>>>>>>>>>>>>>>")
+            print(f"Total delay (all flights): {total_delay}")
+            print(f"Average delay per flight:  {mean_delay:.2f}")
+            print(f"Maximum single-flight delay: {max_delay}")
+
+        print(total_delay)
+        np.savetxt(sys.stdout, converted_instance_matrix, delimiter=",", fmt="%i") 
 
 
     def build_jobs(self, time_index: int,
@@ -352,7 +381,8 @@ class Main:
         needed   = n_proc * max_rows
         needed = min(needed, capacity_difference)
 
-        print(f"---> ACTUALLY INVESTIGATED AIRPLANES: <<{needed}>>")
+        if self.verbosity > 1:
+            print(f"---> ACTUALLY INVESTIGATED AIRPLANES: <<{needed}>>")
 
         rows_pool = candidate[:needed]
 
@@ -523,6 +553,7 @@ class Main:
         return dist
 
     def instance_to_matrix(self, inst: np.ndarray,
+                           max_time: int,
                         *,
                         fill_value: int = -1,
                         compress: bool = False) -> np.ndarray:
@@ -558,6 +589,11 @@ class Main:
                         fill_value,
                         dtype=vals.dtype)
         out[rows, cols] = vals
+
+        if out.shape[1] < max_time:
+            diff = max_time - out.shape[1]
+            extra_col = -1 * np.ones((out.shape[0], diff), dtype=int)
+            out = np.hstack((out, extra_col)) 
 
         return out
 
@@ -695,6 +731,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=-1,
         help="Maximum hours of delay per solve iteration explored (larger=more compute time, but faster descent; -1 is automatically fetch  according to max. time steps)."
     )
+    parser.add_argument(
+        "--max-time",
+        type=int,
+        default=24,
+        help="Specifies how many timesteps are one day. "
+    )
+    parser.add_argument(
+        "--verbosity",
+        type=int,
+        default=0,
+        help="Verbosity levels (0,1,2)"
+    )
 
     return parser
 
@@ -716,7 +764,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     app = Main(args.path_graph, args.path_capacity, args.path_instance,
                args.airport_vertices_path, args.encoding_path,
                args.seed,args.number_threads, args.timestep_granularity,
-               args.max_explored_vertices, args.max_delay_per_iteration)
+               args.max_explored_vertices, args.max_delay_per_iteration,
+               args.max_time, args.verbosity)
     app.run()
 
 

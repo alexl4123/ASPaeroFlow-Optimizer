@@ -56,8 +56,8 @@ actualArrivalTime(ID,T) :- flightID(ID), T = #max{T':flight(ID,T',_)}.
 :- reroute(ID), actualArrivalTime(ID,T), flight(ID,T,X), plannedDestination(ID,X'), X != X'.
 
 % NO FLIGHT AFTER DESTINATION REACHED:
-actualDestiantionFirstReachedTime(ID,T) :- reroute(ID), plannedDestination(ID,X), T = #min{T':flight(ID,T',X)}.
-:- reroute(ID), flight(ID,T,_), actualDestiantionFirstReachedTime(ID,T'), T > T'.
+actualDestinationFirstReachedTime(ID,T) :- reroute(ID), plannedDestination(ID,X), T = #min{T':flight(ID,T',X)}.
+:- reroute(ID), flight(ID,T,_), actualDestinationFirstReachedTime(ID,T'), T > T'.
 
 % MUST BE PATH:
 :- flight(ID,T,X), flight(ID,T+1,X'), not sectorEdge(X,X').
@@ -75,13 +75,22 @@ arrivalDelay(ID,Y-T) :- plannedArrivalTime(ID,T), actualArrivalTime(ID,Y).
 
 % ------------------------------------------------------------------------------
 % PRIMARY WEAK CONSTRAINT:
-:~ overload(X,T,OVER). [OVER@2,X,T]
+:~ overload(X,T,OVER). [OVER@3,X,T]
 % SECONDARY WEAK CONSTRAINT:
-:~ arrivalDelay(ID,DIFF). [DIFF@1,ID]
+:~ arrivalDelay(ID,DIFF). [DIFF@2,ID]
+% OPTIMIZE FOR MINIMUM TRAVEL TIME:
+actualFlightTime(ID,T) :- actualDepartureTime(ID,TDA),actualDestinationFirstReachedTime(ID,TRA), T = TRA - TDA.
+plannedFlightTime(ID,T) :- plannedDepartureTime(ID,TDP), plannedArrivalTime(ID,TRP), T = TRP - TDP.
+:~ actualFlightTime(ID,TA), plannedFlightTime(ID,TP), DIFF = TA - TP. [DIFF@1,ID]
+
+:- overload(X,T,OVER).
 
 #show flight/3.
 #show reroute/1.
 %#show actualArrivalTime/2.
 %#show plannedArrivalTime/2.
-%#show arrivalDelay/2.
-#show overflow/2.
+#show arrivalDelay/2.
+%#show overload/3.
+%#show timeStepGranularities/1.
+%#show actualDestinationFirstReachedTime/2.
+%#show time/1.
