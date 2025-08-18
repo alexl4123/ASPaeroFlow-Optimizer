@@ -160,7 +160,6 @@ class Main:
 
         edges_instance = "\n".join(edges_instance)
 
-        edge_distances = self.compute_distance_matrix()
 
         airport_instance = []
 
@@ -177,7 +176,7 @@ class Main:
         # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
         converted_instance_matrix = self.instance_to_matrix(self.instance, self._max_time)
         # 2.) Create demand matrix (|R|x|T|)
-        system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.capacity.shape[0], self._timestep_granularity)
+        system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.capacity.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
         # 3.) Create capacity matrix (|R|x|T|)
         capacity_time_matrix = self.capacity_time_matrix(self.capacity,system_loads.shape[1])
         # 4.) Subtract demand from capacity (|R|x|T|)
@@ -207,6 +206,10 @@ class Main:
         if self._max_delay_per_iteration < 0:
             self._max_delay_per_iteration = original_max_time
 
+        if np.any(capacity_overload_mask, where=True):
+            edge_distances = self.compute_distance_matrix()
+            old_converted_instance = converted_instance_matrix.copy()
+
         while np.any(capacity_overload_mask, where=True):
             if self.verbosity > 0:
                 print(f"<ITER:{iteration}><REMAINING ISSUES:{str(number_of_conflicts)}>")
@@ -234,7 +237,6 @@ class Main:
                 extra_col = -1 * np.ones((converted_instance_matrix.shape[0], diff), dtype=int)
                 converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
 
-            old_converted_instance = converted_instance_matrix.copy()
 
             for model in models:
 
@@ -253,7 +255,7 @@ class Main:
 
             # Rerun check if there are still things to solve:
 
-            system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.capacity.shape[0], self._timestep_granularity)
+            system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.capacity.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
             capacity_time_matrix = self.capacity_time_matrix(self.capacity,system_loads.shape[1])
             capacity_demand_diff_matrix = capacity_time_matrix - system_loads
             capacity_overload_mask = capacity_demand_diff_matrix < 0
@@ -276,17 +278,18 @@ class Main:
                         additional_time_increase += 1
                         if self.verbosity > 1:
                             print(f">>> INCREASED TIME TO:{additional_time_increase}")
-                    elif counter_equal_solutions >= 11 and counter_equal_solutions % 11 == 0:
+                    if counter_equal_solutions >= 11 and counter_equal_solutions % 11 == 0:
                         max_number_processors = max(1,int(max_number_processors / 2))
                         if self.verbosity > 1:
                             print(f">>> PARALLEL PROCESSORS REDUCED TO:{max_number_processors}")
-                    elif counter_equal_solutions >= 23 and counter_equal_solutions % 23 == 0:
+                    if counter_equal_solutions >= 23 and counter_equal_solutions % 23 == 0:
                         max_number_airplanes_considered_in_ASP += 1
                         if self.verbosity > 1:
                             print(f">>> INCREASED AIRPLANES CONSIDERED TO:{max_number_airplanes_considered_in_ASP}")
 
                     converted_instance_matrix = old_converted_instance
-                    system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.capacity.shape[0], self._timestep_granularity)
+                    system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.capacity.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+
                     capacity_time_matrix = self.capacity_time_matrix(self.capacity,system_loads.shape[1])
                     capacity_demand_diff_matrix = capacity_time_matrix - system_loads
                     capacity_overload_mask = capacity_demand_diff_matrix < 0
@@ -296,6 +299,7 @@ class Main:
 
 
                 else:
+                    old_converted_instance = converted_instance_matrix.copy()
                     counter_equal_solutions = 0
                     max_number_processors = 20
                     max_number_airplanes_considered_in_ASP = 2
@@ -400,7 +404,16 @@ class Main:
 
             instance_matrix_cpy = converted_instance_matrix.copy()
             instance_matrix_cpy[rows,:] = -1
-            system_loads_tmp = OptimizeFlights.bucket_histogram(instance_matrix_cpy, self.capacity.shape[0], self._timestep_granularity)
+
+
+            de_facto_max_time = self._timestep_granularity * (additional_time_increase + self._max_delay_per_iteration) + 1
+            print(f"DE-FACTO:{de_facto_max_time}::INSTANCE-SHAPE:{instance_matrix_cpy.shape[1]}")
+            de_facto_max_time = max(de_facto_max_time, instance_matrix_cpy.shape[1])
+
+            system_loads_tmp = OptimizeFlights.bucket_histogram(instance_matrix_cpy, self.capacity.shape[0],
+                                                                de_facto_max_time, self._timestep_granularity)
+            
+            capacity_time_matrix = self.capacity_time_matrix(self.capacity,de_facto_max_time)
             capacity_demand_diff_matrix_tmp = capacity_time_matrix - system_loads_tmp
 
             jobs.append((self.encoding, self.capacity, self.graph, self.airport_vertices,

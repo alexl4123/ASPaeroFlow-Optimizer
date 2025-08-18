@@ -67,6 +67,7 @@ class OptimizeFlights:
 
         considered_vertices = set()
 
+
         for flight_affected_index in range(flights_affected.shape[0]):
 
             flight_index = rows[flight_affected_index]
@@ -356,6 +357,7 @@ class OptimizeFlights:
         # ---------------------------------------------------------------
         return OptimizeFlights.bucket_histogram(mat_keep,
                                 num_buckets,
+                                mat_keep.shape[1],
                                 self.timestep_granularity,
                                 fill_value=fill_value)
     
@@ -451,6 +453,7 @@ class OptimizeFlights:
     @classmethod
     def bucket_histogram(cls, instance_matrix: np.ndarray,
                         num_buckets: int,
+                        n_times: int,
                         timestep_granularity: int,
                         *,
                         fill_value: int = -1) -> np.ndarray:
@@ -473,7 +476,7 @@ class OptimizeFlights:
             shape = (num_buckets, num_time_steps)  
             `counts[bucket, t]` is the occupancy of *bucket* at time *t*.
         """
-        n_elems, n_times = instance_matrix.shape
+        #n_elems, n_times = instance_matrix.shape
 
         # ------------------------------------------------------------------
         # 1.  Mask out empty cells (if any)
