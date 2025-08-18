@@ -115,7 +115,7 @@ class OptimizeFlights:
 
                 flight_sector_instances += vertex_instances
 
-                timed_capacities += self.handle_sectors_instance_generation(capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, delay, from_origin_time, vertex_ids)
+                timed_capacities += self.handle_sectors_instance_generation(capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, delay, from_origin_time, vertex_ids, flight_index)
 
         flight_sector_instances = "\n".join(flight_sector_instances)
         flight_times_instance = "\n".join(flight_times_instance)
@@ -146,7 +146,7 @@ class OptimizeFlights:
 
         return model
 
-    def handle_sectors_instance_generation(self, capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, delay, from_origin_time, vertex_ids):
+    def handle_sectors_instance_generation(self, capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, delay, from_origin_time, vertex_ids, flight_index):
 
         timed_capacities = []
 
@@ -161,6 +161,10 @@ class OptimizeFlights:
                 current_time = capacity_demand_diff_matrix.shape[1] - 1
 
             sector_times = [f"sector({vertex_id},{current_time},{capacity_demand_diff_matrix[vertex_id,current_time]})." for vertex_id in vertex_ids]
+
+            if from_origin_time > 0:
+                if additional_time < -self.timestep_granularity+self.timestep_granularity * additional_time_increase:
+                    sector_times = [f":- flight({flight_index},{current_time},{vertex_id})." for vertex_id in vertex_ids]
 
             timed_capacities += sector_times
         return timed_capacities

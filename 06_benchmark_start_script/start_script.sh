@@ -1,5 +1,10 @@
 #!/bin/bash
-PROBLEM=instances_005_005
+INSTANCE=019_019_TG1_SEED11904657
+FOLDER=20250737
+PROBLEM=${FOLDER}/instances_${INSTANCE}
 
-nohup taskset --cpu-list 2-3 ./start_benchmark_caller.py &> logs/${PROBLEM}.log &
+mkdir -p output/${FOLDER}
+mkdir -p logs/${FOLDER}
+
+nohup taskset --cpu-list 28-29 ./start_benchmark_caller.py ../05_instances/${PROBLEM} --output-dir=output/${FOLDER}/output_${INSTANCE}/ &> logs/${PROBLEM}.log &
 

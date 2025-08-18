@@ -201,10 +201,13 @@ class Main:
         #np.savetxt("00_initial_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
         original_converted_instance_matrix = converted_instance_matrix.copy()
 
+        original_max_explored_vertices = self._max_explored_vertices
         original_max_time = original_converted_instance_matrix.shape[1]
+        self.original_max_time = original_max_time
 
         if self._max_delay_per_iteration < 0:
-            self._max_delay_per_iteration = original_max_time
+            #self._max_delay_per_iteration = original_max_time
+            self._max_delay_per_iteration = 3
 
         if np.any(capacity_overload_mask, where=True):
             edge_distances = self.compute_distance_matrix()
@@ -217,7 +220,6 @@ class Main:
             time_index,bucket_index = self.first_overload(capacity_overload_mask)
 
             start_time = time.time()
-
             jobs = self.build_jobs(time_index, bucket_index, edge_distances, converted_instance_matrix, capacity_time_matrix,
                             capacity_demand_diff_matrix, additional_time_increase, fill_value, 
                             max_number_airplanes_considered_in_ASP, max_number_processors, original_max_time)
@@ -274,15 +276,20 @@ class Main:
                 if number_of_conflicts >= number_of_conflicts_prev:
                     counter_equal_solutions += 1
 
-                    if counter_equal_solutions >= 2 and counter_equal_solutions % 2 == 0:
-                        additional_time_increase += 1
+                    #if counter_equal_solutions >= 2 and counter_equal_solutions % 2 == 0:
+                    additional_time_increase += 1
+                    if self.verbosity > 1:
+                        print(f">>> INCREASED TIME TO:{additional_time_increase}")
+
+                    if counter_equal_solutions >= 7 and counter_equal_solutions % 7 == 0:
+                        self._max_explored_vertices = max(1,int(self._max_explored_vertices/2))
                         if self.verbosity > 1:
-                            print(f">>> INCREASED TIME TO:{additional_time_increase}")
-                    if counter_equal_solutions >= 11 and counter_equal_solutions % 11 == 0:
+                            print(f">>> CONSIDERED VERTICES REDUCED TO:{self._max_explored_vertices}")
+                    if counter_equal_solutions >= 22 and counter_equal_solutions % 11 == 0:
                         max_number_processors = max(1,int(max_number_processors / 2))
                         if self.verbosity > 1:
                             print(f">>> PARALLEL PROCESSORS REDUCED TO:{max_number_processors}")
-                    if counter_equal_solutions >= 23 and counter_equal_solutions % 23 == 0:
+                    elif counter_equal_solutions >= 46 and counter_equal_solutions % 23 == 0:
                         max_number_airplanes_considered_in_ASP += 1
                         if self.verbosity > 1:
                             print(f">>> INCREASED AIRPLANES CONSIDERED TO:{max_number_airplanes_considered_in_ASP}")
@@ -303,7 +310,8 @@ class Main:
                     counter_equal_solutions = 0
                     max_number_processors = 20
                     max_number_airplanes_considered_in_ASP = 2
-
+                    additional_time_increase = 0
+                    self._max_explored_vertices = original_max_explored_vertices
 
                     if max_number_processors < 20 or max_number_airplanes_considered_in_ASP > 2:
                         if self.verbosity > 1:
@@ -406,7 +414,7 @@ class Main:
             instance_matrix_cpy[rows,:] = -1
 
 
-            de_facto_max_time = self._timestep_granularity * (additional_time_increase + self._max_delay_per_iteration) + 1
+            de_facto_max_time = original_max_time + self._timestep_granularity * (additional_time_increase + self._max_delay_per_iteration) + 1
             print(f"DE-FACTO:{de_facto_max_time}::INSTANCE-SHAPE:{instance_matrix_cpy.shape[1]}")
             de_facto_max_time = max(de_facto_max_time, instance_matrix_cpy.shape[1])
 
