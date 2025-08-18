@@ -135,7 +135,7 @@ def build_command(system: Dict, paths: Dict[str, Path], python_bin: str) -> List
         "--seed=11904657",
         "--timestep-granularity=1",
         "--number-threads=1",
-        "--max-explored-vertices=3",
+        "--max-explored-vertices=6",
         "--max-delay-per-iteration=-1",
         "--max-time=24",
         "--verbosity=0",
@@ -223,7 +223,7 @@ def main() -> None:
     parser.add_argument("instance_dir", type=Path, help="Folder containing instance sub‑directories")
     parser.add_argument("--time-limit", type=int, default=1800, help="Wall‑clock limit (s)")
     parser.add_argument("--memory-limit", type=int, default=5, help="Memory limit (GiB)")
-    parser.add_argument("--python-bin", default="/home/thinklex/miniconda3/envs/potassco/bin/python3", help="Python interpreter for the solvers")
+    parser.add_argument("--python-bin", default="/home/thinklex/miniconda3/envs/potassco/bin/python", help="Python interpreter for the solvers")
     parser.add_argument("--output-dir", type=Path, default=Path("."), help="Where to place CSVs")
 
     args = parser.parse_args()
@@ -274,7 +274,7 @@ def main() -> None:
             }
 
             cmd = build_command(system, paths, args.python_bin)
-            #print(f"[{system_name}] {inst_name}: running …", flush=True)
+            print(f"[{system_name}] {inst_name}: running …", flush=True)
             rt, peak, sol = run_process(cmd, args.time_limit, mem_limit_bytes)
 
             # Store results (convert runtime to seconds with 3 decimals, memory to MiB int)
@@ -284,8 +284,6 @@ def main() -> None:
 
             if sol in (TIMEOUT_CODE, MEMOUT_CODE, ERROR_CODE):
                 first_failure[system_name] = sol
-
-            print(f"{system_name},{inst_name},{round(rt,3)},{int(peak // (1024 ** 2))},{sol}")
 
     # -----------------------------------------
     # Write CSVs
