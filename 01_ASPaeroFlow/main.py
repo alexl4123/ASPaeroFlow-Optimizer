@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+import math
 
 import numpy as np
 import pickle
@@ -89,9 +90,12 @@ class Main:
     def __init__(
         self,
         graph_path: Optional[Path],
-        capacity_path: Optional[Path],
-        instance_path: Optional[Path],
-        airport_vertices_path: Optional[Path],
+        sectors_path: Optional[Path],
+        flights_path: Optional[Path],
+        airports_path: Optional[Path],
+        airplanes_path: Optional[Path],
+        airplane_flight_path: Optional[Path],
+        navaid_sector_path: Optional[Path],
         encoding_path: Optional[Path],
         seed: Optional[int],
         number_threads: Optional[int],
@@ -102,10 +106,15 @@ class Main:
         verbosity: Optional[int],
     ) -> None:
         self._graph_path: Optional[Path] = graph_path
-        self._capacity_path: Optional[Path] = capacity_path
-        self._instance_path: Optional[Path] = instance_path
-        self._airport_vertices_path: Optional[Path] = airport_vertices_path
+        self._sectors_path: Optional[Path] = sectors_path
+        self._flights_path: Optional[Path] = flights_path
+        self._airports_path: Optional[Path] = airports_path
+        self._airplanes_path: Optional[Path] = airplanes_path
+        self._airplane_flight_path: Optional[Path] = airplane_flight_path
+        self._navaid_sector_path: Optional[Path] = navaid_sector_path
+
         self._encoding_path: Optional[Path] = encoding_path
+
         self._seed: Optional[int] = seed
         self._number_threads: Optional[int] = number_threads
         self._timestep_granularity: Optional[int] = timestep_granularity
@@ -117,8 +126,8 @@ class Main:
 
         # Data containers — populated by :pymeth:`load_data`.
         self.graph: Optional[np.ndarray] = None
-        self.capacity: Optional[np.ndarray] = None
-        self.instance: Optional[np.ndarray] = None
+        self.sectors: Optional[np.ndarray] = None
+        self.flights: Optional[np.ndarray] = None
         self.encoding: Optional[np.ndarray] = None
 
 
@@ -130,12 +139,19 @@ class Main:
         """Load all CSV files provided on the command line."""
         if self._graph_path is not None:
             self.graph = _load_csv(self._graph_path)
-        if self._capacity_path is not None:
-            self.capacity = _load_csv(self._capacity_path)
-        if self._instance_path is not None:
-            self.instance = _load_csv(self._instance_path)
-        if self._airport_vertices_path is not None:
-            self.airport_vertices = _load_csv(self._airport_vertices_path)
+        if self._sectors_path is not None:
+            self.sectors = _load_csv(self._sectors_path)
+        if self._flights_path is not None:
+            self.flights = _load_csv(self._flights_path)
+        if self._airports_path is not None:
+            self.airports = _load_csv(self._airports_path)
+        if self._airplanes_path is not None:
+            self.airplanes = _load_csv(self._airplanes_path)
+        if self._airplane_flight_path is not None:
+            self.airplane_flight = _load_csv(self._airplane_flight_path)
+        if self._navaid_sector_path is not None:
+            self.navaid_sector = _load_csv(self._navaid_sector_path)
+
         if self._encoding_path is not None:
             with open(self._encoding_path, "r") as file:
                 self.encoding = file.read()
@@ -147,9 +163,9 @@ class Main:
         if self.verbosity > 0:
             # --- Demonstration output ---------
             print("  graph   :", None if self.graph is None else self.graph.shape)
-            print("  capacity:", None if self.capacity is None else self.capacity.shape)
-            print("  instance:", None if self.instance is None else self.instance.shape)
-            print("  airport-vertices:", None if self.airport_vertices is None else self.airport_vertices.shape)
+            print("  capacity:", None if self.sectors is None else self.sectors.shape)
+            print("  instance:", None if self.flights is None else self.flights.shape)
+            print("  airport-vertices:", None if self.airports is None else self.airports.shape)
             # -----------------------------------------------------------------
 
         edges_instance = []
@@ -163,8 +179,8 @@ class Main:
 
         airport_instance = []
 
-        for row_index in range(self.airport_vertices.shape[0]):
-            row = self.airport_vertices[row_index]
+        for row_index in range(self.airports.shape[0]):
+            row = self.airports[row_index]
             airport_instance.append(f"airport({row}).")
 
         airport_instance = "\n".join(airport_instance)
@@ -174,11 +190,11 @@ class Main:
         # |R| = number of regions (self.capacity.shape[0])
 
         # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
-        converted_instance_matrix = self.instance_to_matrix(self.instance, self._max_time)
+        converted_instance_matrix = self.instance_to_matrix(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity)
         # 2.) Create demand matrix (|R|x|T|)
-        system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.capacity.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+        system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
         # 3.) Create capacity matrix (|R|x|T|)
-        capacity_time_matrix = self.capacity_time_matrix(self.capacity,system_loads.shape[1])
+        capacity_time_matrix = self.capacity_time_matrix(self.sectors,system_loads.shape[1])
         # 4.) Subtract demand from capacity (|R|x|T|)
         capacity_demand_diff_matrix = capacity_time_matrix - system_loads
         # 5.) Create capacity overload matrix
@@ -257,8 +273,8 @@ class Main:
 
             # Rerun check if there are still things to solve:
 
-            system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.capacity.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
-            capacity_time_matrix = self.capacity_time_matrix(self.capacity,system_loads.shape[1])
+            system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+            capacity_time_matrix = self.capacity_time_matrix(self.sectors,system_loads.shape[1])
             capacity_demand_diff_matrix = capacity_time_matrix - system_loads
             capacity_overload_mask = capacity_demand_diff_matrix < 0
 
@@ -295,9 +311,9 @@ class Main:
                             print(f">>> INCREASED AIRPLANES CONSIDERED TO:{max_number_airplanes_considered_in_ASP}")
 
                     converted_instance_matrix = old_converted_instance
-                    system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.capacity.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+                    system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
 
-                    capacity_time_matrix = self.capacity_time_matrix(self.capacity,system_loads.shape[1])
+                    capacity_time_matrix = self.capacity_time_matrix(self.sectors,system_loads.shape[1])
                     capacity_demand_diff_matrix = capacity_time_matrix - system_loads
                     capacity_overload_mask = capacity_demand_diff_matrix < 0
 
@@ -418,13 +434,13 @@ class Main:
             print(f"DE-FACTO:{de_facto_max_time}::INSTANCE-SHAPE:{instance_matrix_cpy.shape[1]}")
             de_facto_max_time = max(de_facto_max_time, instance_matrix_cpy.shape[1])
 
-            system_loads_tmp = OptimizeFlights.bucket_histogram(instance_matrix_cpy, self.capacity.shape[0],
+            system_loads_tmp = OptimizeFlights.bucket_histogram(instance_matrix_cpy, self.sectors.shape[0],
                                                                 de_facto_max_time, self._timestep_granularity)
             
-            capacity_time_matrix = self.capacity_time_matrix(self.capacity,de_facto_max_time)
+            capacity_time_matrix = self.capacity_time_matrix(self.sectors,de_facto_max_time)
             capacity_demand_diff_matrix_tmp = capacity_time_matrix - system_loads_tmp
 
-            jobs.append((self.encoding, self.capacity, self.graph, self.airport_vertices,
+            jobs.append((self.encoding, self.sectors, self.graph, self.airports,
                                         flights, rows, edge_distances, converted_instance_matrix, time_index,
                                         bucket_index, capacity_time_matrix, capacity_demand_diff_matrix_tmp,
                                         additional_time_increase, fill_value, self._timestep_granularity, self._seed,
@@ -578,11 +594,15 @@ class Main:
 
         return dist
 
-    def instance_to_matrix(self, inst: np.ndarray,
-                           max_time: int,
-                        *,
-                        fill_value: int = -1,
-                        compress: bool = False) -> np.ndarray:
+    def instance_to_matrix(self,
+                            flights: np.ndarray,
+                            airplane_flight: np.ndarray,
+                            navaid_sector: np.ndarray,
+                            max_time: int,
+                            time_granularity: int,
+                            *,
+                            fill_value: int = -1,
+                            compress: bool = False) -> np.ndarray:
         """
         Convert an *instance* array with shape (n, 3) into a 2-D matrix.
 
@@ -607,19 +627,50 @@ class Main:
         If `compress is True`:
             (matrix, row_labels, col_labels)
         """
-        rows = inst[:, 0].astype(int)
-        vals = inst[:, 1]
-        cols = inst[:, 2].astype(int)
 
-        out = np.full((rows.max() + 1, cols.max() + 1),
+        rows = airplane_flight[:,0].astype(int)
+
+        vals = flights[:, 1]
+        cols = flights[:, 2].astype(int)
+
+        max_time = max(cols.max(), max_time * time_granularity) + 1
+
+        out = np.full((rows.max() + 1, max_time),
                         fill_value,
                         dtype=vals.dtype)
-        out[rows, cols] = vals
+        
+        flight_ids = flights[:,0]
+        flight_ids = np.unique(flight_ids)
 
-        if out.shape[1] < max_time:
-            diff = max_time - out.shape[1]
-            extra_col = -1 * np.ones((out.shape[0], diff), dtype=int)
-            out = np.hstack((out, extra_col)) 
+        for flight_id in flight_ids:
+
+            airplane_id = (airplane_flight[airplane_flight[:,1] == flight_id])[0,0]
+
+            current_flight = flights[flights[:,0] == flight_id]
+
+            for flight_index in range(current_flight.shape[0]):
+
+                navaid = current_flight[flight_index,1]
+                time = current_flight[flight_index,2]
+                sector = (navaid_sector[navaid_sector[:,0] == navaid])[0,1]
+
+                if flight_index == 0:
+                    out[airplane_id,time] = sector
+                else:
+
+                    prev_navaid = current_flight[flight_index - 1,1]
+                    prev_time = current_flight[flight_index - 1,2]
+                    prev_sector = (navaid_sector[navaid_sector[:,0] == prev_navaid])[0,1]
+
+                    for time_index in range(1, time-prev_time + 1):
+
+                        if time_index <= math.floor((time - prev_time)/2):
+                            out[airplane_id,prev_time + time_index] = prev_sector
+
+                        else:
+                            out[airplane_id,prev_time + time_index] = sector
+
+        np.savetxt("20250819_converted_instance.csv", out, delimiter=",",fmt="%i")
 
         return out
 
@@ -693,33 +744,48 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
-        "--path-graph",
+        "--graph-path",
         type=Path,
-        default=Path("instances","edges.csv"),  
         metavar="FILE",
         help="Location of the graph CSV file.",
     )
     parser.add_argument(
-        "--path-capacity",
+        "--sectors-path",
         type=Path,
-        default=Path("instances","capacity.csv"), 
         metavar="FILE",
-        help="Location of the capacity CSV file.",
+        help="Location of the sector (capacity) CSV file.",
     )
     parser.add_argument(
-        "--path-instance",
+        "--flights-path",
         type=Path,
-        default=Path("instances","instance_100.csv"), 
         metavar="FILE",
-        help="Location of the instance CSV file.",
+        help="Location of the flights CSV file.",
     )
     parser.add_argument(
-        "--airport-vertices-path",
+        "--airports-path",
         type=Path,
-        default=Path("instances","airport_vertices.csv"), 
         metavar="FILE",
         help="Location of the airport-vertices CSV file.",
     )
+    parser.add_argument(
+        "--airplanes-path",
+        type=Path,
+        metavar="FILE",
+        help="Location of the airplanes CSV file.",
+    )
+    parser.add_argument(
+        "--airplane-flight-path",
+        type=Path,
+        metavar="FILE",
+        help="Location of the airplane-flight-assignment CSV file.",
+    )
+    parser.add_argument(
+        "--navaid-sector-path",
+        type=Path,
+        metavar="FILE",
+        help="Location of the navaids-sector assignment CSV file.",
+    )
+
     parser.add_argument(
         "--encoding-path",
         type=Path,
@@ -787,8 +853,10 @@ def main(argv: Optional[List[str]] = None) -> None:
     """Script entry‑point compatible with both `python -m` and `poetry run`."""
     args = parse_cli(argv)
 
-    app = Main(args.path_graph, args.path_capacity, args.path_instance,
-               args.airport_vertices_path, args.encoding_path,
+    app = Main(args.graph_path, args.sectors_path, args.flights_path,
+               args.airports_path, args.airplanes_path,
+               args.airplane_flight_path, args.navaid_sector_path,
+               args.encoding_path,
                args.seed,args.number_threads, args.timestep_granularity,
                args.max_explored_vertices, args.max_delay_per_iteration,
                args.max_time, args.verbosity)

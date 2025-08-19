@@ -456,6 +456,7 @@ class OptimizeFlights:
 
     @classmethod
     def bucket_histogram(cls, instance_matrix: np.ndarray,
+                        sectors: np.ndarray,
                         num_buckets: int,
                         n_times: int,
                         timestep_granularity: int,
@@ -485,46 +486,33 @@ class OptimizeFlights:
         # ------------------------------------------------------------------
         # 1.  Mask out empty cells (if any)
         # ------------------------------------------------------------------
-
         # Generate mask of values that differ from fill_value = -1
         valid_mask = instance_matrix != fill_value
+
+        bucket_histogram = np.zeros((num_buckets, n_times), dtype=int)
         if not np.any(valid_mask):                       
             # Shortcut if all cells empty
-            return np.zeros((num_buckets, n_times), dtype=int)
+            return bucket_histogram
+        
+        for flight_id in range(instance_matrix.shape[0]):
 
-        # ------------------------------------------------------------------
-        # 2.  Gather bucket IDs and their time indices
-        # ------------------------------------------------------------------
-        buckets = instance_matrix[valid_mask]                        # (K,) bucket id
-        # 
 
-        # np.nonzero --> Get indices of non-zero elements of valid_mask (non false)
-        # --> with np.nonzero(valid_mask)[1] we take the time indices
+            for time in range(instance_matrix.shape[1]):
 
-        times   = np.nonzero(valid_mask)[1]              # (K,) time index
+                if instance_matrix[flight_id, time] != fill_value:
 
-        # ------------------------------------------------------------------
-        # 3.  Vectorised scatter using `np.add.at`
-        # ------------------------------------------------------------------
-        counts = np.zeros((num_buckets, n_times), dtype=int)
+                    sector = instance_matrix[flight_id, time]
 
-        # Performs unbuffered in place operation on operand ‘a’ for elements specified by ‘indices’.
-        # ufunc.at(a, indices, b=None, /)
-        # --> Buckets and times specify the indices
-        np.add.at(counts, (buckets, times), 1)
+                    if time == 0:
+                        bucket_histogram[sector, time] += 1
+                    else:
 
-        # Performs a sliding window aggregation according to timestep-granularity
-        # To account for hour/minute/etc. computation
-        axis = 1
+                        prev_sector = instance_matrix[flight_id, time-1]
 
-        pad_width = [(0, 0)] * counts.ndim
-        pad_width[axis] = (0, timestep_granularity - 1)
-        padded = np.pad(counts, pad_width, mode="constant")
+                        if prev_sector != sector:
+                            bucket_histogram[sector, time] += 1
 
-        windows = np.lib.stride_tricks.sliding_window_view(padded,
-                                                    window_shape=timestep_granularity,
-                                                    axis=axis)
-        windows = windows.sum(axis=2)
-
-        return windows
+        np.savetxt("20250819_bucket_histogram.csv", bucket_histogram, delimiter=",",fmt="%i")
+        quit()
+        return bucket_histogram
 
