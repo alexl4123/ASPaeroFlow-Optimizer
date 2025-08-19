@@ -151,19 +151,37 @@ def sample_departure(
             return int(round(t)) * time_granularity
 
 
+
+
+
 def generate_flights(
     rng: random.Random,
     G: nx.Graph,
     airport_nodes: List[int],
     n_flights: int,
     time_granularity: int,
+    airplane_speed: int, # in kts
+    lags_per_airplane: int = 1,
 ) -> List[Tuple[int, int, int]]:
     """Return a list of tuples (Flight_ID, Position, Time)."""
+
     flights: List[Tuple[int, int, int]] = []
     added = 0
 
+    airplanes_needed = math.ceil(n_flights / lags_per_airplane)
+    
+    airplanes = []
+    for airplane_id in range(airplanes_needed):
+        airplanes.append([airplane_id,airplane_speed])
+
     # If the graph might be disconnected, be robust:
     max_trials_per_flight = 200
+
+
+    match_airplane_flight = []
+
+    current_airplane = 0
+    current_airplane_lag = 0
 
     while added < n_flights:
         f_id = added
@@ -171,11 +189,13 @@ def generate_flights(
         path = None
         src = tgt = None
 
+        
+
         # Find a valid airport pair with a path
         while trials < max_trials_per_flight and path is None:
             src, tgt = rng.sample(airport_nodes, 2)
             try:
-                path = nx.shortest_path(G, src, tgt)
+                path = nx.shortest_path(G, src, tgt, weight='weight')
             except (nx.NetworkXNoPath, nx.NodeNotFound):
                 path = None
             trials += 1
@@ -196,23 +216,62 @@ def generate_flights(
         )
 
         traj = []
+        current_time = start_slot
         for hop, vertex in enumerate(path):
-            t_slot = start_slot + hop  # one slot per edge traversal
-            if t_slot >= HIGH_H * time_granularity:
-                break  # over horizon → discard whole flight
+
+            if hop == 0:
+                # Origin
+                t_slot = current_time
+
+                if t_slot >= HIGH_H * time_granularity:
+                    break  # over horizon → discard whole flight
+
+            else:
+                # En-route/destination
+
+                prev_vertex = path[hop -1]
+                distance = G[prev_vertex][vertex]["weight"]
+
+                # CONVERT SPEED TO m/s
+                airplane_speed_kts = airplanes[current_airplane][1]
+                airplane_speed_ms = airplane_speed_kts * 0.51444
+
+                # Compute duration from prev to vertex in unit time:
+                duration_in_seconds = distance/airplane_speed_ms
+                factor_to_unit_standard = 3600.00 / float(time_granularity)
+                duration_in_unit_standards = math.ceil(duration_in_seconds / factor_to_unit_standard)
+
+                print(f"{distance}/{airplane_speed_ms} = {duration_in_seconds}")
+                print(f"{duration_in_seconds}/{factor_to_unit_standard} = {duration_in_unit_standards}")
+
+                current_time = current_time + duration_in_unit_standards
+
+                t_slot=current_time
+
+                if t_slot >= HIGH_H * time_granularity:
+                    break  # over horizon → discard whole flight
+
             traj.append((f_id, vertex, t_slot))
 
         if traj and traj[-1][1] == tgt:
             flights.extend(traj)
             added += 1
 
-    return flights
+            match_airplane_flight.append([airplanes[current_airplane][0],f_id])
+
+            current_airplane_lag += 1
+
+            if current_airplane_lag >= lags_per_airplane:
+                current_airplane += 1
 
 
-def capacity_table(G: nx.Graph, airport_nodes: Iterable[int], cap_enroute: int) -> List[Tuple[int, int]]:
+    return airplanes, flights, match_airplane_flight
+
+
+def capacity_table(sectors: Iterable[int], airport_nodes: Iterable[int], cap_enroute: int, cap_airport: int) -> List[Tuple[int, int]]:
     airports = set(airport_nodes)
     return [
-        (v, CAP_AIRPORT if v in airports else cap_enroute) for v in G.nodes()
+        (sector, cap_airport if sector in airports else cap_enroute) for sector in sectors
     ]
 
 
@@ -245,6 +304,19 @@ def load_graph_from_csv(edges_csv: Path, airports_csv: Path) -> Tuple[nx.Graph, 
         lowmap = {c.lower(): c for c in edf.columns}
         edf = edf.rename(columns={lowmap["source"]: "source", lowmap["target"]: "target"})
 
+    # Be tolerant to column names / order
+    if edf.shape[1] == 3:
+        # ALSO WEIGHT PRESENT:
+        if not {"dist_m"}.issubset({c.lower() for c in edf.columns}):
+            # Fallback: assume first two columns are source/target
+            edf.columns = [str(c).lower() for c in edf.columns]
+            if "source" not in edf.columns or "target" not in edf.columns:
+                edf = edf.rename(columns={edf.columns[2]: "dist_m"})
+        else:
+            # Normalize exact case
+            lowmap = {c.lower(): c for c in edf.columns}
+            edf = edf.rename(columns={lowmap["dist_m"]: "dist_m"})
+
     # Coerce node ids to ints where possible (fallback to str)
     def _coerce(v):
         try:
@@ -254,9 +326,10 @@ def load_graph_from_csv(edges_csv: Path, airports_csv: Path) -> Tuple[nx.Graph, 
 
     sources = edf["source"].map(_coerce)
     targets = edf["target"].map(_coerce)
+    dists = edf["dist_m"]
 
     G = nx.Graph()
-    G.add_edges_from(zip(sources, targets))
+    G.add_weighted_edges_from(zip(sources, targets, dists))
 
     # Read airports
     adf = pd.read_csv(airports_csv)
@@ -277,6 +350,28 @@ def load_graph_from_csv(edges_csv: Path, airports_csv: Path) -> Tuple[nx.Graph, 
             G.add_node(a)
 
     return G, airport_nodes
+
+
+def assign_navaids_to_sectors(G_navaids, airport_navaids):
+    # MOCKUP FOR LATER DEFINITION:
+
+    assignment = []
+    sectors = []
+    airport_sectors = []
+
+    for navaid in G_navaids.nodes():
+        assignment.append([navaid, navaid])
+
+        sectors.append(navaid)
+
+        if navaid in airport_navaids:
+            airport_sectors.append(navaid)
+
+    assignment.sort()
+    sectors.sort()
+    airport_sectors.sort()
+
+    return assignment, sectors, airport_sectors
 
 ################################################################################
 # Main driver
@@ -334,6 +429,12 @@ def main(argv: List[str] | None = None) -> None:  # noqa: D401
         default=None,
         help="Path to airports.csv (overrides --graph-dir).",
     )
+    parser.add_argument(
+        "--airplane-speed-kts",
+        type=int,
+        default=300,
+        help="Default speed of airplanes in kts (knots) - only used if weighted edges present.",
+    )
     parser.add_argument("--seed", type=int, default=RND_SEED, help="RNG seed or −1 for random.")
     args = parser.parse_args(argv)
 
@@ -342,6 +443,7 @@ def main(argv: List[str] | None = None) -> None:  # noqa: D401
     TIME_GRANULARITY = args.time_granularity
     GRID_WIDTH = args.grid_width
     GRID_HEIGHT = args.grid_height
+    AIRPLANE_SPEED = args.airplane_speed_kts
 
     # Build or load the airspace graph
     if args.edges_file or args.graph_dir:
@@ -354,7 +456,15 @@ def main(argv: List[str] | None = None) -> None:  # noqa: D401
         print(f"[i] Generated grid {grid_h}×{grid_w} with airports every {AIRPORT_STEP} nodes")
 
     # Pre-compute static tables
-    edges = list(G.edges())
+    edges = list(G.edges(data=True))
+    parsed_edges = []
+    for edge in edges:
+        if edge[0] < edge[1]:
+            parsed_edges.append([edge[0],edge[1],edge[2]["weight"]])
+        else:
+            parsed_edges.append([edge[1],edge[0],edge[2]["weight"]])
+    edges = parsed_edges
+    edges.sort()
 
     # Ensure output root exists
     output_folder = args.out
@@ -366,34 +476,42 @@ def main(argv: List[str] | None = None) -> None:  # noqa: D401
     #base_capacity = math.ceil(float(400)/((1/3) * float(TIME_GRANULARITY) + (2/3)))
     #base_capacity = math.ceil(float(400)/float(TIME_GRANULARITY))
     #base_capacity = math.ceil(float(400)/((1/6) * float(TIME_GRANULARITY) + (5/6)))
-    base_capacity = math.ceil(float(400)/((1/3) * float(TIME_GRANULARITY) + (2/3)))
+    base_capacity = math.ceil(float(400))
     base_aircraft_number = float(30000)
 
-    if GRID_WIDTH and GRID_HEIGHT:
-        capacity_factor_graph = _compute_graph_capacity_factor(GRID_WIDTH, GRID_HEIGHT)
+    if args.edges_file or args.graph_dir:
+        capacity_factor_graph = 0.5
     else:
-        capacity_factor_graph = 1
-
-    #capacity_factor = float(400) * float(11) * float(11) / (float(30000) * float(GRID_WIDTH) * float(GRID_HEIGHT))
+        capacity_factor_graph = _compute_graph_capacity_factor(GRID_WIDTH, GRID_HEIGHT)
 
     for n in args.flights:
         folder = output_folder / f"{n:07d}"
         folder.mkdir(exist_ok=True)
 
-        capacity_factor_flights = float(n) / base_aircraft_number
-        cap_enroute = math.ceil(base_capacity * capacity_factor_flights * capacity_factor_graph) + 2
-        capacities = capacity_table(G, airport_nodes,cap_enroute)
+        if args.edges_file or args.graph_dir:
+            capacity_factor_flights = 0.5
+        else:
+            capacity_factor_flights = float(n) / base_aircraft_number
+
+        navaid_assignment, sectors, airport_sectors = assign_navaids_to_sectors(G, airport_nodes)
+
+        cap_enroute_per_hour = math.ceil(base_capacity * capacity_factor_flights * capacity_factor_graph)
+        capacities = capacity_table(sectors, airport_sectors, cap_enroute_per_hour, CAP_AIRPORT)
 
         capacities.sort()
 
+
         # 1. Flight trajectories
-        flights = generate_flights(rng, G, airport_nodes, n, TIME_GRANULARITY)
+        airplanes, flights, match_airplanes_flights = generate_flights(rng, G, airport_nodes, n, TIME_GRANULARITY, AIRPLANE_SPEED)
 
         # 2. Persist CSVs --------------------------------------------------------
-        write_csv(flights, ["Flight_ID", "Position", "Time"], folder / "instance.csv")
-        write_csv(capacities, ["Sector_ID", "Capacity"], folder / "capacity.csv")
-        write_csv(edges, ["source", "target"], folder / "edges.csv")
-        write_csv([(v,) for v in airport_nodes], ["Airport_Vertex"], folder / "airports.csv")
+        write_csv(flights, ["Flight_ID", "Position", "Time"], folder / "flights.csv")
+        write_csv(airplanes, ["Airplane_ID", "Speed_kts"], folder / "airplanes.csv")
+        write_csv([(v,) for v in airport_sectors], ["Airport_Vertex"], folder / "airports.csv")
+        write_csv(capacities, ["Sector_ID", "Capacity"], folder / "sectors.csv")
+        write_csv(edges, ["source", "target", "dist_m"], folder / "graph_edges.csv")
+        write_csv(match_airplanes_flights, ["Airplane_ID", "Flight_ID"], folder / "airplane_flight_assignment.csv")
+        write_csv(navaid_assignment, ["Navaid_ID", "Sector_ID"], folder / "navaid_sector_assignment.csv")
 
         print(f"[✓] Generated {n:>7,} flights → {folder}")
 
@@ -403,11 +521,5 @@ if __name__ == "__main__":  # pragma: no cover
         main()
     except KeyboardInterrupt:
         sys.exit(130)
-
-
-
-
-
-
 
 
