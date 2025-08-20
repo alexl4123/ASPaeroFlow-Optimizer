@@ -11,10 +11,12 @@ class OptimizeFlights:
 
     def __init__(self,
                  encoding, capacity, graph, airport_vertices,
-                 flights_affected, rows, edge_distances,
+                 flights_affected, rows, 
                  converted_instance_matrix, time_index, bucket_index,
                  capacity_time_matrix, capacity_demand_diff_matrix,
                  additional_time_increase,
+                 networkx_graph,
+                 planned_arrival_times,
                  fill_value = -1,
                  timestep_granularity = 1,
                  seed = 11904657,
@@ -27,10 +29,11 @@ class OptimizeFlights:
         self.capacity = capacity
         self.graph = graph
         self.airport_vertices = airport_vertices
+        self.networkx_graph = networkx_graph
+        self.planned_arrival_times = planned_arrival_times
 
         self.flights_affected = flights_affected
         self.rows = rows
-        self.edge_distances = edge_distances
         self.converted_instance_matrix = converted_instance_matrix
         self.time_index = time_index
         self.bucket_index = bucket_index
@@ -49,7 +52,6 @@ class OptimizeFlights:
 
         flights_affected = self.flights_affected
         rows = self.rows
-        edge_distances = self.edge_distances
         converted_instance_matrix = self.converted_instance_matrix
         time_index = self.time_index
         bucket_index = self.bucket_index
@@ -57,6 +59,7 @@ class OptimizeFlights:
         capacity_demand_diff_matrix = self.capacity_demand_diff_matrix
         additional_time_increase = self.additional_time_increase
         fill_value = self.fill_value
+        networkx_graph = self.networkx_graph
 
         max_vertices_cutoff_value = self.max_vertices_cutoff_value
         max_delay_parameter = self.max_delay_parameter
@@ -64,6 +67,11 @@ class OptimizeFlights:
         flight_sector_instances = []
         flight_times_instance = []
         timed_capacities = []
+
+        sector_instance = []
+        graph_instance = []
+
+        time_window = 10
 
         considered_vertices = set()
 
@@ -74,6 +82,10 @@ class OptimizeFlights:
 
             flight_affected = flights_affected[flight_affected_index,:]
 
+            actual_arrival_time = (flight_affected >= 0).argmax() - 1
+            planned_arrival_time = self.planned_arrival_times[flight_index]
+            delay = actual_arrival_time - planned_arrival_time
+
             start_time = np.flatnonzero(flight_affected != fill_value)
             start_time = start_time[0] if start_time.size else 0
             
@@ -82,18 +94,22 @@ class OptimizeFlights:
             origin = flight_affected[0]
             destination = flight_affected[-1]
 
-            delay, flight_sector_instances, flight_times_instance = self.handle_delay(flight_sector_instances, flight_times_instance, flight_index, flight_affected, origin)
+            flight_sector_instances, flight_times_instance, sector_instance, graph_instance = self.create_filed_flight_plan_atoms(flight_sector_instances, flight_times_instance, sector_instance, graph_instance, flight_index, flight_affected, capacity_demand_diff_matrix, start_time)
 
-            origin_to_destination_time = edge_distances[origin,destination]
+            origin_to_destination_time = planned_arrival_time - start_time
+
+            # TODO
+            # GET n SHORTEST ROUTES:
+            quit()
 
             considered_vertices = considered_vertices.union(set([origin,destination]))
 
-            timed_capacities += self.handle_origin_sector_instance_generation(capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, origin, delay)
+            timed_capacities += self.handle_origin_sector_instance_generation(capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, origin, delay, time_window)
 
 
             prev_vertices = None
 
-            for from_origin_time in range(1,origin_to_destination_time + 1): # The +1 means that we add the destination airport
+            for from_origin_time in range(1,origin_to_destination_time + 1):
                 
                 time_to_destination_diff = origin_to_destination_time - from_origin_time
 
@@ -115,7 +131,7 @@ class OptimizeFlights:
 
                 flight_sector_instances += vertex_instances
 
-                timed_capacities += self.handle_sectors_instance_generation(capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, delay, from_origin_time, vertex_ids, flight_index)
+                timed_capacities += self.handle_sectors_instance_generation(capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, delay, from_origin_time, vertex_ids, flight_index, time_window)
 
         flight_sector_instances = "\n".join(flight_sector_instances)
         flight_times_instance = "\n".join(flight_times_instance)
@@ -140,17 +156,14 @@ class OptimizeFlights:
         model = solver.solve()
 
         end_time = time.time()
-        #print(f">> Elapsed solving time: {end_time - start_time}")
-        #print(model.get_flights())
-        #quit()
 
         return model
 
-    def handle_sectors_instance_generation(self, capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, delay, from_origin_time, vertex_ids, flight_index):
+    def handle_sectors_instance_generation(self, capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, delay, from_origin_time, vertex_ids, flight_index, time_window):
 
         timed_capacities = []
 
-        for additional_time in range(-self.timestep_granularity,self.timestep_granularity * (additional_time_increase + max_delay_parameter + delay)):
+        for additional_time in range(-time_window,time_window * (additional_time_increase + max_delay_parameter + delay)):
             current_time = start_time + additional_time + from_origin_time
             if current_time >= self.timestep_granularity * (self.original_max_time + additional_time_increase):
                 break
@@ -169,11 +182,11 @@ class OptimizeFlights:
             timed_capacities += sector_times
         return timed_capacities
 
-    def handle_origin_sector_instance_generation(self, capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, origin, delay):
+    def handle_origin_sector_instance_generation(self, capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, origin, delay, time_window):
 
         timed_capacities = []
 
-        for additional_time in range(-self.timestep_granularity,self.timestep_granularity * (additional_time_increase + max_delay_parameter + delay)):
+        for additional_time in range(-time_window,time_window * (additional_time_increase + max_delay_parameter) + delay):
             current_time = start_time + additional_time
             if current_time >= self.timestep_granularity * (self.original_max_time + additional_time_increase):
                 break
@@ -191,19 +204,23 @@ class OptimizeFlights:
 
         return timed_capacities
 
-    def handle_delay(self, flight_sector_instances, flight_times_instance, flight_index, flight_affected, origin):
-        delay = 0
+    def create_filed_flight_plan_atoms(self, flight_sector_instance, flight_times_instance, sector_instance, graph_instance, flight_index, flight_affected, capacity_demand_diff_matrix, start_time, default_filed_path_number = 0):
 
-        for tmp_index in range(1,flight_affected.shape[0]):
-            flight_sector_instances.append(f"sectorFlight({flight_index},{delay},{origin}).")
-            flight_times_instance.append(f"flightTime({flight_index},{delay}).")
+        for tmp_index in range(0,flight_affected.shape[0]):
 
-            if flight_affected[tmp_index] != origin:
-                break
-            
-            delay += 1
+            current_sector = flight_affected[tmp_index]
 
-        return delay, flight_sector_instances, flight_times_instance
+            flight_sector_instance.append(f"sectorFlight({flight_index},{tmp_index},{current_sector},{default_filed_path_number}).")
+            flight_times_instance.append(f"flightTime({flight_index},{tmp_index}).")
+
+            current_time = tmp_index + start_time
+
+            sector_instance.append(f"sector({current_sector},{current_time},{capacity_demand_diff_matrix[current_sector,current_time]}).")
+
+            if tmp_index > 0:
+                graph_instance.append(f"sectorEdge({flight_affected[tmp_index - 1]},{current_sector}).")
+
+        return flight_sector_instance, flight_times_instance, sector_instance, graph_instance
     
     def restrict_max_vertices(self, prev_vertices, vertex_ids, matching_vertices, flight_affected, from_origin_time, delay):
 
@@ -489,7 +506,7 @@ class OptimizeFlights:
                             bucket_histogram[sector, time] += 1
 
         # ONLY FOR DEBUGGING:
-        # np.savetxt("20250819_bucket_histogram.csv", bucket_histogram, delimiter=",",fmt="%i")
+        np.savetxt("20250819_bucket_histogram_hist.csv", bucket_histogram, delimiter=",",fmt="%i")
 
         return bucket_histogram
     
@@ -538,6 +555,8 @@ class OptimizeFlights:
         # Scatter-add 1 for each (sector, time) event
         hist = np.zeros((num_buckets, T), dtype=np.int32)
         np.add.at(hist, (sectors_at_entries, time_idx), 1)
+
+        #np.savetxt("20250819_histogram.csv", hist, delimiter=",",fmt="%i")
 
         return hist
 

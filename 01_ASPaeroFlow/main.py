@@ -15,6 +15,7 @@ import argparse
 import sys
 import time
 import math
+import networkx as nx
 
 import numpy as np
 import pickle
@@ -156,7 +157,7 @@ class Main:
             with open(self._encoding_path, "r") as file:
                 self.encoding = file.read()
 
-    def run(self) -> None:  # noqa: D401 – imperatives okay here
+    def run(self) -> None:  
         """Run the application"""
         self.load_data()
 
@@ -168,14 +169,12 @@ class Main:
             print("  airport-vertices:", None if self.airports is None else self.airports.shape)
             # -----------------------------------------------------------------
 
-        edges_instance = []
 
-        for row_index in range(self.graph.shape[0]):
-            row = self.graph[row_index,: ]
-            edges_instance.append(f"sectorEdge({row[0]},{row[1]}).")
-
-        edges_instance = "\n".join(edges_instance)
-
+        sources = self.graph[:,0]
+        targets = self.graph[:,1]
+        dists = self.graph[:,2]
+        self.networkx_navpoint_graph = nx.Graph()
+        self.networkx_navpoint_graph.add_weighted_edges_from(zip(sources, targets, dists))
 
         airport_instance = []
 
@@ -186,19 +185,13 @@ class Main:
         airport_instance = "\n".join(airport_instance)
 
         # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
-        converted_instance_matrix = self.instance_to_matrix(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity)
+        converted_instance_matrix, planned_arrival_times = self.instance_to_matrix(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity)
 
         # 2.) Create demand matrix (|R|x|T|)
-        #system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
-        system_loads = OptimizeFlights.bucket_histogram_numpy(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+        system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
 
         # 3.) Create capacity matrix (|R|x|T|)
-        #capacity_time_matrix = self.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity)
-        capacity_time_matrix = self.capacity_time_matrix_numpy(self.sectors, system_loads.shape[1], self._timestep_granularity)
-
-
-        quit()
-
+        capacity_time_matrix = self.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity)
 
         # 4.) Subtract demand from capacity (|R|x|T|)
         capacity_demand_diff_matrix = capacity_time_matrix - system_loads
@@ -232,7 +225,6 @@ class Main:
             self._max_delay_per_iteration = 3
 
         if np.any(capacity_overload_mask, where=True):
-            edge_distances = self.compute_distance_matrix()
             old_converted_instance = converted_instance_matrix.copy()
 
         while np.any(capacity_overload_mask, where=True):
@@ -242,13 +234,17 @@ class Main:
             time_index,bucket_index = self.first_overload(capacity_overload_mask)
 
             start_time = time.time()
-            jobs = self.build_jobs(time_index, bucket_index, edge_distances, converted_instance_matrix, capacity_time_matrix,
+            jobs = self.build_jobs(time_index, bucket_index, converted_instance_matrix, capacity_time_matrix,
                             capacity_demand_diff_matrix, additional_time_increase, fill_value, 
-                            max_number_airplanes_considered_in_ASP, max_number_processors, original_max_time)
+                            max_number_airplanes_considered_in_ASP, max_number_processors, original_max_time,
+                            self.networkx_navpoint_graph, planned_arrival_times)
             
             from joblib import Parallel, delayed
             models = Parallel(n_jobs=max_number_processors, backend="loky")(
                         delayed(_run)(job) for job in jobs)
+
+            # TODO -> DO NOT QUIT LATER ON 
+            quit()
 
             end_time = time.time()
             if self.verbosity > 1:
@@ -263,9 +259,7 @@ class Main:
 
 
             for model in models:
-
                 for flight in model.get_flights():
-                    #print(flight)
 
                     flight_id = int(str(flight.arguments[0]))
                     time_id = int(str(flight.arguments[1]))
@@ -372,7 +366,6 @@ class Main:
 
     def build_jobs(self, time_index: int,
                 bucket_index: int,
-                edge_distances: np.ndarray,
                 converted_instance_matrix: np.ndarray,
                 capacity_time_matrix: np.ndarray,
                 capacity_demand_diff_matrix: np.ndarray,
@@ -381,6 +374,8 @@ class Main:
                 max_rows: int,
                 n_proc: int,
                 original_max_time: int,
+                networkx_graph,
+                planned_arrival_times,
                 ):
         """
         Split the candidate rows into *n_proc* equally‑sized chunks
@@ -435,21 +430,24 @@ class Main:
             instance_matrix_cpy = converted_instance_matrix.copy()
             instance_matrix_cpy[rows,:] = -1
 
+            #de_facto_max_time = original_max_time + self._timestep_granularity * (additional_time_increase + self._max_delay_per_iteration)
+            #de_facto_max_time = max(de_facto_max_time, instance_matrix_cpy.shape[1])
+            # FOR NOW:
+            de_facto_max_time = instance_matrix_cpy.shape[1]
 
-            de_facto_max_time = original_max_time + self._timestep_granularity * (additional_time_increase + self._max_delay_per_iteration) + 1
-            print(f"DE-FACTO:{de_facto_max_time}::INSTANCE-SHAPE:{instance_matrix_cpy.shape[1]}")
-            de_facto_max_time = max(de_facto_max_time, instance_matrix_cpy.shape[1])
+            system_loads_tmp = OptimizeFlights.bucket_histogram(instance_matrix_cpy, self.sectors, self.sectors.shape[0], de_facto_max_time, self._timestep_granularity)
 
-            system_loads_tmp = OptimizeFlights.bucket_histogram(instance_matrix_cpy, self.sectors.shape[0],
-                                                                de_facto_max_time, self._timestep_granularity)
+            #system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
             
-            capacity_time_matrix = self.capacity_time_matrix(self.sectors,de_facto_max_time)
+            capacity_time_matrix = self.capacity_time_matrix(self.sectors,de_facto_max_time, self._timestep_granularity)
             capacity_demand_diff_matrix_tmp = capacity_time_matrix - system_loads_tmp
 
             jobs.append((self.encoding, self.sectors, self.graph, self.airports,
-                                        flights, rows, edge_distances, converted_instance_matrix, time_index,
+                                        flights, rows, converted_instance_matrix, time_index,
                                         bucket_index, capacity_time_matrix, capacity_demand_diff_matrix_tmp,
-                                        additional_time_increase, fill_value, self._timestep_granularity, self._seed,
+                                        additional_time_increase,
+                                        networkx_graph, planned_arrival_times,
+                                        fill_value, self._timestep_granularity, self._seed,
                                         self._max_explored_vertices, self._max_delay_per_iteration, 
                                         original_max_time)
             )
@@ -648,6 +646,8 @@ class Main:
         flight_ids = flights[:,0]
         flight_ids = np.unique(flight_ids)
 
+        planned_arrival_times = {}
+
         for flight_id in flight_ids:
 
             airplane_id = (airplane_flight[airplane_flight[:,1] == flight_id])[0,0]
@@ -676,9 +676,14 @@ class Main:
                         else:
                             out[airplane_id,prev_time + time_index] = sector
 
-        np.savetxt("20250819_converted_instance.csv", out, delimiter=",",fmt="%i")
+                if flight_index not in planned_arrival_times:
+                    planned_arrival_times[flight_index] = time
+                elif planned_arrival_times[flight_index] < time:
+                    planned_arrival_times[flight_index] = time
 
-        return out
+        #np.savetxt("20250819_converted_instance.csv", out, delimiter=",",fmt="%i")
+
+        return out, planned_arrival_times
 
    
     def first_overload(self, mask: np.ndarray):
@@ -790,6 +795,9 @@ class Main:
         reps = n_times // T
 
         cap_mat = np.tile(template, (1, reps))   # (N, n_times)
+
+        #np.savetxt("20250819_cap_mat.csv", cap_mat, delimiter=",",fmt="%i")
+
         return cap_mat
 
  
