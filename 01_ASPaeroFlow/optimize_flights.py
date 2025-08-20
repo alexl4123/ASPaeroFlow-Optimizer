@@ -455,38 +455,14 @@ class OptimizeFlights:
         #np.savetxt("test_loads.csv", capacity_demand_diff_matrix,delimiter=",",fmt="%i")
 
     @classmethod
-    def bucket_histogram(cls, instance_matrix: np.ndarray,
+    def bucket_histogram_reference(cls, instance_matrix: np.ndarray,
                         sectors: np.ndarray,
                         num_buckets: int,
                         n_times: int,
                         timestep_granularity: int,
                         *,
                         fill_value: int = -1) -> np.ndarray:
-        """
-        Count how many elements occupy each *bucket* at each *time step*.
 
-        Parameters
-        ----------
-        instance_matrix
-            2-D array produced by `instance_to_matrix`  
-            shape = (num_elements, num_time_steps)
-        num_buckets
-            Equals `self.capacity.shape[0]`
-        fill_value
-            The placeholder used for “no assignment” (default −1)
-
-        Returns
-        -------
-        counts : np.ndarray
-            shape = (num_buckets, num_time_steps)  
-            `counts[bucket, t]` is the occupancy of *bucket* at time *t*.
-        """
-        #n_elems, n_times = instance_matrix.shape
-
-        # ------------------------------------------------------------------
-        # 1.  Mask out empty cells (if any)
-        # ------------------------------------------------------------------
-        # Generate mask of values that differ from fill_value = -1
         valid_mask = instance_matrix != fill_value
 
         bucket_histogram = np.zeros((num_buckets, n_times), dtype=int)
@@ -512,7 +488,57 @@ class OptimizeFlights:
                         if prev_sector != sector:
                             bucket_histogram[sector, time] += 1
 
-        np.savetxt("20250819_bucket_histogram.csv", bucket_histogram, delimiter=",",fmt="%i")
-        quit()
+        # ONLY FOR DEBUGGING:
+        # np.savetxt("20250819_bucket_histogram.csv", bucket_histogram, delimiter=",",fmt="%i")
+
         return bucket_histogram
+    
+    @classmethod
+    def bucket_histogram(cls, instance_matrix: np.ndarray,
+                         sectors: np.ndarray,                # unused, kept for signature compat
+                         num_buckets: int,
+                         n_times: int,
+                         timestep_granularity: int,          # unused, kept for signature compat
+                         *,
+                         fill_value: int = -1) -> np.ndarray:
+
+        inst = np.asarray(instance_matrix)
+        if inst.ndim != 2:
+            raise ValueError("instance_matrix must be 2D (flights x time)")
+        F, T = inst.shape
+        if T != n_times:
+            raise ValueError(f"n_times ({n_times}) != instance_matrix.shape[1] ({T})")
+
+        # Early exit if everything is fill_value
+        valid = inst != fill_value
+        if not valid.any():
+            return np.zeros((num_buckets, T), dtype=np.int32)
+
+        # Mark entries (new sector occurrences) at each time:
+        # - t = 0: any valid value
+        # - t > 0: valid and changed vs previous time
+        change = np.zeros_like(valid, dtype=bool)
+        change[:, 0] = valid[:, 0]
+        if T > 1:
+            change[:, 1:] = valid[:, 1:] & (inst[:, 1:] != inst[:, :-1])
+
+        # Gather (sector_id, time_idx) pairs where an entry happens
+        sectors_at_entries = inst[change]
+        time_idx = np.nonzero(change)[1]  # column indices where change==True
+
+        # Optional safety: ensure sector ids are in [0, num_buckets)
+        if sectors_at_entries.size:
+            mn = int(sectors_at_entries.min())
+            mx = int(sectors_at_entries.max())
+            if mn < 0 or mx >= num_buckets:
+                raise ValueError(
+                    f"sector id(s) out of range [0, {num_buckets}): found min={mn}, max={mx}"
+                )
+
+        # Scatter-add 1 for each (sector, time) event
+        hist = np.zeros((num_buckets, T), dtype=np.int32)
+        np.add.at(hist, (sectors_at_entries, time_idx), 1)
+
+        return hist
+
 

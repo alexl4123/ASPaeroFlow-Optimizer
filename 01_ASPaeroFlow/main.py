@@ -185,20 +185,26 @@ class Main:
 
         airport_instance = "\n".join(airport_instance)
 
-        # |T| = 24 (1h-simulation), or 24*4 (15 minute simulation)
-        # |F| = number of flights
-        # |R| = number of regions (self.capacity.shape[0])
-
         # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
         converted_instance_matrix = self.instance_to_matrix(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity)
+
         # 2.) Create demand matrix (|R|x|T|)
-        system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+        #system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+        system_loads = OptimizeFlights.bucket_histogram_numpy(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+
         # 3.) Create capacity matrix (|R|x|T|)
-        capacity_time_matrix = self.capacity_time_matrix(self.sectors,system_loads.shape[1])
+        #capacity_time_matrix = self.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity)
+        capacity_time_matrix = self.capacity_time_matrix_numpy(self.sectors, system_loads.shape[1], self._timestep_granularity)
+
+
+        quit()
+
+
         # 4.) Subtract demand from capacity (|R|x|T|)
         capacity_demand_diff_matrix = capacity_time_matrix - system_loads
         # 5.) Create capacity overload matrix
         capacity_overload_mask = capacity_demand_diff_matrix < 0
+
 
         #number_of_conflicts = capacity_overload_mask.sum()
         number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
@@ -633,7 +639,7 @@ class Main:
         vals = flights[:, 1]
         cols = flights[:, 2].astype(int)
 
-        max_time = max(cols.max(), max_time * time_granularity) + 1
+        max_time = max(cols.max(), (max_time + 1) * time_granularity)
 
         out = np.full((rows.max() + 1, max_time),
                         fill_value,
@@ -697,40 +703,95 @@ class Main:
 
         return (t, b)                  # (time, bucket)
 
-    def capacity_time_matrix(self, cap: np.ndarray,
+    def capacity_time_matrix_reference(self,
+                            cap: np.ndarray,
                             n_times: int,
-                            *,
-                            sort_by_bucket: bool = False) -> np.ndarray:
-        """
-        Expand the per-bucket capacity vector to shape (|B|, n_times).
+                            time_granularity: int) -> np.ndarray:
 
-        Parameters
-        ----------
-        cap
-            2-column array ``[bucket_id, capacity_value]`` with shape (|B|, 2).
-        n_times
-            Number of time steps (usually ``counts.shape[1]``).
-        sort_by_bucket
-            If *True* (default) the rows are first sorted by *bucket_id*
-            so that row *i* corresponds to bucket *i* (0 … |B|–1).
+        template_matrix = np.zeros((cap.shape[0],time_granularity))
 
-        Returns
-        -------
-        cap_mat : np.ndarray
-            Shape (|B|, n_times) where every row is the bucket’s capacity.
-        """
-        if sort_by_bucket:
-            cap = cap[np.argsort(cap[:, 0])]
+        for cap_index in range(cap.shape[0]):
 
-        # Extract the capacity column → shape (|B|,)
-        cap_vals = cap[:, 1]
+            capacity = cap[cap_index, 1]
 
-        # Broadcast to (|B|, n_times) without an explicit loop
-        cap_mat = np.broadcast_to(cap_vals[:, None], (cap_vals.size, n_times))
-        # If you *need* a writable array, uncomment the next line
-        # cap_mat = cap_mat.copy()
+            per_timestep_capacity = math.floor(capacity / time_granularity)
+
+            template_matrix[cap_index,:] = template_matrix[cap_index,:] + per_timestep_capacity
+
+            # rem_cap < time_granularity per construction
+            rem_cap = capacity - (per_timestep_capacity * time_granularity)
+            step_size = math.floor(time_granularity / rem_cap)
+
+            for time_index in range(0, time_granularity, step_size):
+                
+                template_matrix[cap_index, time_index] += 1
+                rem_cap -= 1
+
+                if rem_cap <= 0:
+                    break
+
+        # template_matrix: shape (N, T)
+        reps = n_times // template_matrix.shape[1]  # requires n_times % T == 0
+        if n_times % template_matrix.shape[1] != 0:
+            raise ValueError("n_times must be a multiple of template_matrix.shape[1]")
+
+        cap_mat = np.tile(template_matrix, (1, reps))  # shape (N, MAX-T)
+
+
+        # DEBUG ONLY:
+        # np.savetxt("20250819_cap_mat.csv", cap_mat, delimiter=",",fmt="%i")
 
         return cap_mat
+    
+
+    def capacity_time_matrix(self,
+                            cap: np.ndarray,
+                            n_times: int,
+                            time_granularity: int) -> np.ndarray:
+        """
+        cap: shape (N, >=2), capacity in column 1
+        returns: (N, n_times)
+        """
+        N = cap.shape[0]
+        T = int(time_granularity)
+
+        # Integer math: base fill + remainder
+        capacity = np.asarray(cap[:, 1], dtype=np.int64)
+        base = capacity // T                 # per-slot baseline
+        rem  = capacity %  T                 # how many +1 to sprinkle
+
+        # Start with the baseline replicated across T columns
+        # (broadcast then copy to get a writeable array)
+        template = np.broadcast_to(base[:, None], (N, T)).astype(np.int32, copy=True)
+
+        # Fast remainder placement: for each row i, add +1 at
+        # columns: step[i] * np.arange(rem[i]), where step = floor(T/rem)
+        max_r = int(rem.max())
+        if max_r > 0:
+            # step is irrelevant where rem==0, but we still fill an array (won't be used)
+            step = np.empty_like(rem, dtype=np.int64)
+            # Avoid division-by-zero; values where rem==0 are ignored by mask below
+            np.floor_divide(T, rem, out=step, where=rem > 0)
+
+            J = np.arange(max_r, dtype=np.int64)                  # 0..max(rem)-1
+            mask = J[None, :] < rem[:, None]                      # N x max_r (True only for first rem[i])
+            rows2d = np.broadcast_to(np.arange(N)[:, None], (N, max_r))
+            cols2d = step[:, None] * J[None, :]
+
+            r_idx = rows2d[mask]
+            c_idx = cols2d[mask]
+
+            # Scatter-add the remainders
+            np.add.at(template, (r_idx, c_idx), 1)
+
+        # Repeat the base block to cover n_times
+        if n_times % T != 0:
+            raise ValueError("n_times must be a multiple of time_granularity")
+        reps = n_times // T
+
+        cap_mat = np.tile(template, (1, reps))   # (N, n_times)
+        return cap_mat
+
  
 # ---------------------------------------------------------------------------
 # CLI utilities
