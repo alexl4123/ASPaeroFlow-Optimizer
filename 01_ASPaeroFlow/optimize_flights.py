@@ -24,6 +24,7 @@ class OptimizeFlights:
                  airplanes,
                  flights,
                  navaid_sector,
+                 navaid_sector_lookup,
                  fill_value = -1,
                  timestep_granularity = 1,
                  seed = 11904657,
@@ -42,6 +43,7 @@ class OptimizeFlights:
         self.flights = flights
         self.navaid_sector = navaid_sector
         self.airplanes = airplanes
+        self.navaid_sector_lookup = navaid_sector_lookup
 
         self.flights_affected = flights_affected
         self.rows = rows
@@ -114,7 +116,7 @@ class OptimizeFlights:
             # THIS IS INCLUDED IN THE SHORTEST PATH:
             #flight_sector_instances, flight_times_instance, sector_instance, graph_instance = self.create_filed_flight_plan_atoms(flight_sector_instances, flight_times_instance, sector_instance, graph_instance, flight_index, flight_affected, capacity_demand_diff_matrix, start_time)
 
-            paths = self.k_diverse_near_shortest_paths(networkx_graph.copy(), origin, destination, k=k, eps=0.1, jaccard_max=0.6,
+            paths = self.k_diverse_near_shortest_paths(networkx_graph, origin, destination, k=k, eps=0.1, jaccard_max=0.6,
                                                penalty_scale=0.1, max_tries=50, weight_key="weight")
             
             airplane_id = (self.airplane_flight[self.airplane_flight[:,1] == flight_index])[0,0]
@@ -131,7 +133,7 @@ class OptimizeFlights:
 
                 navpoint_trajectory = self.get_flight_navpoint_trajectory(flights_affected, networkx_graph, flight_index, start_time, airplane_speed_kts, path, timestep_granularity)
 
-                for delay in range(additional_time_increase,time_window + additional_time_increase):
+                for delay in range(additional_time_increase * time_window,time_window * (additional_time_increase + 1)):
 
                     flight_time = 0
                     current_time = original_start_time
@@ -140,7 +142,8 @@ class OptimizeFlights:
 
                         navaid = navpoint_trajectory[flight_hop_index][1]
                         time = navpoint_trajectory[flight_hop_index][2]
-                        sector = (self.navaid_sector[self.navaid_sector[:,0] == navaid])[0,1]
+                        #sector = (self.navaid_sector[self.navaid_sector[:,0] == navaid])[0,1]
+                        sector = self.navaid_sector_lookup[navaid]
 
 
                         graph_instance[f"sectorEdge({sector},{sector})."] = True
@@ -160,7 +163,8 @@ class OptimizeFlights:
 
                             prev_navaid = navpoint_trajectory[flight_hop_index-1][1]
                             prev_time = navpoint_trajectory[flight_hop_index-1][2]
-                            prev_sector = (self.navaid_sector[self.navaid_sector[:,0] == prev_navaid])[0,1]
+                            #prev_sector = (self.navaid_sector[self.navaid_sector[:,0] == prev_navaid])[0,1]
+                            prev_sector = self.navaid_sector_lookup[prev_navaid]
 
                             graph_instance[f"sectorEdge({prev_sector},{sector})."] = True
 
@@ -265,14 +269,17 @@ class OptimizeFlights:
         G, s, t, k=5, eps=0.10, jaccard_max=0.6,
         penalty_scale=0.5, max_tries=200, weight_key="weight"
     ):
+        
+        s_t_length, _ = nx.bidirectional_dijkstra(G, s, t, weight=weight_key)
+
+        allowed = (1.0 + eps) * s_t_length
+
         # 1) shortest length & prune to a small corridor: ds[u]+dt[u] ≤ (1+eps)*L0
-        ds = nx.single_source_dijkstra_path_length(G, s, weight=weight_key)
-        if t not in ds:
-            return []
-        dt = nx.single_source_dijkstra_path_length(G, t, weight=weight_key)
-        L0 = ds[t]
-        allowed = (1.0 + eps) * L0
+        ds = nx.single_source_dijkstra_path_length(G, s, weight=weight_key, cutoff=allowed)
+        dt = nx.single_source_dijkstra_path_length(G, t, weight=weight_key, cutoff=allowed)
+
         keep = {u for u in G if u in ds and u in dt and ds[u] + dt[u] <= allowed}
+
         H = G.subgraph(keep).copy()
 
         # Edge-penalties (undirected key)

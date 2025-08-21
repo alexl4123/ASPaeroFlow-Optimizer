@@ -184,8 +184,13 @@ class Main:
 
         airport_instance = "\n".join(airport_instance)
 
+        navaid_sector_lookup = {}
+        for row_index in range(self.navaid_sector.shape[0]):
+            navaid_sector_lookup[self.navaid_sector[row_index,0]] = self.navaid_sector[row_index, 1]
+
+
         # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
-        converted_instance_matrix, planned_arrival_times = self.instance_to_matrix(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity)
+        converted_instance_matrix, planned_arrival_times = self.instance_to_matrix(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity, navaid_sector_lookup)
 
         # 2.) Create demand matrix (|R|x|T|)
         system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
@@ -197,7 +202,6 @@ class Main:
         capacity_demand_diff_matrix = capacity_time_matrix - system_loads
         # 5.) Create capacity overload matrix
         capacity_overload_mask = capacity_demand_diff_matrix < 0
-
 
         #number_of_conflicts = capacity_overload_mask.sum()
         number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
@@ -236,8 +240,8 @@ class Main:
             last_idx = int(idxs[-1]) if idxs.size else -1     
             safety_factor = self._timestep_granularity * 2
 
-            if last_idx + self._max_delay_per_iteration + additional_time_increase + safety_factor  > converted_instance_matrix.shape[1]:
-                diff = last_idx + self._max_delay_per_iteration + additional_time_increase + safety_factor - converted_instance_matrix.shape[1]
+            if last_idx + self._max_delay_per_iteration * (additional_time_increase + 1) + safety_factor  > converted_instance_matrix.shape[1]:
+                diff = last_idx + self._max_delay_per_iteration * (additional_time_increase + 1) + safety_factor - converted_instance_matrix.shape[1]
                 in_units = math.ceil(diff / self._timestep_granularity)
                 extra_col = -1 * np.ones((converted_instance_matrix.shape[0], in_units * self._timestep_granularity), dtype=int)
                 converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
@@ -256,11 +260,14 @@ class Main:
             jobs = self.build_jobs(time_index, bucket_index, converted_instance_matrix, capacity_time_matrix,
                             capacity_demand_diff_matrix, additional_time_increase, fill_value, 
                             max_number_airplanes_considered_in_ASP, max_number_processors, original_max_time,
-                            self.networkx_navpoint_graph, planned_arrival_times, self.airplane_flight, self.navaid_sector, self.airplanes)
+                            self.networkx_navpoint_graph, planned_arrival_times, self.airplane_flight, self.navaid_sector,
+                            self.airplanes, navaid_sector_lookup)
             
-            from joblib import Parallel, delayed
-            models = Parallel(n_jobs=max_number_processors, backend="loky")(
-                        delayed(_run)(job) for job in jobs)
+            #from joblib import Parallel, delayed
+            #models = Parallel(n_jobs=max_number_processors, backend="loky")(
+            #            delayed(_run)(job) for job in jobs)
+            
+            models = [_run(job) for job in jobs]
 
             end_time = time.time()
             if self.verbosity > 1:
@@ -322,9 +329,9 @@ class Main:
                             print(f">>> INCREASED AIRPLANES CONSIDERED TO:{max_number_airplanes_considered_in_ASP}")
 
                     converted_instance_matrix = old_converted_instance
-                    system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
 
-                    capacity_time_matrix = self.capacity_time_matrix(self.sectors,system_loads.shape[1])
+                    system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+                    capacity_time_matrix = self.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity)
                     capacity_demand_diff_matrix = capacity_time_matrix - system_loads
                     capacity_overload_mask = capacity_demand_diff_matrix < 0
 
@@ -372,7 +379,7 @@ class Main:
             print(f"Maximum single-flight delay: {max_delay}")
 
         print(total_delay)
-        np.savetxt("20250821_final_matrix.csv", converted_instance_matrix, delimiter=",", fmt="%i") 
+        #np.savetxt("20250821_final_matrix.csv", converted_instance_matrix, delimiter=",", fmt="%i") 
 
 
     def build_jobs(self, time_index: int,
@@ -389,7 +396,8 @@ class Main:
                 planned_arrival_times,
                 airplane_flight,
                 navaid_sector,
-                airplanes
+                airplanes,
+                navaid_sector_lookup,
                 ):
         """
         Split the candidate rows into *n_proc* equally‑sized chunks
@@ -460,7 +468,8 @@ class Main:
                                         bucket_index, capacity_time_matrix, capacity_demand_diff_matrix_tmp,
                                         additional_time_increase,
                                         networkx_graph, planned_arrival_times,
-                                        airplane_flight, airplanes, flights, navaid_sector, 
+                                        airplane_flight, airplanes, flights,
+                                        navaid_sector, navaid_sector_lookup,
                                         fill_value, self._timestep_granularity, self._seed,
                                         self._max_explored_vertices, self._max_delay_per_iteration, 
                                         original_max_time)
@@ -618,6 +627,7 @@ class Main:
                             navaid_sector: np.ndarray,
                             max_time: int,
                             time_granularity: int,
+                            navaid_sector_lookup,
                             *,
                             fill_value: int = -1,
                             compress: bool = False) -> np.ndarray:
@@ -672,7 +682,8 @@ class Main:
 
                 navaid = current_flight[flight_hop_index,1]
                 time = current_flight[flight_hop_index,2]
-                sector = (navaid_sector[navaid_sector[:,0] == navaid])[0,1]
+                #sector = (navaid_sector[navaid_sector[:,0] == navaid])[0,1]
+                sector = navaid_sector_lookup[navaid]
 
                 if flight_hop_index == 0:
                     out[airplane_id,time] = sector
