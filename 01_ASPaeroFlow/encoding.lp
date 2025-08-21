@@ -12,87 +12,46 @@
 % airport(<LOCATION>)
 
 sectorEdge(X,Y) :- sectorEdge(Y,X).
-sectorEdge(X,X) :- airport(X).
-
-% PRELIMINARIES:
-% GET ALL TIME STEPS:
-time(T) :- flightPlan(_,T,_).
-time(T) :- sector(_,T,_).
-
-flightPlanMaxTime(TMAX) :- TMAX = #max{T:flightPlan(_,T,_);T:sector(_,T,_)}.
-effectiveLastTime(T+TMAX) :- flightPlanMaxTime(TMAX), additionalTime(T).
-time(T+1) :- time(T), effectiveLastTime(TMAX), T < TMAX.
+%sectorEdge(X,X) :- airport(X).
 
 % GET ALL FLIGHT IDS:
+
 flightID(ID) :- flightPlan(ID,_,_).
 
-% MORE TIME:
-%maxTimeOriginal(T) :- T = #max{T':flightPlan(_,T',_)}.
-%time(T+1) :- time(T), maxTimeOriginal(TMAX), T <= 3*TMAX.
-
 % NORMAL FLIGHT:
-flight(ID,T,X) :- flightPlan(ID,T,X), not reroute(ID).
+%flight(ID,T,X) :- flightPlan(ID,T,X), not reroute(ID).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%% WE ENFORCE THE OPTIMAL MODEL %%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%%%%%%%%%%%%%%%%%%%%%% XAI %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % LIMIT SECTOR CAPACITY (soft constraint for XAI):
 
-timeStepGranularities(0..TGRAN-1) :- timestepGranularity(TGRAN).
+overload(X,T,LOAD-C) :- sector(X,T,C), #count{ID:flight(ID,T,X),flight(ID,T-1,X2), X!=X2} = LOAD, LOAD > C.
 
-%overload(X,T,LOAD-C) :- sector(X,T,C), time(T), #count{ID:flight(ID,T',X),time(T'),timestepGranularity(TGRAN),T'>=T,T'<TGRAN+T} = LOAD, LOAD > C.
-overload(X,T,LOAD-C) :- sector(X,T,C), time(T), #count{ID:flight(ID,T',X),T' = T + TG, timeStepGranularities(TG)} = LOAD, LOAD > C.
-% OLD TIMESTEP GRANULARITY 1:
-%overload(X,T,LOAD-C) :- sector(X,T,C), time(T), #count{ID:flight(ID,T,X)} = LOAD, LOAD > C.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 % REROUTE - YES/NO:
-{reroute(ID)} :- flightPlan(ID,_,_).
-1{flight(ID,T+T',X):sectorFlight(ID,T',X)}1 :- reroute(ID), flightTime(ID,T'), actualDepartureTime(ID, T).
-% DELAY ONLY:
-%flight(ID,T + T_DIFF,X) :- reroute(ID), actualDepartureTime(ID, T), flightPlan(ID,T_ORIG,X), plannedDepartureTime(ID,T_ORIG_START), T_ORIG - T_ORIG_START = T_DIFF.
+%{reroute(ID)} :- flightPlan(ID,_,_).
+
+reroute(ID) :- flightPlan(ID,_,_).
+
+1{path(ID,P):paths(ID,P)}1 :- reroute(ID).
+
+flight(ID,T + T',X) :- reroute(ID), path(ID,P), actualDepartureTime(ID, T), sectorFlight(ID,T',X,P).
+
 
 % FLIGHT MUST OCCUR:
 flightOccurs(ID) :- flight(ID,_,_).
-:- flightID(ID), not flightOccurs(ID).
-
-% ----------------- ONLY FOR REROUTED PLANES --------------------
-% NO FLIGHT BEFORE PLANNED START TIME:
-plannedDepartureTime(ID,T) :- reroute(ID), T = #min{T':flightPlan(ID,T',_)}.
-:- reroute(ID), flight(ID,T,_), plannedDepartureTime(ID,T'), T < T'.
-
-% FLIGHT STARTS AT ORIGIN:
-plannedOrigin(ID,X) :- reroute(ID),plannedDepartureTime(ID,T),flightPlan(ID,T,X).
-flight(ID,T,X) :- reroute(ID), flightPlan(ID,T,X), plannedOrigin(ID,X).
-flight(ID,T,X) :- reroute(ID), time(T), plannedDepartureTime(ID,T'), actualDepartureTime(ID,T''), T >= T', T <= T'', plannedOrigin(ID,X).
-
-% FLIGHT ENDS AT DESTINATION:
-plannedDestination(ID,X) :- reroute(ID), T=#max{T':flightPlan(ID,T',_)}, flightPlan(ID,T,X).
-actualArrivalTime(ID,T) :- flightID(ID), T = #max{T':flight(ID,T',_)}.
-:- reroute(ID), actualArrivalTime(ID,T), flight(ID,T,X), plannedDestination(ID,X'), X != X'.
-
-% NO FLIGHT AFTER DESTINATION REACHED:
-actualDestiantionFirstReachedTime(ID,T) :- reroute(ID), plannedDestination(ID,X), T = #min{T':flight(ID,T',X)}.
-:- reroute(ID), flight(ID,T,_), actualDestiantionFirstReachedTime(ID,T'), T > T'.
+%:- flightID(ID), not flightOccurs(ID).
 
 % MUST BE PATH:
-:- flight(ID,T,X), flight(ID,T+1,X'), not sectorEdge(X,X').
-
-% NEVER TWICE AT SAME LOCATION (EXCEPT AIRPORTS):
-:- flight(ID,T,X), flight(ID,T',X), T != T', not airport(X).
-
-% NO GAPS:
-1{actualDepartureTime(ID,T):time(T), T >= TP}1 :- plannedDepartureTime(ID,TP).
-:- time(T), actualDepartureTime(ID,T'), T > T', actualArrivalTime(ID,T''), T < T'', not flight(ID,T,_).
-%:- time(T), plannedDepartureTime(ID,T'), T > T', actualArrivalTime(ID,T''), T < T'', not flight(ID,T,_).
-
+%:- flight(ID,T,X), flight(ID,T+1,X'), not sectorEdge(X,X').
 
 % ------------- OPTIMIZATION ----------------
-plannedArrivalTime(ID,T) :- flightID(ID), T = #max{T':flightPlan(ID,T',_)}.
-arrivalDelay(ID,Y-T) :- plannedArrivalTime(ID,T), actualArrivalTime(ID,Y).
+arrivalDelay(ID,Y-T) :- path(ID,P), plannedArrivalTime(ID,T), actualArrivalTime(ID,Y,P).
 
 % ------------------------------------------------------------------------------
 % PRIMARY WEAK CONSTRAINT:
@@ -100,7 +59,7 @@ arrivalDelay(ID,Y-T) :- plannedArrivalTime(ID,T), actualArrivalTime(ID,Y).
 % SECONDARY WEAK CONSTRAINT:
 :~ arrivalDelay(ID,DIFF). [DIFF@1,ID]
 
-#show flight/3.
+%#show flight/3.
 %#show reroute/1.
 %#show actualArrivalTime/2.
 %#show plannedArrivalTime/2.
@@ -108,3 +67,4 @@ arrivalDelay(ID,Y-T) :- plannedArrivalTime(ID,T), actualArrivalTime(ID,Y).
 #show overload/3.
 %#show arrivalDelay/2.
 %#show time/1.
+#show path/2.

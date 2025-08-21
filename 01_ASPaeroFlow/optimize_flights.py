@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import time
+import math
 
 import numpy as np
+import networkx as nx
+from itertools import islice
 
 from solver import Solver, Model
 
@@ -17,6 +20,10 @@ class OptimizeFlights:
                  additional_time_increase,
                  networkx_graph,
                  planned_arrival_times,
+                 airplane_flight,
+                 airplanes,
+                 flights,
+                 navaid_sector,
                  fill_value = -1,
                  timestep_granularity = 1,
                  seed = 11904657,
@@ -31,6 +38,10 @@ class OptimizeFlights:
         self.airport_vertices = airport_vertices
         self.networkx_graph = networkx_graph
         self.planned_arrival_times = planned_arrival_times
+        self.airplane_flight = airplane_flight
+        self.flights = flights
+        self.navaid_sector = navaid_sector
+        self.airplanes = airplanes
 
         self.flights_affected = flights_affected
         self.rows = rows
@@ -50,6 +61,7 @@ class OptimizeFlights:
  
     def start(self):
 
+        timestep_granularity = self.timestep_granularity
         flights_affected = self.flights_affected
         rows = self.rows
         converted_instance_matrix = self.converted_instance_matrix
@@ -66,15 +78,17 @@ class OptimizeFlights:
 
         flight_sector_instances = []
         flight_times_instance = []
-        timed_capacities = []
 
-        sector_instance = []
-        graph_instance = []
+        sector_instance = {}
+        graph_instance = {}
+        path_fact_instances = []
+        planned_departure_time_instance = []
+        actual_departure_time_instance = []
+        planned_arrival_time_instance = []
+        actual_arrival_time_instance = []
 
-        time_window = 10
-
-        considered_vertices = set()
-
+        time_window = max_delay_parameter
+        k = max_vertices_cutoff_value
 
         for flight_affected_index in range(flights_affected.shape[0]):
 
@@ -82,82 +96,226 @@ class OptimizeFlights:
 
             flight_affected = flights_affected[flight_affected_index,:]
 
-            actual_arrival_time = (flight_affected >= 0).argmax() - 1
-            planned_arrival_time = self.planned_arrival_times[flight_index]
-            delay = actual_arrival_time - planned_arrival_time
+            #actual_arrival_time = (flight_affected >= 0).argmax() - 1
+            actual_arrival_time = np.flatnonzero(flight_affected >= 0)[-1] 
 
-            start_time = np.flatnonzero(flight_affected != fill_value)
-            start_time = start_time[0] if start_time.size else 0
+            planned_arrival_time = self.planned_arrival_times[flight_index]
+            actual_delay = actual_arrival_time - planned_arrival_time
+
+            original_start_time = np.flatnonzero(flight_affected != fill_value)
+            original_start_time = original_start_time[0] if original_start_time.size else 0
+            start_time = original_start_time + actual_delay
             
             flight_affected = flight_affected[flight_affected != fill_value]
 
             origin = flight_affected[0]
             destination = flight_affected[-1]
 
-            flight_sector_instances, flight_times_instance, sector_instance, graph_instance = self.create_filed_flight_plan_atoms(flight_sector_instances, flight_times_instance, sector_instance, graph_instance, flight_index, flight_affected, capacity_demand_diff_matrix, start_time)
+            # THIS IS INCLUDED IN THE SHORTEST PATH:
+            #flight_sector_instances, flight_times_instance, sector_instance, graph_instance = self.create_filed_flight_plan_atoms(flight_sector_instances, flight_times_instance, sector_instance, graph_instance, flight_index, flight_affected, capacity_demand_diff_matrix, start_time)
 
-            origin_to_destination_time = planned_arrival_time - start_time
+            paths = self.k_diverse_near_shortest_paths(networkx_graph.copy(), origin, destination, k=k, eps=0.1, jaccard_max=0.6,
+                                               penalty_scale=0.1, max_tries=50, weight_key="weight")
+            
+            airplane_id = (self.airplane_flight[self.airplane_flight[:,1] == flight_index])[0,0]
+            airplane_speed_kts = self.airplanes[airplane_id,1]
+            current_flight = self.flights[self.flights[:,0] == flight_index]
 
-            # TODO
-            # GET n SHORTEST ROUTES:
-            quit()
+            path_number = 0
 
-            considered_vertices = considered_vertices.union(set([origin,destination]))
+            planned_departure_time_instance.append(f"plannedDepartureTime({airplane_id},{original_start_time}).")
+            actual_departure_time_instance.append(f"actualDepartureTime({airplane_id},{start_time}).")
+            planned_arrival_time_instance.append(f"plannedArrivalTime({airplane_id},{planned_arrival_time}).")
 
-            timed_capacities += self.handle_origin_sector_instance_generation(capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, origin, delay, time_window)
+            for path in paths:
+
+                navpoint_trajectory = self.get_flight_navpoint_trajectory(flights_affected, networkx_graph, flight_index, start_time, airplane_speed_kts, path, timestep_granularity)
+
+                for delay in range(additional_time_increase,time_window + additional_time_increase):
+
+                    flight_time = 0
+                    current_time = original_start_time
+
+                    for flight_hop_index in range(len(navpoint_trajectory)):
+
+                        navaid = navpoint_trajectory[flight_hop_index][1]
+                        time = navpoint_trajectory[flight_hop_index][2]
+                        sector = (self.navaid_sector[self.navaid_sector[:,0] == navaid])[0,1]
 
 
-            prev_vertices = None
+                        graph_instance[f"sectorEdge({sector},{sector})."] = True
 
-            for from_origin_time in range(1,origin_to_destination_time + 1):
-                
-                time_to_destination_diff = origin_to_destination_time - from_origin_time
+                        if flight_hop_index == 0:
 
-                origin_vertices = edge_distances[origin,:] == from_origin_time
-                destination_vertices = edge_distances[destination,:] == time_to_destination_diff
+                            for _ in range(actual_delay + delay + 1):
 
-                matching_vertices = origin_vertices & destination_vertices
+                                flight_sector_instances.append(f"sectorFlight({flight_index},{flight_time},{sector},{path_number}).")
+                                flight_times_instance.append(f"flightTime({flight_index},{flight_time}).")
+                                sector_instance[f"sector({sector},{current_time},{capacity_demand_diff_matrix[sector,current_time]})."] = True
 
-                vertex_ids = np.where(matching_vertices)[0]
-                vertex_ids = self.restrict_max_vertices(prev_vertices, vertex_ids, matching_vertices, flight_affected, from_origin_time, delay)
+                                flight_time += 1
+                                current_time += 1
 
-                prev_vertices = list(vertex_ids)
+                        else:
 
-                vertex_instances = [f"sectorFlight({flight_index},{from_origin_time + delay},{vertex_id})." for vertex_id in vertex_ids]
+                            prev_navaid = navpoint_trajectory[flight_hop_index-1][1]
+                            prev_time = navpoint_trajectory[flight_hop_index-1][2]
+                            prev_sector = (self.navaid_sector[self.navaid_sector[:,0] == prev_navaid])[0,1]
 
-                considered_vertices = considered_vertices.union(set(vertex_ids))
+                            graph_instance[f"sectorEdge({prev_sector},{sector})."] = True
 
-                flight_times_instance.append(f"flightTime({flight_index},{from_origin_time + delay}).")
+                            for time_index in range(1, time-prev_time + 1):
+                                
+                                flight_times_instance.append(f"flightTime({flight_index},{flight_time}).")
 
-                flight_sector_instances += vertex_instances
+                                if time_index <= math.floor((time - prev_time)/2):
 
-                timed_capacities += self.handle_sectors_instance_generation(capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, delay, from_origin_time, vertex_ids, flight_index, time_window)
+                                    flight_sector_instances.append(f"sectorFlight({flight_index},{flight_time},{prev_sector},{path_number}).")
+                                    sector_instance[f"sector({prev_sector},{current_time},{capacity_demand_diff_matrix[prev_sector,current_time]})."] = True
+
+                                else:
+
+                                    flight_sector_instances.append(f"sectorFlight({flight_index},{flight_time},{sector},{path_number}).")
+                                    sector_instance[f"sector({sector},{current_time},{capacity_demand_diff_matrix[sector,current_time]})."] = True
+
+                                current_time += 1
+                                flight_time += 1
+
+                    actual_arrival_time_instance.append(f"actualArrivalTime({airplane_id},{current_time - 1},{path_number}).")
+
+                    # path_numbers = #PATHS * #DELAYS
+                    path_number += 1
+
+            path_fact_instances.append(f"paths({airplane_id},0..{path_number - 1}).")
 
         flight_sector_instances = "\n".join(flight_sector_instances)
         flight_times_instance = "\n".join(flight_times_instance)
+        sector_instance = "\n".join(sector_instance.keys())
+
+        path_fact_instances = "\n".join(path_fact_instances)
 
         flight_plan_instance = self.flight_plan_strings(rows, flights_affected)
         flight_plan_instance = "\n".join(flight_plan_instance)
 
-        edges_instance, airport_instance, timed_capacities = self.not_used_airports_removal_from_instance(fill_value, flights_affected, timed_capacities, capacity_demand_diff_matrix, considered_vertices, self.graph)
-        timed_capacities_instance = '\n'.join(timed_capacities)
+        graph_instance = "\n".join(graph_instance.keys())
 
-        time_instance = f"additionalTime({additional_time_increase})."
-        timestep_granularity_instance = f"timestepGranularity({self.timestep_granularity})."
-        instance = edges_instance + "\n" + timed_capacities_instance + "\n" + airport_instance + "\n" + time_instance + "\n" + flight_plan_instance + "\n" + flight_sector_instances + "\n" + flight_times_instance + "\n" + timestep_granularity_instance
+        planned_departure_time_instance = "\n".join(planned_departure_time_instance)
+        actual_departure_time_instance = "\n".join(actual_departure_time_instance)
+        planned_arrival_time_instance = "\n".join(planned_arrival_time_instance)
+        actual_arrival_time_instance = "\n".join(actual_arrival_time_instance)
 
-        open("test_instance_4.lp","w").write(instance)
+        instance = f"""
+{graph_instance}
+{flight_plan_instance}
+{flight_sector_instances}
+{sector_instance}
+{path_fact_instances}
+{planned_departure_time_instance}
+{actual_departure_time_instance}
+{planned_arrival_time_instance}
+{actual_arrival_time_instance}
+        """
+        #open("test_instance_4.lp","w").write(instance)
 
         encoding = self.encoding
-
-        start_time = time.time()
 
         solver: Model = Solver(encoding, instance)
         model = solver.solve()
 
-        end_time = time.time()
-
         return model
+
+    def get_flight_navpoint_trajectory(self, flights_affected, networkx_graph, flight_index, start_time, airplane_speed_kts, path, timestep_granularity):
+
+        traj = []
+        current_time = start_time
+        for hop, vertex in enumerate(path):
+            if hop == 0:
+                # Origin
+                t_slot = current_time
+
+                if t_slot >= flights_affected.shape[1]:
+                    raise Exception("In optimize_flights max time exceeded current allowed time.")
+
+            else:
+                # En-route/destination
+                prev_vertex = path[hop -1]
+                distance = networkx_graph[prev_vertex][vertex]["weight"]
+
+                # CONVERT SPEED TO m/s
+                airplane_speed_ms = airplane_speed_kts * 0.51444
+
+                # Compute duration from prev to vertex in unit time:
+                duration_in_seconds = distance/airplane_speed_ms
+                factor_to_unit_standard = 3600.00 / float(timestep_granularity)
+                duration_in_unit_standards = math.ceil(duration_in_seconds / factor_to_unit_standard)
+
+                current_time = current_time + duration_in_unit_standards
+
+                t_slot=current_time
+
+                if t_slot >= flights_affected.shape[1]:
+                    raise Exception("In optimize_flights max time exceeded current allowed time.")
+
+            traj.append((flight_index, vertex, t_slot))
+
+        return traj
+    
+    def k_diverse_near_shortest_paths(
+        self,
+        G, s, t, k=5, eps=0.10, jaccard_max=0.6,
+        penalty_scale=0.5, max_tries=200, weight_key="weight"
+    ):
+        # 1) shortest length & prune to a small corridor: ds[u]+dt[u] ≤ (1+eps)*L0
+        ds = nx.single_source_dijkstra_path_length(G, s, weight=weight_key)
+        if t not in ds:
+            return []
+        dt = nx.single_source_dijkstra_path_length(G, t, weight=weight_key)
+        L0 = ds[t]
+        allowed = (1.0 + eps) * L0
+        keep = {u for u in G if u in ds and u in dt and ds[u] + dt[u] <= allowed}
+        H = G.subgraph(keep).copy()
+
+        # Edge-penalties (undirected key)
+        def ekey(u, v):
+            return (u, v) if u <= v else (v, u)
+        penalties = {}
+
+        # Penalized weight function
+        def w(u, v, d):
+            base = d.get(weight_key, 1.0)
+            pen = penalties.get(ekey(u, v), 0.0)
+            return base + pen
+
+        paths, edge_sets, tries = [], [], 0
+        while len(paths) < k and tries < max_tries:
+            tries += 1
+            try:
+                p = nx.shortest_path(H, s, t, weight=w)
+            except nx.NetworkXNoPath:
+                break
+
+            # Evaluate real (unpenalized) length
+            L = nx.path_weight(G, p, weight=weight_key)
+            if L > allowed:
+                break  # can’t find more within slack
+
+            # Edge-set and diversity check (Jaccard on edges)
+            E = {ekey(u, v) for u, v in zip(p, p[1:])}
+            similar = any(len(E & Es) / len(E | Es) > jaccard_max for Es in edge_sets)
+
+            # Always penalize current path to push the next one away
+            avg_edge = L / max(1, len(E))
+            for e in E:
+                penalties[e] = penalties.get(e, 0.0) + penalty_scale * avg_edge
+
+            if similar:
+                continue  # reject, keep searching
+
+            paths.append(p)
+            edge_sets.append(E)
+
+        return paths
+
 
     def handle_sectors_instance_generation(self, capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, delay, from_origin_time, vertex_ids, flight_index, time_window):
 
@@ -219,6 +377,9 @@ class OptimizeFlights:
 
             if tmp_index > 0:
                 graph_instance.append(f"sectorEdge({flight_affected[tmp_index - 1]},{current_sector}).")
+            else:
+                graph_instance.append(f"sectorEdge({current_sector},{current_sector}).")
+
 
         return flight_sector_instance, flight_times_instance, sector_instance, graph_instance
     
@@ -506,7 +667,7 @@ class OptimizeFlights:
                             bucket_histogram[sector, time] += 1
 
         # ONLY FOR DEBUGGING:
-        np.savetxt("20250819_bucket_histogram_hist.csv", bucket_histogram, delimiter=",",fmt="%i")
+        #np.savetxt("20250819_bucket_histogram_hist.csv", bucket_histogram, delimiter=",",fmt="%i")
 
         return bucket_histogram
     
