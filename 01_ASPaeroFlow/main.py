@@ -27,6 +27,7 @@ from typing import Any, Final, List, Optional
 
 from solver import Solver, Model
 
+from joblib import Parallel, delayed
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import shortest_path
     
@@ -190,7 +191,11 @@ class Main:
 
 
         # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
-        converted_instance_matrix, planned_arrival_times = self.instance_to_matrix(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity, navaid_sector_lookup)
+        converted_instance_matrix, planned_arrival_times = self.instance_to_matrix_vectorized(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity, navaid_sector_lookup)
+        #converted_instance_matrix, planned_arrival_times = self.instance_to_matrix(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity, navaid_sector_lookup)
+
+        #np.testing.assert_array_equal(converted_instance_matrix, converted_instance_matrix_2)
+        #quit()
 
         # 2.) Create demand matrix (|R|x|T|)
         system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
@@ -254,20 +259,38 @@ class Main:
                 # 5.) Create capacity overload matrix
                 capacity_overload_mask = capacity_demand_diff_matrix < 0
 
-            time_index,bucket_index = self.first_overload(capacity_overload_mask)
+            #time_index,bucket_index = self.first_overload(capacity_overload_mask)
+
+            time_bucket_tuples = self.first_overloads(capacity_overload_mask, k=max_number_processors)
 
             start_time = time.time()
-            jobs = self.build_jobs(time_index, bucket_index, converted_instance_matrix, capacity_time_matrix,
-                            capacity_demand_diff_matrix, additional_time_increase, fill_value, 
-                            max_number_airplanes_considered_in_ASP, max_number_processors, original_max_time,
-                            self.networkx_navpoint_graph, planned_arrival_times, self.airplane_flight, self.navaid_sector,
-                            self.airplanes, navaid_sector_lookup)
+
+            all_jobs = []
+            all_candidates = {}
+            for time_index, bucket_index in time_bucket_tuples:
+
+                jobs, candidates = self.build_jobs(time_index, bucket_index, converted_instance_matrix, capacity_time_matrix,
+                                capacity_demand_diff_matrix, additional_time_increase, fill_value, 
+                                max_number_airplanes_considered_in_ASP, max_number_processors, original_max_time,
+                                self.networkx_navpoint_graph, planned_arrival_times, self.airplane_flight, self.navaid_sector,
+                                self.airplanes, navaid_sector_lookup)
+                
+                all_new = True
+                for candidate in candidates:
+                    if candidate in all_candidates:
+                        all_new = False
+                    else:
+                        all_candidates[candidate] = True
+
+                if all_new:
+                    all_jobs += jobs
+
+            jobs = all_jobs
+
+            models = Parallel(n_jobs=max_number_processors, backend="loky")(
+                        delayed(_run)(job) for job in jobs)
             
-            #from joblib import Parallel, delayed
-            #models = Parallel(n_jobs=max_number_processors, backend="loky")(
-            #            delayed(_run)(job) for job in jobs)
-            
-            models = [_run(job) for job in jobs]
+            #models = [_run(job) for job in jobs]
 
             end_time = time.time()
             if self.verbosity > 1:
@@ -276,6 +299,11 @@ class Main:
             #models = self.run_parallel(jobs)
 
             for model in models:
+
+                for reroute in model.get_reroutes():
+                    flight_id = int(str(reroute.arguments[0]))
+                    converted_instance_matrix[flight_id, :] = -1
+
                 for flight in model.get_flights():
 
                     flight_id = int(str(flight.arguments[0]))
@@ -285,6 +313,7 @@ class Main:
                     if time_id >= converted_instance_matrix.shape[1]:
                         extra_col = -1 * np.ones((converted_instance_matrix.shape[0], 1), dtype=int)
                         converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+                    
 
                     converted_instance_matrix[flight_id, time_id] = position_id
 
@@ -403,25 +432,23 @@ class Main:
         Split the candidate rows into *n_proc* equally‑sized chunks
         (≤ max_rows each) and build one ``OptimizeFlights`` instance per chunk.
         """
-        seed = self._seed
-        timestep_granularity = self._timestep_granularity
 
-        rng = np.random.default_rng(seed)
+        if time_index > 0:
+            bucket_index_mask = (converted_instance_matrix[:, time_index] == bucket_index) & (converted_instance_matrix[:, time_index - 1] != bucket_index)
+        else:
+            bucket_index_mask = converted_instance_matrix[:, time_index] == bucket_index
 
-
-        # --- all rows belonging to this (time, bucket) -------------------
-        bucket_index_mask = converted_instance_matrix[:, time_index:min(time_index+timestep_granularity,converted_instance_matrix.shape[1])] == bucket_index
-        #bucket_index_mask = converted_instance_matrix[:, time_index] == bucket_index
-        bucket_index_mask = bucket_index_mask.any(axis=1)
         candidate = np.flatnonzero(bucket_index_mask)
 
-        start, stop, duration = self.flight_spans_contiguous(converted_instance_matrix, fill_value=-1)
+        #print(f"===> Trying to solve sector:{bucket_index} for time: {time_index}, with overload: {capacity_demand_diff_matrix[bucket_index, time_index]}, candidates: {len(candidate)}")
+        #bucket_index_mask = bucket_index_mask.any(axis=1)
+
+        _, _, duration = self.flight_spans_contiguous(converted_instance_matrix, fill_value=-1)
 
         candidate_duration = duration[candidate]
 
         order = np.argsort(candidate_duration, kind="stable")
         candidate_sorted = candidate[order]
-
         candidate = candidate_sorted
         #rng.shuffle(candidate)
 
@@ -432,7 +459,7 @@ class Main:
         needed   = n_proc * max_rows
         needed = min(needed, capacity_difference)
 
-        if self.verbosity > 1:
+        if self.verbosity > 2:
             print(f"---> ACTUALLY INVESTIGATED AIRPLANES: <<{needed}>>")
 
         rows_pool = candidate[:needed]
@@ -442,39 +469,35 @@ class Main:
         n_chunks = max(n_chunks, 1)
 
         jobs = []
-        for i in range(n_chunks):
-            rows = rows_pool[i*chunk_size:(i+1)*chunk_size]
 
-            # Slice flights for this chunk.  If your solver mutates it,
-            # `.copy()` keeps chunks isolated; otherwise a view is fine.
-            flights = converted_instance_matrix[rows, :]
+        chunk_index = 0
+        rows = rows_pool[chunk_index*chunk_size:(chunk_index+1)*chunk_size]
 
-            instance_matrix_cpy = converted_instance_matrix.copy()
-            instance_matrix_cpy[rows,:] = -1
+        flights = converted_instance_matrix[rows, :]
 
-            #de_facto_max_time = original_max_time + self._timestep_granularity * (additional_time_increase + self._max_delay_per_iteration)
-            #de_facto_max_time = max(de_facto_max_time, instance_matrix_cpy.shape[1])
-            # FOR NOW:
-            de_facto_max_time = instance_matrix_cpy.shape[1]
+        instance_matrix_cpy = converted_instance_matrix.copy()
+        instance_matrix_cpy[rows,:] = -1
 
-            system_loads_tmp = OptimizeFlights.bucket_histogram(instance_matrix_cpy, self.sectors, self.sectors.shape[0], de_facto_max_time, self._timestep_granularity)
-            #system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
-            
-            capacity_time_matrix = self.capacity_time_matrix(self.sectors, de_facto_max_time, self._timestep_granularity)
-            capacity_demand_diff_matrix_tmp = capacity_time_matrix - system_loads_tmp
+        de_facto_max_time = instance_matrix_cpy.shape[1]
 
-            jobs.append((self.encoding, self.sectors, self.graph, self.airports,
-                                        flights, rows, converted_instance_matrix, time_index,
-                                        bucket_index, capacity_time_matrix, capacity_demand_diff_matrix_tmp,
-                                        additional_time_increase,
-                                        networkx_graph, planned_arrival_times,
-                                        airplane_flight, airplanes, flights,
-                                        navaid_sector, navaid_sector_lookup,
-                                        fill_value, self._timestep_granularity, self._seed,
-                                        self._max_explored_vertices, self._max_delay_per_iteration, 
-                                        original_max_time)
-            )
-        return jobs
+        system_loads_tmp = OptimizeFlights.bucket_histogram(instance_matrix_cpy, self.sectors, self.sectors.shape[0], de_facto_max_time, self._timestep_granularity)
+        
+        capacity_time_matrix = self.capacity_time_matrix(self.sectors, de_facto_max_time, self._timestep_granularity)
+        capacity_demand_diff_matrix_tmp = capacity_time_matrix - system_loads_tmp
+
+        jobs.append((self.encoding, self.sectors, self.graph, self.airports,
+                                    flights, rows, converted_instance_matrix, time_index,
+                                    bucket_index, capacity_time_matrix, capacity_demand_diff_matrix_tmp,
+                                    additional_time_increase,
+                                    networkx_graph, planned_arrival_times,
+                                    airplane_flight, airplanes, flights,
+                                    navaid_sector, navaid_sector_lookup,
+                                    fill_value, self._timestep_granularity, self._seed,
+                                    self._max_explored_vertices, self._max_delay_per_iteration, 
+                                    original_max_time)
+        )
+
+        return jobs, rows_pool
     
     def flight_spans_contiguous(self, matrix: np.ndarray, *, fill_value: int = -1):
         """
@@ -631,30 +654,6 @@ class Main:
                             *,
                             fill_value: int = -1,
                             compress: bool = False) -> np.ndarray:
-        """
-        Convert an *instance* array with shape (n, 3) into a 2-D matrix.
-
-        Parameters
-        ----------
-        inst
-            Each row is (row_id, value, col_id).
-        fill_value
-            Placeholder put where no entry is defined (defaults to -1).
-        compress
-            • False  ➜ allocate rows = max(row_id)+1, cols = max(col_id)+1  
-            (fastest, but can be large if indices are sparse).
-
-            • True   ➜ map the *unique* row/col labels to consecutive
-            indices before building the matrix.  Returns the compact
-            matrix plus the label mappings (see below).
-
-        Returns
-        -------
-        If `compress is False`:
-            2-D `np.ndarray` with dtype taken from `inst[:,1]`.
-        If `compress is True`:
-            (matrix, row_labels, col_labels)
-        """
 
         rows = airplane_flight[:,0].astype(int)
 
@@ -709,7 +708,109 @@ class Main:
         #np.savetxt("20250819_converted_instance.csv", out, delimiter=",",fmt="%i")
 
         return out, planned_arrival_times
+    
+    def instance_to_matrix_vectorized(self,
+                                    flights: np.ndarray,
+                                    airplane_flight: np.ndarray,
+                                    navaid_sector: np.ndarray,
+                                    max_time: int,
+                                    time_granularity: int,
+                                    navaid_sector_lookup,
+                                    *,
+                                    fill_value: int = -1,
+                                    compress: bool = False):
+        """
+        Vectorized/semi-vectorized rewrite instance_to_matrix.
+        Assumes IDs are non-negative ints (reasonably dense).
+        """
 
+        # --- ensure integer views without copies where possible
+        flights = flights.astype(np.int64, copy=False)
+        airplane_flight = airplane_flight.astype(np.int64, copy=False)
+
+        # --- build flight -> airplane mapping (array is fastest if IDs are dense)
+        fid_map_max = int(max(flights[:,0].max(), airplane_flight[:,1].max()))
+        flight_to_airplane = np.full(fid_map_max + 1, -1, dtype=np.int64)
+        flight_to_airplane[airplane_flight[:,1]] = airplane_flight[:,0]
+
+        # --- build navaid -> sector mapping
+        # prefer an array map (fast); fall back to fromiter if needed
+        navaids_used = flights[:,1]
+        try:
+            max_nav_id = int(max(navaids_used.max(), max(navaid_sector_lookup.keys())))
+            nav2sec = np.full(max_nav_id + 1, fill_value, dtype=np.int64)
+            for k, v in navaid_sector_lookup.items():
+                nav2sec[int(k)] = int(v)
+            sectors = nav2sec[navaids_used]
+        except Exception:
+            # works even if lookup is a dict with sparse/large keys
+            sectors = np.fromiter((int(navaid_sector_lookup[int(x)]) for x in navaids_used),
+                                dtype=np.int64, count=navaids_used.size)
+
+        # --- sort by flight, then time (stable contiguous blocks per flight)
+        order = np.lexsort((flights[:,2], flights[:,0]))
+        f_sorted = flights[order]
+        s_sorted = sectors[order]
+
+        fid = f_sorted[:,0]
+        t   = f_sorted[:,2]
+        sec = s_sorted
+
+        # --- output matrix shape (airplane_id rows, time columns)
+        n_rows = int(airplane_flight[:,0].max()) + 1
+        max_time_dim = int(max(t.max(), (max_time + 1) * time_granularity))
+        out = np.full((n_rows, max_time_dim), fill_value, dtype=sec.dtype)
+
+        # --- group boundaries per flight (contiguous in sorted array)
+        u, idx_first, counts = np.unique(fid, return_index=True, return_counts=True)
+
+        # planned arrival times = last time per group (vectorized)
+        last_idx = idx_first + counts - 1
+        planned_arrival_times = dict(zip(u.tolist(), t[last_idx].tolist()))
+
+        # --- fill per-flight via slices (no per-timestep loops)
+        # For each consecutive pair (prev_time -> next_time):
+        #   first half  -> prev_sector
+        #   second half -> next_sector
+        for g, start in enumerate(idx_first):
+            end = start + counts[g]
+
+            a_id = int(flight_to_airplane[int(u[g])])
+            if a_id < 0:
+                # flight has no airplane mapping; skip defensively
+                continue
+
+            times = t[start:end]
+            secs  = sec[start:end]
+            if times.size == 0:
+                continue
+
+            # first hop: set the exact event time
+            out[a_id, times[0]] = secs[0]
+
+            if times.size >= 2:
+                prev_times = times[:-1]
+                next_times = times[1:]
+                prev_secs  = secs[:-1]
+                next_secs  = secs[1:]
+
+                L = next_times - prev_times
+                mids = prev_times + (L // 2)
+
+                # slice-assign per segment (loop over segments; no inner time loop)
+                for i in range(prev_times.size):
+                    s0 = prev_times[i] + 1       # start (exclusive of prev_time)
+                    m1 = mids[i] + 1             # first-half end (inclusive) -> slice stop
+                    e1 = next_times[i] + 1       # segment end (inclusive) -> slice stop
+
+                    # first half [prev_time+1, mid]
+                    if m1 > s0:
+                        out[a_id, s0:m1] = prev_secs[i]
+                    # second half [mid+1, next_time]
+                    if e1 > m1:
+                        out[a_id, m1:e1] = next_secs[i]
+
+        return out, planned_arrival_times
    
     def first_overload(self, mask: np.ndarray):
         """
@@ -732,6 +833,29 @@ class Main:
         b = np.flatnonzero(mask[:, t])[0]
 
         return (t, b)                  # (time, bucket)
+        
+    def first_overloads(self, mask: np.ndarray, k: int = 10):
+        """
+        Return up to the first `k` overloads as (time, bucket) pairs,
+        ordered lexicographically by (time, bucket). If none found,
+        return None.
+
+        `mask` shape: (num_buckets, num_times)
+                    rows   → bucket IDs
+                    columns→ time steps
+        """
+        # 1) Find all time steps that have *any* overload (kept in ascending order)
+        time_candidates = np.flatnonzero(mask.any(axis=0))
+
+        results = []
+        # 2) For each time, collect buckets with overloads (already ascending)
+        for t in time_candidates:
+            buckets = np.flatnonzero(mask[:, t])
+            for b in buckets:
+                results.append((t, b))
+                if len(results) == k:
+                    return results
+        return results 
 
     def capacity_time_matrix_reference(self,
                             cap: np.ndarray,

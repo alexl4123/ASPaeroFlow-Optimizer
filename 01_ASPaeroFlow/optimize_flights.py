@@ -219,7 +219,7 @@ class OptimizeFlights:
 {planned_arrival_time_instance}
 {actual_arrival_time_instance}
         """
-        #open("test_instance_4.lp","w").write(instance)
+        #open(f"test_instance_4_{additional_time_increase}.lp","w").write(instance)
 
         encoding = self.encoding
 
