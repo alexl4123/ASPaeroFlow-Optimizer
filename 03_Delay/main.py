@@ -14,21 +14,46 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+import math
+import networkx as nx
 
 import numpy as np
+import pickle
 
 import multiprocessing as mp
 
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Final, List, Optional
 
+from solver import Solver, Model
+
+from joblib import Parallel, delayed
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import shortest_path
     
+from concurrent.futures import ProcessPoolExecutor
+from optimize_flights import OptimizeFlights
+from concurrent.futures import ProcessPoolExecutor
+
 
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
+
+def _run(job):
+    """Run parallelized job.
+
+    Parameters
+    ----------
+    job
+        Tuple of arguments for OptimizeFlights
+    """
+
+    optimizer = OptimizeFlights(*job)
+    model = optimizer.start()
+
+    return model
+
 
 def _load_csv(path: Path, *, dtype: Any = int, delimiter: str = ",") -> np.ndarray:
     """Return *path* as a NumPy array.
@@ -67,31 +92,48 @@ class Main:
     def __init__(
         self,
         graph_path: Optional[Path],
-        capacity_path: Optional[Path],
-        instance_path: Optional[Path],
-        airport_vertices_path: Optional[Path],
+        sectors_path: Optional[Path],
+        flights_path: Optional[Path],
+        airports_path: Optional[Path],
+        airplanes_path: Optional[Path],
+        airplane_flight_path: Optional[Path],
+        navaid_sector_path: Optional[Path],
         encoding_path: Optional[Path],
         seed: Optional[int],
+        number_threads: Optional[int],
         timestep_granularity: Optional[int],
+        max_explored_vertices: Optional[int],
+        max_delay_per_iteration: Optional[int],
         max_time: Optional[int],
         verbosity: Optional[int],
     ) -> None:
         self._graph_path: Optional[Path] = graph_path
-        self._capacity_path: Optional[Path] = capacity_path
-        self._instance_path: Optional[Path] = instance_path
-        self._airport_vertices_path: Optional[Path] = airport_vertices_path
-        self._encoding_path: Optional[Path] = encoding_path
-        self._seed: Optional[int] = seed
-        self._timestep_granularity: Optional[int] = timestep_granularity
-        self._verbosity: Optional[int] = verbosity
+        self._sectors_path: Optional[Path] = sectors_path
+        self._flights_path: Optional[Path] = flights_path
+        self._airports_path: Optional[Path] = airports_path
+        self._airplanes_path: Optional[Path] = airplanes_path
+        self._airplane_flight_path: Optional[Path] = airplane_flight_path
+        self._navaid_sector_path: Optional[Path] = navaid_sector_path
 
+        self._encoding_path: Optional[Path] = encoding_path
+
+        self._seed: Optional[int] = seed
+        self._number_threads: Optional[int] = number_threads
+        self._timestep_granularity: Optional[int] = timestep_granularity
         self._max_time: Optional[int] = max_time
+        self.verbosity: Optional[int] = verbosity
+
+        self._max_explored_vertices: Optional[int] = max_explored_vertices
+        self._max_delay_per_iteration: Optional[int] = max_delay_per_iteration
 
         # Data containers — populated by :pymeth:`load_data`.
         self.graph: Optional[np.ndarray] = None
-        self.capacity: Optional[np.ndarray] = None
-        self.instance: Optional[np.ndarray] = None
+        self.sectors: Optional[np.ndarray] = None
+        self.flights: Optional[np.ndarray] = None
         self.encoding: Optional[np.ndarray] = None
+
+        self.nearest_neighbors_lookup = {}
+
 
     # ---------------------------------------------------------------------
     # Public API
@@ -101,54 +143,68 @@ class Main:
         """Load all CSV files provided on the command line."""
         if self._graph_path is not None:
             self.graph = _load_csv(self._graph_path)
-        if self._capacity_path is not None:
-            self.capacity = _load_csv(self._capacity_path)
-        if self._instance_path is not None:
-            self.instance = _load_csv(self._instance_path)
-        if self._airport_vertices_path is not None:
-            self.airport_vertices = _load_csv(self._airport_vertices_path)
+        if self._sectors_path is not None:
+            self.sectors = _load_csv(self._sectors_path)
+        if self._flights_path is not None:
+            self.flights = _load_csv(self._flights_path)
+        if self._airports_path is not None:
+            self.airports = _load_csv(self._airports_path)
+        if self._airplanes_path is not None:
+            self.airplanes = _load_csv(self._airplanes_path)
+        if self._airplane_flight_path is not None:
+            self.airplane_flight = _load_csv(self._airplane_flight_path)
+        if self._navaid_sector_path is not None:
+            self.navaid_sector = _load_csv(self._navaid_sector_path)
+
         if self._encoding_path is not None:
             with open(self._encoding_path, "r") as file:
                 self.encoding = file.read()
 
-    def run(self) -> None:  # noqa: D401 – imperatives okay here
+    def run(self) -> None:  
         """Run the application"""
         self.load_data()
 
-        if self._verbosity > 0:
-            # --- Demonstration output — remove/replace in production ---------
+        if self.verbosity > 0:
+            # --- Demonstration output ---------
             print("  graph   :", None if self.graph is None else self.graph.shape)
-            print("  capacity:", None if self.capacity is None else self.capacity.shape)
-            print("  instance:", None if self.instance is None else self.instance.shape)
-            print("  airport-vertices:", None if self.airport_vertices is None else self.airport_vertices.shape)
+            print("  capacity:", None if self.sectors is None else self.sectors.shape)
+            print("  instance:", None if self.flights is None else self.flights.shape)
+            print("  airport-vertices:", None if self.airports is None else self.airports.shape)
             # -----------------------------------------------------------------
 
-        edges_instance = []
 
-        for row_index in range(self.graph.shape[0]):
-            row = self.graph[row_index,: ]
-            edges_instance.append(f"sectorEdge({row[0]},{row[1]}).")
-
-        edges_instance = "\n".join(edges_instance)
+        sources = self.graph[:,0]
+        targets = self.graph[:,1]
+        dists = self.graph[:,2]
+        self.networkx_navpoint_graph = nx.Graph()
+        self.networkx_navpoint_graph.add_weighted_edges_from(zip(sources, targets, dists))
 
         airport_instance = []
 
-        for row_index in range(self.airport_vertices.shape[0]):
-            row = self.airport_vertices[row_index]
+        for row_index in range(self.airports.shape[0]):
+            row = self.airports[row_index]
             airport_instance.append(f"airport({row}).")
 
         airport_instance = "\n".join(airport_instance)
 
-        # |T| = 24 (1h-simulation), or 24*4 (15 minute simulation)
-        # |F| = number of flights
-        # |R| = number of regions (self.capacity.shape[0])
+        navaid_sector_lookup = {}
+        for row_index in range(self.navaid_sector.shape[0]):
+            navaid_sector_lookup[self.navaid_sector[row_index,0]] = self.navaid_sector[row_index, 1]
+
 
         # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
-        converted_instance_matrix = self.instance_to_matrix(self.instance, self._max_time)
+        converted_instance_matrix, planned_arrival_times = self.instance_to_matrix_vectorized(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity, navaid_sector_lookup)
+        #converted_instance_matrix, planned_arrival_times = self.instance_to_matrix(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity, navaid_sector_lookup)
+
+        #np.testing.assert_array_equal(converted_instance_matrix, converted_instance_matrix_2)
+        #quit()
+
         # 2.) Create demand matrix (|R|x|T|)
-        system_loads = self.bucket_histogram(converted_instance_matrix, self.capacity.shape[0], self._timestep_granularity)
+        system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+
         # 3.) Create capacity matrix (|R|x|T|)
-        capacity_time_matrix = self.capacity_time_matrix(self.capacity,system_loads.shape[1])
+        capacity_time_matrix = self.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity)
+
         # 4.) Subtract demand from capacity (|R|x|T|)
         capacity_demand_diff_matrix = capacity_time_matrix - system_loads
         # 5.) Create capacity overload matrix
@@ -156,42 +212,224 @@ class Main:
 
         #number_of_conflicts = capacity_overload_mask.sum()
         number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
+        number_of_conflicts_prev = None
+
+        counter_equal_solutions = 0
+        additional_time_increase = 0
+        max_number_airplanes_considered_in_ASP = 2
 
         iteration = 0
+        fill_value = -1
+
+        max_number_processors = self._number_threads
+        seed = self._seed
 
         #np.savetxt("00_initial_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
         original_converted_instance_matrix = converted_instance_matrix.copy()
 
-        prev_number_of_conflicts = None
+        original_max_explored_vertices = self._max_explored_vertices
+        original_max_time = original_converted_instance_matrix.shape[1]
+        self.original_max_time = original_max_time
+
+        if self._max_delay_per_iteration < 0:
+            #self._max_delay_per_iteration = original_max_time
+            self._max_delay_per_iteration = 10
+
+        if np.any(capacity_overload_mask, where=True):
+            old_converted_instance = converted_instance_matrix.copy()
+            _, _, flight_durations = self.flight_spans_contiguous(converted_instance_matrix, fill_value=-1)
 
         while np.any(capacity_overload_mask, where=True):
-            if self._verbosity > 0:
+            if self.verbosity > 0:
                 print(f"<ITER:{iteration}><REMAINING ISSUES:{str(number_of_conflicts)}>")
 
-            time_index,bucket_index = self.first_overload(capacity_overload_mask)
+            cols_with_values = (converted_instance_matrix != -1).any(axis=0)           
+            idxs = np.flatnonzero(cols_with_values)            
+            last_idx = int(idxs[-1]) if idxs.size else -1     
+            safety_factor = self._timestep_granularity * 2
 
-            #start_time = time.time()
+            if last_idx + self._max_delay_per_iteration * (additional_time_increase + 1) + safety_factor  > converted_instance_matrix.shape[1]:
+                # INCREASE MATRIX SIZE (TIME) AUTOMATICALLY
+                diff = last_idx + self._max_delay_per_iteration * (additional_time_increase + 1) + safety_factor - converted_instance_matrix.shape[1]
+                in_units = math.ceil(diff / self._timestep_granularity)
+                extra_col = -1 * np.ones((converted_instance_matrix.shape[0], in_units * self._timestep_granularity), dtype=int)
+                converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+                # 2.) Create demand matrix (|R|x|T|)
+                system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+                # 3.) Create capacity matrix (|R|x|T|)
+                capacity_time_matrix = self.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity)
+                # 4.) Subtract demand from capacity (|R|x|T|)
+                capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+                # 5.) Create capacity overload matrix
+                capacity_overload_mask = capacity_demand_diff_matrix < 0
 
-            self.delay_flights(time_index, bucket_index, converted_instance_matrix, capacity_time_matrix,
-                            capacity_demand_diff_matrix, number_of_conflicts)
+            #time_index,bucket_index = self.first_overload(capacity_overload_mask)
+
+            max_number_processors = 1
+            time_bucket_tuples = self.first_overloads(capacity_overload_mask, k=max_number_processors)
+
+            start_time = time.time()
+
+            all_jobs = []
+            all_candidates = {}
+            for time_index, bucket_index in time_bucket_tuples:
+
+                #_, _, flight_durations = self.flight_spans_contiguous(converted_instance_matrix, fill_value=-1)
+                job, candidates = self.build_job(time_index, bucket_index, converted_instance_matrix, capacity_time_matrix,
+                                system_loads, capacity_demand_diff_matrix, additional_time_increase, fill_value, 
+                                max_number_airplanes_considered_in_ASP, max_number_processors, original_max_time,
+                                self.networkx_navpoint_graph, planned_arrival_times, self.airplane_flight, self.navaid_sector,
+                                self.airplanes, navaid_sector_lookup, flight_durations)
+                
+                all_new = True
+                for candidate in candidates:
+                    if candidate in all_candidates:
+                        all_new = False
+                    else:
+                        all_candidates[candidate] = True
+
+                if all_new:
+                    all_jobs.append(job)
+
+            models = Parallel(n_jobs=max_number_processors, backend="loky")(
+                        delayed(_run)(job) for job in all_jobs)
             
-            # end_time = time.time()
-            #print(f">> Elapsed solving time: {end_time - start_time}")
+            #models = [_run(job) for job in jobs]
 
-            system_loads = self.bucket_histogram(converted_instance_matrix, self.capacity.shape[0], self._timestep_granularity)
-            capacity_time_matrix = self.capacity_time_matrix(self.capacity,system_loads.shape[1])
-            capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+            end_time = time.time()
+            if self.verbosity > 1:
+                print(f">> Elapsed solving time: {end_time - start_time}")
+
+            #models = self.run_parallel(jobs)
+
+            flight_ids = []
+            all_flights = []
+            for model in models:
+                for reroute in model.get_reroutes():
+                    flight_id = int(str(reroute.arguments[0]))
+                    flight_ids.append(flight_id)
+
+                for flight in model.get_flights():
+                    all_flights.append(flight)
+
+            flight_ids = np.array(flight_ids)
+            capacity_demand_diff_matrix = self.system_loads_computation_v2(converted_instance_matrix, fill_value, flight_ids, capacity_demand_diff_matrix)
+            converted_instance_matrix[flight_ids, :] = -1
+
+            new_flight_durations = {}
+            for flight in all_flights:
+                flight_id = int(str(flight.arguments[0]))
+                time_id = int(str(flight.arguments[1]))
+                position_id = int(str(flight.arguments[2]))
+
+                #if time_id >= converted_instance_matrix.shape[1]:
+                #    extra_col = -1 * np.ones((converted_instance_matrix.shape[0], 1), dtype=int)
+                #    converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+
+                converted_instance_matrix[flight_id, time_id] = position_id
+
+                if flight_id not in new_flight_durations:
+                    new_flight_durations[flight_id] = {}
+                    new_flight_durations[flight_id]["min"] = time_id
+                    new_flight_durations[flight_id]["max"] = time_id
+                    new_flight_durations[flight_id]["duration"] = new_flight_durations[flight_id]["max"] - new_flight_durations[flight_id]["min"]
+
+                if time_id < new_flight_durations[flight_id]["min"]:
+                    new_flight_durations[flight_id]["min"] = time_id
+
+                if time_id > new_flight_durations[flight_id]["max"]:
+                    new_flight_durations[flight_id]["max"] = time_id
+
+                new_flight_durations[flight_id]["duration"] = new_flight_durations[flight_id]["max"] - new_flight_durations[flight_id]["min"]
+
+
+
+            # Rerun check if there are still things to solve:
+
+            # TODO -> TIME DELTA EVALUTAION!
+            # BETTER SYSTEM_LOADS/CAPACITY_TIME_MATRIX/etc. computation (as only 2 flights changed... never all sectors!)
+            # MAYBE ALSO BETTER DURATION COMPUTATION?
+
+
+            flights_affected = converted_instance_matrix[flight_ids,:]
+            to_change = (flights_affected[:,1:] != fill_value) & (flights_affected[:,1:] != flights_affected[:,:-1])
+            to_change_first = np.reshape(flights_affected[:,0] != fill_value, (flights_affected.shape[0],1))
+
+            to_change = np.hstack((to_change_first, to_change)) 
+            to_change_indices = np.nonzero(to_change)
+            flight_affected_buckets = flights_affected[to_change_indices]
+
+            np.add.at(capacity_demand_diff_matrix, (flight_affected_buckets, to_change_indices[1]), -1)
+
+            #system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+            #capacity_time_matrix = self.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity)
+            #capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+
             capacity_overload_mask = capacity_demand_diff_matrix < 0
 
-            prev_number_of_conflicts = number_of_conflicts
+            #np.testing.assert_array_equal(capacity_demand_diff_matrix, capacity_demand_diff_matrix_cpy)
+
+            # OLD - Just number of conflicting sectors:
+            #number_of_conflicts_prev = number_of_conflicts
+            #number_of_conflicts = capacity_overload_mask.sum()
+
+            # NEW - With absolute overload:
+            number_of_conflicts_prev = number_of_conflicts
             number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
 
-            if number_of_conflicts >= prev_number_of_conflicts:
-                extra_col = -1 * np.ones((converted_instance_matrix.shape[0], 1), dtype=int)
-                converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+            # HEURISTIC SELECTION OF COMPLEXITY OF TASK
+            # -----------------------------------------------------------------------------
+            if number_of_conflicts is not None and number_of_conflicts_prev is not None:
+                if number_of_conflicts >= number_of_conflicts_prev:
+                    counter_equal_solutions += 1
 
+                    #if counter_equal_solutions >= 2 and counter_equal_solutions % 2 == 0:
+                    additional_time_increase += 1
+                    if self.verbosity > 1:
+                        print(f">>> INCREASED TIME TO:{additional_time_increase}")
+
+                    if counter_equal_solutions >= 32 and counter_equal_solutions % 16 == 0:
+                        self._max_explored_vertices = max(1,int(self._max_explored_vertices/2))
+                        if self.verbosity > 1:
+                            print(f">>> CONSIDERED VERTICES REDUCED TO:{self._max_explored_vertices}")
+                    if counter_equal_solutions >= 64 and counter_equal_solutions % 32 == 0:
+                        max_number_processors = max(1,int(max_number_processors / 2))
+                        if self.verbosity > 1:
+                            print(f">>> PARALLEL PROCESSORS REDUCED TO:{max_number_processors}")
+                    elif counter_equal_solutions >= 128 and counter_equal_solutions % 64 == 0:
+                        max_number_airplanes_considered_in_ASP += 1
+                        if self.verbosity > 1:
+                            print(f">>> INCREASED AIRPLANES CONSIDERED TO:{max_number_airplanes_considered_in_ASP}")
+
+                    converted_instance_matrix = old_converted_instance
+
+                    system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+                    capacity_time_matrix = self.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity)
+                    capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+                    capacity_overload_mask = capacity_demand_diff_matrix < 0
+
+                    number_of_conflicts_prev = number_of_conflicts
+                    number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
+
+
+                else:
+                    old_converted_instance = converted_instance_matrix.copy()
+                    counter_equal_solutions = 0
+                    max_number_processors = 20
+                    max_number_airplanes_considered_in_ASP = 2
+                    additional_time_increase = 0
+                    self._max_explored_vertices = original_max_explored_vertices
+
+                    for flight_id in new_flight_durations.keys():
+                        flight_durations[flight_id] = new_flight_durations[flight_id]["duration"]
+
+                    if max_number_processors < 20 or max_number_airplanes_considered_in_ASP > 2:
+                        if self.verbosity > 1:
+                            print(f">>> RESET PROCESSOR COUNT TO:{max_number_processors}; AIRPLANES TO: {max_number_airplanes_considered_in_ASP}")
+            # -----------------------------------------------------------------------------
 
             iteration += 1
+
 
         #np.savetxt("01_final_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
 
@@ -208,7 +446,7 @@ class Main:
         max_delay    = delay.max()
         #per_flight   = delay.tolist()
 
-        if self._verbosity > 0:
+        if self.verbosity > 0:
             print("<<<<<<<<<<<<<<<<----------------->>>>>>>>>>>>>>>>")
             print("                  FINAL RESULTS")
             print("<<<<<<<<<<<<<<<<----------------->>>>>>>>>>>>>>>>")
@@ -217,63 +455,146 @@ class Main:
             print(f"Maximum single-flight delay: {max_delay}")
 
         print(total_delay)
-        np.savetxt(sys.stdout, converted_instance_matrix, delimiter=",", fmt="%i") 
+        #np.savetxt("20250821_final_matrix.csv", converted_instance_matrix, delimiter=",", fmt="%i") 
 
-    def delay_flights(self, time_index: int,
+
+    def build_job(self, time_index: int,
                 bucket_index: int,
                 converted_instance_matrix: np.ndarray,
                 capacity_time_matrix: np.ndarray,
+                system_loads: np.ndarray,
                 capacity_demand_diff_matrix: np.ndarray,
-                number_of_conflicts: int,
+                additional_time_increase: int,
+                fill_value: int,
+                max_rows: int,
+                n_proc: int,
+                original_max_time: int,
+                networkx_graph,
+                planned_arrival_times,
+                airplane_flight,
+                navaid_sector,
+                airplanes,
+                navaid_sector_lookup,
+                duration,
                 ):
         """
+        Split the candidate rows into *n_proc* equally‑sized chunks
+        (≤ max_rows each) and build one ``OptimizeFlights`` instance per chunk.
         """
-        seed = self._seed
-        timestep_granularity = self._timestep_granularity
 
-        rng = np.random.default_rng(seed)
+        if time_index > 0:
+            bucket_index_mask = (converted_instance_matrix[:, time_index] == bucket_index) & (converted_instance_matrix[:, time_index - 1] != bucket_index)
+        else:
+            bucket_index_mask = converted_instance_matrix[:, time_index] == bucket_index
 
-
-        number_of_conflicts_original = number_of_conflicts
-
-        # --- all rows belonging to this (time, bucket) -------------------
-        bucket_index_mask = converted_instance_matrix[:, time_index:min(time_index+timestep_granularity,converted_instance_matrix.shape[1])] == bucket_index
-        bucket_index_mask = bucket_index_mask.any(axis=1)
         candidate = np.flatnonzero(bucket_index_mask)
 
-        start, stop, duration = self.flight_spans_contiguous(converted_instance_matrix, fill_value=-1)
+        #print(f"===> Trying to solve sector:{bucket_index} for time: {time_index}, with overload: {capacity_demand_diff_matrix[bucket_index, time_index]}, candidates: {len(candidate)}")
+        #bucket_index_mask = bucket_index_mask.any(axis=1)
+
+
         candidate_duration = duration[candidate]
+
         order = np.argsort(candidate_duration, kind="stable")
         candidate_sorted = candidate[order]
-        candidate = candidate_sorted[0]
+        candidate = candidate_sorted
+        #rng.shuffle(candidate)
 
-        candidate_start = start[candidate]
-        candidate_stop = stop[candidate]
+        capacity_difference = abs(capacity_demand_diff_matrix[bucket_index, time_index])
+        if capacity_difference < 2:
+            capacity_difference = 2
 
-        delay = 0
+        needed   = n_proc * max_rows
+        needed = min(needed, capacity_difference)
 
-        while number_of_conflicts_original <= number_of_conflicts:
+        if self.verbosity > 2:
+            print(f"---> ACTUALLY INVESTIGATED AIRPLANES: <<{needed}>>")
 
-            start_sector = converted_instance_matrix[candidate, candidate_start].copy()
-            other_sectors = converted_instance_matrix[candidate, candidate_start+delay+1:candidate_stop+delay].copy()
+        rows_pool = candidate[:needed]
 
-            delay+=1
+        chunk_size = max_rows
+        n_chunks   = min(n_proc, len(rows_pool) // chunk_size)
+        n_chunks = max(n_chunks, 1)
 
-            if candidate_stop+delay >= converted_instance_matrix.shape[1]:
-                extra_col = -1 * np.ones((converted_instance_matrix.shape[0], 1), dtype=int)
-                converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+        chunk_index = 0
+        rows = rows_pool[chunk_index*chunk_size:(chunk_index+1)*chunk_size]
 
-            converted_instance_matrix[candidate, candidate_start+delay] = start_sector
-            converted_instance_matrix[candidate, candidate_start + 1 + delay: candidate_stop+delay] = other_sectors
+        flights = converted_instance_matrix[rows, :]
+        de_facto_max_time = converted_instance_matrix.shape[1]
+
+        #capacity_demand_diff_matrix_tmp = self.system_loads_computation_v0(converted_instance_matrix, rows, capacity_time_matrix, de_facto_max_time)
+        #capacity_demand_diff_matrix_cpy = self.system_loads_computation_v1(time_index, converted_instance_matrix, capacity_time_matrix, system_loads, fill_value, rows)
+        capacity_demand_diff_matrix_cpy_2 = capacity_demand_diff_matrix.copy()
+        capacity_demand_diff_matrix_cpy_2 = self.system_loads_computation_v2(converted_instance_matrix, fill_value, rows, capacity_demand_diff_matrix_cpy_2)
+
+        #np.testing.assert_array_equal(capacity_demand_diff_matrix_tmp, capacity_demand_diff_matrix_cpy)
+        #np.testing.assert_array_equal(capacity_demand_diff_matrix_tmp, capacity_demand_diff_matrix_cpy_2)
+
+        job = (self.encoding, self.sectors, self.graph, self.airports,
+                                    flights, rows, converted_instance_matrix, time_index,
+                                    bucket_index, capacity_time_matrix, capacity_demand_diff_matrix_cpy_2,
+                                    additional_time_increase,
+                                    networkx_graph, planned_arrival_times,
+                                    airplane_flight, airplanes, flights,
+                                    navaid_sector, navaid_sector_lookup,
+                                    self.nearest_neighbors_lookup,
+                                    fill_value, self._timestep_granularity, self._seed,
+                                    self._max_explored_vertices, self._max_delay_per_iteration, 
+                                    original_max_time)
+
+        return job, rows_pool
+
+    def system_loads_computation_v1(self, time_index, converted_instance_matrix, capacity_time_matrix, system_loads, fill_value, rows):
+        system_loads_cpy = system_loads.copy()
 
 
-            system_loads = self.bucket_histogram(converted_instance_matrix, self.capacity.shape[0], self._timestep_granularity)
-            capacity_time_matrix = self.capacity_time_matrix(self.capacity,system_loads.shape[1])
-            capacity_demand_diff_matrix = capacity_time_matrix - system_loads
-            capacity_overload_mask = capacity_demand_diff_matrix < 0
+        # THESE TWO METHODS ARE TOO SLOW:
+        for row in rows:
+            flight_affected = converted_instance_matrix[row,:]
+            
+            if time_index > 0:
+                to_change = (flight_affected[1:] != fill_value) & (flight_affected[1:] != flight_affected[:-1])
+                to_change_first = flight_affected[0] != fill_value
+                to_change = np.hstack((to_change_first, to_change)) 
+            else:
+                raise NotImplementedError("NOT YET IMPLEMENTED!!!")
+            
+            to_change_indices = np.nonzero(to_change)[0]
+            system_loads_cpy[flight_affected[to_change_indices], to_change_indices] = system_loads_cpy[flight_affected[to_change_indices], to_change_indices] - 1
 
-            number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
+        capacity_demand_diff_matrix_cpy = capacity_time_matrix - system_loads_cpy
+        return capacity_demand_diff_matrix_cpy
 
+    def system_loads_computation_v0(self, converted_instance_matrix, rows, capacity_time_matrix, de_facto_max_time):
+
+        instance_matrix_cpy = converted_instance_matrix.copy()
+        instance_matrix_cpy[rows,:] = -1
+
+        system_loads_tmp = OptimizeFlights.bucket_histogram(instance_matrix_cpy, self.sectors, self.sectors.shape[0], de_facto_max_time, self._timestep_granularity)
+        capacity_demand_diff_matrix_tmp = capacity_time_matrix - system_loads_tmp
+        return capacity_demand_diff_matrix_tmp
+
+    def system_loads_computation_v2(self, converted_instance_matrix, fill_value, rows, capacity_demand_diff_matrix):
+
+        #system_loads_cpy_2 = system_loads.copy()
+
+
+        flights_affected = converted_instance_matrix[rows,:]
+        to_change = (flights_affected[:,1:] != fill_value) & (flights_affected[:,1:] != flights_affected[:,:-1])
+        to_change_first = np.reshape(flights_affected[:,0] != fill_value, (flights_affected.shape[0],1))
+
+        to_change = np.hstack((to_change_first, to_change)) 
+        to_change_indices = np.nonzero(to_change)
+        flight_affected_buckets = flights_affected[to_change_indices]
+
+        #np.subtract.at(system_loads_cpy_2, (flight_affected_buckets, to_change_indices[1]), 1)
+        np.add.at(capacity_demand_diff_matrix, (flight_affected_buckets, to_change_indices[1]), 1)
+        # THIS CAN BE IMPROVED
+
+        #capacity_demand_diff_matrix_cpy_2 = capacity_time_matrix - system_loads_cpy_2
+
+        return capacity_demand_diff_matrix
+    
     def flight_spans_contiguous(self, matrix: np.ndarray, *, fill_value: int = -1):
         """
         For each row (flight), find the first contiguous block of non-`fill_value`
@@ -309,6 +630,21 @@ class Main:
 
         return start, stop, duration
 
+
+
+    def run_parallel(self, jobs):
+        """
+        Fire ``start()`` for every ``OptimizeFlights`` instance in parallel.
+        """
+        ctx = mp.get_context("spawn")          # <- fork‑safe
+        with ProcessPoolExecutor(
+            max_workers=len(jobs),
+            mp_context=ctx
+        ) as pool:
+            futures = [pool.submit(job.start) for job in jobs]
+            return [f.result() for f in futures]
+        
+   
     # --- 2. helper: last non--1 position for every row, fully vectorised ----------
     def last_valid_pos(self, arr: np.ndarray) -> np.ndarray:
         """
@@ -331,51 +667,246 @@ class Main:
 
         return last_pos.astype(np.int64)
 
-    def instance_to_matrix(self, inst: np.ndarray,
-                           max_time: int,
-                        *,
-                        fill_value: int = -1,
-                        compress: bool = False) -> np.ndarray:
+   
+    def compute_distance_matrix(
+        self,
+        *,
+        directed: bool = False,
+        as_int: bool = True,
+        remap: bool = True,
+    ) -> np.ndarray:
         """
-        Convert an *instance* array with shape (n, 3) into a 2-D matrix.
+        Return the |V| × |V| matrix of shortest-path lengths (all edges = 1).
 
         Parameters
         ----------
-        inst
-            Each row is (row_id, value, col_id).
-        fill_value
-            Placeholder put where no entry is defined (defaults to -1).
-        compress
-            • False  ➜ allocate rows = max(row_id)+1, cols = max(col_id)+1  
-            (fastest, but can be large if indices are sparse).
-
-            • True   ➜ map the *unique* row/col labels to consecutive
-            indices before building the matrix.  Returns the compact
-            matrix plus the label mappings (see below).
+        directed : bool, default=False
+            Treat the graph as directed.  If ``False`` the edge
+            list is symmetrised internally.
+        as_int : bool, default=False
+            Convert the result to ``int`` and replace unreachable
+            pairs by ``-1``.  SciPy returns ``float`` with
+            ``np.inf`` otherwise.
+        remap : bool, default=True
+            If vertex IDs are not contiguous ``0 … |V|-1``,
+            remap them first.  This costs an ``O(|E| log |E|)``
+            sort but guarantees a compact matrix.
 
         Returns
         -------
-        If `compress is False`:
-            2-D `np.ndarray` with dtype taken from `inst[:,1]`.
-        If `compress is True`:
-            (matrix, row_labels, col_labels)
-        """
-        rows = inst[:, 0].astype(int)
-        vals = inst[:, 1]
-        cols = inst[:, 2].astype(int)
+        np.ndarray
+            Dense distance matrix.  Entry ``D[i, j]`` equals the
+            length (in edges) of the shortest path from *i* to *j*
+            or –1/np.inf if no path exists.
 
-        out = np.full((rows.max() + 1, cols.max() + 1),
+        Notes
+        -----
+        * Memory usage is ``O(|V|²)`` for the result, so for very large
+          graphs consider streaming single-source BFS instead.
+        * Runs in roughly ``O(|E|)`` because the graph is unweighted (double check this).
+        """
+        # -------------------------- 0. Input hygiene --------------------- #
+        edges = self.graph
+        if edges.ndim != 2 or edges.shape[1] != 2:
+            raise ValueError("graph must be a (|E|, 2) edge list")
+
+        if remap:
+            # Compress vertex IDs to 0…n-1 to avoid huge, sparse matrices.
+            unique_ids, idx = np.unique(edges, return_inverse=True)
+            edges = idx.reshape(-1, 2)
+            n_vertices = unique_ids.size
+        else:
+            n_vertices = edges.max() + 1
+
+        # -------------------------- 1. Adjacency ------------------------- #
+        data = np.ones(len(edges), dtype=np.int8)
+        row, col = edges.T
+        A = csr_matrix((data, (row, col)), shape=(n_vertices, n_vertices))
+
+        if not directed:
+            A = A + A.T  # mirror the edges
+
+        # -------------------------- 2. BFS ------------------------------- #
+        dist = shortest_path(
+            A,
+            directed=directed,
+            unweighted=True,
+            return_predecessors=False,
+        )
+
+        # -------------------------- 3. Post-process ---------------------- #
+        if as_int:
+            dist = np.where(np.isinf(dist), -1, dist.astype(np.int32))
+
+        return dist
+
+    def instance_to_matrix(self,
+                            flights: np.ndarray,
+                            airplane_flight: np.ndarray,
+                            navaid_sector: np.ndarray,
+                            max_time: int,
+                            time_granularity: int,
+                            navaid_sector_lookup,
+                            *,
+                            fill_value: int = -1,
+                            compress: bool = False) -> np.ndarray:
+
+        rows = airplane_flight[:,0].astype(int)
+
+        vals = flights[:, 1]
+        cols = flights[:, 2].astype(int)
+
+        max_time = max(cols.max(), (max_time + 1) * time_granularity)
+
+        out = np.full((rows.max() + 1, max_time),
                         fill_value,
                         dtype=vals.dtype)
-        out[rows, cols] = vals
+        
+        flight_ids = flights[:,0]
+        flight_ids = np.unique(flight_ids)
 
-        if out.shape[1] < max_time:
-            diff = max_time - out.shape[1]
-            extra_col = -1 * np.ones((out.shape[0], diff), dtype=int)
-            out = np.hstack((out, extra_col)) 
+        planned_arrival_times = {}
 
-        return out
+        for flight_id in flight_ids:
 
+            airplane_id = (airplane_flight[airplane_flight[:,1] == flight_id])[0,0]
+
+            current_flight = flights[flights[:,0] == flight_id]
+
+            for flight_hop_index in range(current_flight.shape[0]):
+
+                navaid = current_flight[flight_hop_index,1]
+                time = current_flight[flight_hop_index,2]
+                #sector = (navaid_sector[navaid_sector[:,0] == navaid])[0,1]
+                sector = navaid_sector_lookup[navaid]
+
+                if flight_hop_index == 0:
+                    out[airplane_id,time] = sector
+                else:
+
+                    prev_navaid = current_flight[flight_hop_index - 1,1]
+                    prev_time = current_flight[flight_hop_index - 1,2]
+                    prev_sector = (navaid_sector[navaid_sector[:,0] == prev_navaid])[0,1]
+
+                    for time_index in range(1, time-prev_time + 1):
+
+                        if time_index <= math.floor((time - prev_time)/2):
+                            out[airplane_id,prev_time + time_index] = prev_sector
+
+                        else:
+                            out[airplane_id,prev_time + time_index] = sector
+
+                if flight_id not in planned_arrival_times:
+                    planned_arrival_times[flight_id] = time
+                elif planned_arrival_times[flight_id] < time:
+                    planned_arrival_times[flight_id] = time
+
+        #np.savetxt("20250819_converted_instance.csv", out, delimiter=",",fmt="%i")
+
+        return out, planned_arrival_times
+    
+    def instance_to_matrix_vectorized(self,
+                                    flights: np.ndarray,
+                                    airplane_flight: np.ndarray,
+                                    navaid_sector: np.ndarray,
+                                    max_time: int,
+                                    time_granularity: int,
+                                    navaid_sector_lookup,
+                                    *,
+                                    fill_value: int = -1,
+                                    compress: bool = False):
+        """
+        Vectorized/semi-vectorized rewrite instance_to_matrix.
+        Assumes IDs are non-negative ints (reasonably dense).
+        """
+
+        # --- ensure integer views without copies where possible
+        flights = flights.astype(np.int64, copy=False)
+        airplane_flight = airplane_flight.astype(np.int64, copy=False)
+
+        # --- build flight -> airplane mapping (array is fastest if IDs are dense)
+        fid_map_max = int(max(flights[:,0].max(), airplane_flight[:,1].max()))
+        flight_to_airplane = np.full(fid_map_max + 1, -1, dtype=np.int64)
+        flight_to_airplane[airplane_flight[:,1]] = airplane_flight[:,0]
+
+        # --- build navaid -> sector mapping
+        # prefer an array map (fast); fall back to fromiter if needed
+        navaids_used = flights[:,1]
+        try:
+            max_nav_id = int(max(navaids_used.max(), max(navaid_sector_lookup.keys())))
+            nav2sec = np.full(max_nav_id + 1, fill_value, dtype=np.int64)
+            for k, v in navaid_sector_lookup.items():
+                nav2sec[int(k)] = int(v)
+            sectors = nav2sec[navaids_used]
+        except Exception:
+            # works even if lookup is a dict with sparse/large keys
+            sectors = np.fromiter((int(navaid_sector_lookup[int(x)]) for x in navaids_used),
+                                dtype=np.int64, count=navaids_used.size)
+
+        # --- sort by flight, then time (stable contiguous blocks per flight)
+        order = np.lexsort((flights[:,2], flights[:,0]))
+        f_sorted = flights[order]
+        s_sorted = sectors[order]
+
+        fid = f_sorted[:,0]
+        t   = f_sorted[:,2]
+        sec = s_sorted
+
+        # --- output matrix shape (airplane_id rows, time columns)
+        n_rows = int(airplane_flight[:,0].max()) + 1
+        max_time_dim = int(max(t.max(), (max_time + 1) * time_granularity))
+        out = np.full((n_rows, max_time_dim), fill_value, dtype=sec.dtype)
+
+        # --- group boundaries per flight (contiguous in sorted array)
+        u, idx_first, counts = np.unique(fid, return_index=True, return_counts=True)
+
+        # planned arrival times = last time per group (vectorized)
+        last_idx = idx_first + counts - 1
+        planned_arrival_times = dict(zip(u.tolist(), t[last_idx].tolist()))
+
+        # --- fill per-flight via slices (no per-timestep loops)
+        # For each consecutive pair (prev_time -> next_time):
+        #   first half  -> prev_sector
+        #   second half -> next_sector
+        for g, start in enumerate(idx_first):
+            end = start + counts[g]
+
+            a_id = int(flight_to_airplane[int(u[g])])
+            if a_id < 0:
+                # flight has no airplane mapping; skip defensively
+                continue
+
+            times = t[start:end]
+            secs  = sec[start:end]
+            if times.size == 0:
+                continue
+
+            # first hop: set the exact event time
+            out[a_id, times[0]] = secs[0]
+
+            if times.size >= 2:
+                prev_times = times[:-1]
+                next_times = times[1:]
+                prev_secs  = secs[:-1]
+                next_secs  = secs[1:]
+
+                L = next_times - prev_times
+                mids = prev_times + (L // 2)
+
+                # slice-assign per segment (loop over segments; no inner time loop)
+                for i in range(prev_times.size):
+                    s0 = prev_times[i] + 1       # start (exclusive of prev_time)
+                    m1 = mids[i] + 1             # first-half end (inclusive) -> slice stop
+                    e1 = next_times[i] + 1       # segment end (inclusive) -> slice stop
+
+                    # first half [prev_time+1, mid]
+                    if m1 > s0:
+                        out[a_id, s0:m1] = prev_secs[i]
+                    # second half [mid+1, next_time]
+                    if e1 > m1:
+                        out[a_id, m1:e1] = next_secs[i]
+
+        return out, planned_arrival_times
    
     def first_overload(self, mask: np.ndarray):
         """
@@ -398,115 +929,121 @@ class Main:
         b = np.flatnonzero(mask[:, t])[0]
 
         return (t, b)                  # (time, bucket)
+        
+    def first_overloads(self, mask: np.ndarray, k: int = 10):
+        """
+        Return up to the first `k` overloads as (time, bucket) pairs,
+        ordered lexicographically by (time, bucket). If none found,
+        return None.
 
-    def capacity_time_matrix(self, cap: np.ndarray,
+        `mask` shape: (num_buckets, num_times)
+                    rows   → bucket IDs
+                    columns→ time steps
+        """
+        # 1) Find all time steps that have *any* overload (kept in ascending order)
+        time_candidates = np.flatnonzero(mask.any(axis=0))
+
+        results = []
+        # 2) For each time, collect buckets with overloads (already ascending)
+        for t in time_candidates:
+            buckets = np.flatnonzero(mask[:, t])
+            for b in buckets:
+                results.append((t, b))
+                if len(results) == k:
+                    return results
+        return results 
+
+    def capacity_time_matrix_reference(self,
+                            cap: np.ndarray,
                             n_times: int,
-                            *,
-                            sort_by_bucket: bool = False) -> np.ndarray:
-        """
-        Expand the per-bucket capacity vector to shape (|B|, n_times).
+                            time_granularity: int) -> np.ndarray:
 
-        Parameters
-        ----------
-        cap
-            2-column array ``[bucket_id, capacity_value]`` with shape (|B|, 2).
-        n_times
-            Number of time steps (usually ``counts.shape[1]``).
-        sort_by_bucket
-            If *True* (default) the rows are first sorted by *bucket_id*
-            so that row *i* corresponds to bucket *i* (0 … |B|–1).
+        template_matrix = np.zeros((cap.shape[0],time_granularity))
 
-        Returns
-        -------
-        cap_mat : np.ndarray
-            Shape (|B|, n_times) where every row is the bucket’s capacity.
-        """
-        if sort_by_bucket:
-            cap = cap[np.argsort(cap[:, 0])]
+        for cap_index in range(cap.shape[0]):
 
-        # Extract the capacity column → shape (|B|,)
-        cap_vals = cap[:, 1]
+            capacity = cap[cap_index, 1]
 
-        # Broadcast to (|B|, n_times) without an explicit loop
-        cap_mat = np.broadcast_to(cap_vals[:, None], (cap_vals.size, n_times))
-        # If you *need* a writable array, uncomment the next line
-        # cap_mat = cap_mat.copy()
+            per_timestep_capacity = math.floor(capacity / time_granularity)
+
+            template_matrix[cap_index,:] = template_matrix[cap_index,:] + per_timestep_capacity
+
+            # rem_cap < time_granularity per construction
+            rem_cap = capacity - (per_timestep_capacity * time_granularity)
+            step_size = math.floor(time_granularity / rem_cap)
+
+            for time_index in range(0, time_granularity, step_size):
+                
+                template_matrix[cap_index, time_index] += 1
+                rem_cap -= 1
+
+                if rem_cap <= 0:
+                    break
+
+        # template_matrix: shape (N, T)
+        reps = n_times // template_matrix.shape[1]  # requires n_times % T == 0
+        if n_times % template_matrix.shape[1] != 0:
+            raise ValueError("n_times must be a multiple of template_matrix.shape[1]")
+
+        cap_mat = np.tile(template_matrix, (1, reps))  # shape (N, MAX-T)
+
+
+        # DEBUG ONLY:
+        # np.savetxt("20250819_cap_mat.csv", cap_mat, delimiter=",",fmt="%i")
 
         return cap_mat
     
 
-    def bucket_histogram(self, instance_matrix: np.ndarray,
-                        num_buckets: int,
-                        timestep_granularity: int,
-                        *,
-                        fill_value: int = -1) -> np.ndarray:
+    def capacity_time_matrix(self,
+                            cap: np.ndarray,
+                            n_times: int,
+                            time_granularity: int) -> np.ndarray:
         """
-        Count how many elements occupy each *bucket* at each *time step*.
-
-        Parameters
-        ----------
-        instance_matrix
-            2-D array produced by `instance_to_matrix`  
-            shape = (num_elements, num_time_steps)
-        num_buckets
-            Equals `self.capacity.shape[0]`
-        fill_value
-            The placeholder used for “no assignment” (default −1)
-
-        Returns
-        -------
-        counts : np.ndarray
-            shape = (num_buckets, num_time_steps)  
-            `counts[bucket, t]` is the occupancy of *bucket* at time *t*.
+        cap: shape (N, >=2), capacity in column 1
+        returns: (N, n_times)
         """
-        n_elems, n_times = instance_matrix.shape
+        N = cap.shape[0]
+        T = int(time_granularity)
 
-        # ------------------------------------------------------------------
-        # 1.  Mask out empty cells (if any)
-        # ------------------------------------------------------------------
+        # Integer math: base fill + remainder
+        capacity = np.asarray(cap[:, 1], dtype=np.int64)
+        base = capacity // T                 # per-slot baseline
+        rem  = capacity %  T                 # how many +1 to sprinkle
 
-        # Generate mask of values that differ from fill_value = -1
-        valid_mask = instance_matrix != fill_value
-        if not np.any(valid_mask):                       
-            # Shortcut if all cells empty
-            return np.zeros((num_buckets, n_times), dtype=int)
+        # Start with the baseline replicated across T columns
+        # (broadcast then copy to get a writeable array)
+        template = np.broadcast_to(base[:, None], (N, T)).astype(np.int32, copy=True)
 
-        # ------------------------------------------------------------------
-        # 2.  Gather bucket IDs and their time indices
-        # ------------------------------------------------------------------
-        buckets = instance_matrix[valid_mask]                        # (K,) bucket id
-        # 
+        # Fast remainder placement: for each row i, add +1 at
+        # columns: step[i] * np.arange(rem[i]), where step = floor(T/rem)
+        max_r = int(rem.max())
+        if max_r > 0:
+            # step is irrelevant where rem==0, but we still fill an array (won't be used)
+            step = np.empty_like(rem, dtype=np.int64)
+            # Avoid division-by-zero; values where rem==0 are ignored by mask below
+            np.floor_divide(T, rem, out=step, where=rem > 0)
 
-        # np.nonzero --> Get indices of non-zero elements of valid_mask (non false)
-        # --> with np.nonzero(valid_mask)[1] we take the time indices
+            J = np.arange(max_r, dtype=np.int64)                  # 0..max(rem)-1
+            mask = J[None, :] < rem[:, None]                      # N x max_r (True only for first rem[i])
+            rows2d = np.broadcast_to(np.arange(N)[:, None], (N, max_r))
+            cols2d = step[:, None] * J[None, :]
 
-        times   = np.nonzero(valid_mask)[1]              # (K,) time index
+            r_idx = rows2d[mask]
+            c_idx = cols2d[mask]
 
-        # ------------------------------------------------------------------
-        # 3.  Vectorised scatter using `np.add.at`
-        # ------------------------------------------------------------------
-        counts = np.zeros((num_buckets, n_times), dtype=int)
+            # Scatter-add the remainders
+            np.add.at(template, (r_idx, c_idx), 1)
 
-        # Performs unbuffered in place operation on operand ‘a’ for elements specified by ‘indices’.
-        # ufunc.at(a, indices, b=None, /)
-        # --> Buckets and times specify the indices
-        np.add.at(counts, (buckets, times), 1)
+        # Repeat the base block to cover n_times
+        if n_times % T != 0:
+            raise ValueError("n_times must be a multiple of time_granularity")
+        reps = n_times // T
 
-        # Performs a sliding window aggregation according to timestep-granularity
-        # To account for hour/minute/etc. computation
-        axis = 1
+        cap_mat = np.tile(template, (1, reps))   # (N, n_times)
 
-        pad_width = [(0, 0)] * counts.ndim
-        pad_width[axis] = (0, timestep_granularity - 1)
-        padded = np.pad(counts, pad_width, mode="constant")
+        #np.savetxt("20250819_cap_mat.csv", cap_mat, delimiter=",",fmt="%i")
 
-        windows = np.lib.stride_tricks.sliding_window_view(padded,
-                                                    window_shape=timestep_granularity,
-                                                    axis=axis)
-        windows = windows.sum(axis=2)
-
-        return windows
-
+        return cap_mat
 
  
 # ---------------------------------------------------------------------------
@@ -516,44 +1053,59 @@ class Main:
 def _build_arg_parser() -> argparse.ArgumentParser:
     """Return a fully‑configured :pyclass:`argparse.ArgumentParser`."""
     parser = argparse.ArgumentParser(
-        prog="ATFM-NM-Tool-Delay",
-        description="Highly efficient ATFM problem solver which only considers DELAYS.",
+        prog="ATFM-NM-Tool",
+        description="Highly efficient ATFM problem solver for the network manager - including XAI.",
     )
 
     parser.add_argument(
-        "--path-graph",
+        "--graph-path",
         type=Path,
-        default=Path("instances","edges.csv"),  
         metavar="FILE",
         help="Location of the graph CSV file.",
     )
     parser.add_argument(
-        "--path-capacity",
+        "--sectors-path",
         type=Path,
-        default=Path("instances","capacity.csv"), 
         metavar="FILE",
-        help="Location of the capacity CSV file.",
+        help="Location of the sector (capacity) CSV file.",
     )
     parser.add_argument(
-        "--path-instance",
+        "--flights-path",
         type=Path,
-        default=Path("instances","instance_100.csv"), 
         metavar="FILE",
-        help="Location of the instance CSV file.",
+        help="Location of the flights CSV file.",
     )
     parser.add_argument(
-        "--airport-vertices-path",
+        "--airports-path",
         type=Path,
-        default=Path("instances","airport_vertices.csv"), 
         metavar="FILE",
         help="Location of the airport-vertices CSV file.",
     )
+    parser.add_argument(
+        "--airplanes-path",
+        type=Path,
+        metavar="FILE",
+        help="Location of the airplanes CSV file.",
+    )
+    parser.add_argument(
+        "--airplane-flight-path",
+        type=Path,
+        metavar="FILE",
+        help="Location of the airplane-flight-assignment CSV file.",
+    )
+    parser.add_argument(
+        "--navaid-sector-path",
+        type=Path,
+        metavar="FILE",
+        help="Location of the navaids-sector assignment CSV file.",
+    )
+
     parser.add_argument(
         "--encoding-path",
         type=Path,
         default=Path("encoding.lp"), 
         metavar="FILE",
-        help="NOT USED",
+        help="Location of the encoding for the optimization problem.",
     )
     parser.add_argument(
         "--seed",
@@ -565,7 +1117,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--number-threads",
         type=int,
         default=20,
-        help="NOT USED."
+        help="Number of parallel ASP solving threads."
     )
     parser.add_argument(
         "--timestep-granularity",
@@ -577,13 +1129,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--max-explored-vertices",
         type=int,
         default=6,
-        help="NOT USED"
+        help="Maximum vertices explored in parallel - effectively restricts number of explored paths (larger=possibly better solution, but more compute time needed)."
     )
     parser.add_argument(
         "--max-delay-per-iteration",
         type=int,
         default=-1,
-        help="NOT USED"
+        help="Maximum hours of delay per solve iteration explored (larger=more compute time, but faster descent; -1 is automatically fetch  according to max. time steps)."
     )
     parser.add_argument(
         "--max-time",
@@ -595,7 +1147,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--verbosity",
         type=int,
         default=0,
-        help="Verbosity levels (0,1)"
+        help="Verbosity levels (0,1,2)"
     )
 
     return parser
@@ -615,10 +1167,13 @@ def main(argv: Optional[List[str]] = None) -> None:
     """Script entry‑point compatible with both `python -m` and `poetry run`."""
     args = parse_cli(argv)
 
-    app = Main(args.path_graph, args.path_capacity, args.path_instance,
-               args.airport_vertices_path, args.encoding_path,
-               args.seed,args.timestep_granularity, args.max_time,
-               args.verbosity)
+    app = Main(args.graph_path, args.sectors_path, args.flights_path,
+               args.airports_path, args.airplanes_path,
+               args.airplane_flight_path, args.navaid_sector_path,
+               args.encoding_path,
+               args.seed,args.number_threads, args.timestep_granularity,
+               args.max_explored_vertices, args.max_delay_per_iteration,
+               args.max_time, args.verbosity)
     app.run()
 
 
