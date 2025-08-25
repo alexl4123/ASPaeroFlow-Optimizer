@@ -74,14 +74,7 @@ def _compute_graph_capacity_factor(grid_width, grid_height):
 def default_flight_counts() -> List[int]:
     """The flight‑set sizes requested in the project spec."""
     return [
-        3,
-        5,
         10,
-        30,
-        60,
-        100,
-    ]
-    """
         30,
         60,
         100,
@@ -94,7 +87,7 @@ def default_flight_counts() -> List[int]:
         30000,
         60000,
         100000,
-    """
+        ]
 
 # default constants
 GRID_WIDTH = GRID_HEIGHT = 5
