@@ -25,6 +25,7 @@ class OptimizeFlights:
                  flights,
                  navaid_sector,
                  navaid_sector_lookup,
+                 nearest_neighbors_lookup,
                  fill_value = -1,
                  timestep_granularity = 1,
                  seed = 11904657,
@@ -44,6 +45,7 @@ class OptimizeFlights:
         self.navaid_sector = navaid_sector
         self.airplanes = airplanes
         self.navaid_sector_lookup = navaid_sector_lookup
+        self.nearest_neighbors_lookup = nearest_neighbors_lookup
 
         self.flights_affected = flights_affected
         self.rows = rows
@@ -275,8 +277,18 @@ class OptimizeFlights:
         allowed = (1.0 + eps) * s_t_length
 
         # 1) shortest length & prune to a small corridor: ds[u]+dt[u] ≤ (1+eps)*L0
-        ds = nx.single_source_dijkstra_path_length(G, s, weight=weight_key, cutoff=allowed)
-        dt = nx.single_source_dijkstra_path_length(G, t, weight=weight_key, cutoff=allowed)
+        #
+        if s not in self.nearest_neighbors_lookup:
+            ds = nx.single_source_dijkstra_path_length(G, s, weight=weight_key)
+            self.nearest_neighbors_lookup[s] = ds
+        else:
+            ds = self.nearest_neighbors_lookup[s]
+
+        if t not in self.nearest_neighbors_lookup:
+            dt = nx.single_source_dijkstra_path_length(G, t, weight=weight_key)
+            self.nearest_neighbors_lookup[t] = dt
+        else:
+            dt = self.nearest_neighbors_lookup[t]
 
         keep = {u for u in G if u in ds and u in dt and ds[u] + dt[u] <= allowed}
 

@@ -113,3 +113,6 @@ class Model:
     def set_computation_time(self, runtime):
         self.computation_time = round(runtime,2)
 
+    def get_reroutes(self):
+        return self.reroutes
+

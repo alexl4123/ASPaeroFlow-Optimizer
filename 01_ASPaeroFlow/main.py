@@ -132,6 +132,8 @@ class Main:
         self.flights: Optional[np.ndarray] = None
         self.encoding: Optional[np.ndarray] = None
 
+        self.nearest_neighbors_lookup = {}
+
 
     # ---------------------------------------------------------------------
     # Public API
@@ -235,6 +237,7 @@ class Main:
 
         if np.any(capacity_overload_mask, where=True):
             old_converted_instance = converted_instance_matrix.copy()
+            _, _, flight_durations = self.flight_spans_contiguous(converted_instance_matrix, fill_value=-1)
 
         while np.any(capacity_overload_mask, where=True):
             if self.verbosity > 0:
@@ -246,6 +249,7 @@ class Main:
             safety_factor = self._timestep_granularity * 2
 
             if last_idx + self._max_delay_per_iteration * (additional_time_increase + 1) + safety_factor  > converted_instance_matrix.shape[1]:
+                # INCREASE MATRIX SIZE (TIME) AUTOMATICALLY
                 diff = last_idx + self._max_delay_per_iteration * (additional_time_increase + 1) + safety_factor - converted_instance_matrix.shape[1]
                 in_units = math.ceil(diff / self._timestep_granularity)
                 extra_col = -1 * np.ones((converted_instance_matrix.shape[0], in_units * self._timestep_granularity), dtype=int)
@@ -261,6 +265,7 @@ class Main:
 
             #time_index,bucket_index = self.first_overload(capacity_overload_mask)
 
+            max_number_processors = 1
             time_bucket_tuples = self.first_overloads(capacity_overload_mask, k=max_number_processors)
 
             start_time = time.time()
@@ -269,11 +274,12 @@ class Main:
             all_candidates = {}
             for time_index, bucket_index in time_bucket_tuples:
 
-                jobs, candidates = self.build_jobs(time_index, bucket_index, converted_instance_matrix, capacity_time_matrix,
-                                capacity_demand_diff_matrix, additional_time_increase, fill_value, 
+                #_, _, flight_durations = self.flight_spans_contiguous(converted_instance_matrix, fill_value=-1)
+                job, candidates = self.build_job(time_index, bucket_index, converted_instance_matrix, capacity_time_matrix,
+                                system_loads, capacity_demand_diff_matrix, additional_time_increase, fill_value, 
                                 max_number_airplanes_considered_in_ASP, max_number_processors, original_max_time,
                                 self.networkx_navpoint_graph, planned_arrival_times, self.airplane_flight, self.navaid_sector,
-                                self.airplanes, navaid_sector_lookup)
+                                self.airplanes, navaid_sector_lookup, flight_durations)
                 
                 all_new = True
                 for candidate in candidates:
@@ -283,12 +289,10 @@ class Main:
                         all_candidates[candidate] = True
 
                 if all_new:
-                    all_jobs += jobs
-
-            jobs = all_jobs
+                    all_jobs.append(job)
 
             models = Parallel(n_jobs=max_number_processors, backend="loky")(
-                        delayed(_run)(job) for job in jobs)
+                        delayed(_run)(job) for job in all_jobs)
             
             #models = [_run(job) for job in jobs]
 
@@ -298,32 +302,72 @@ class Main:
 
             #models = self.run_parallel(jobs)
 
+            flight_ids = []
+            all_flights = []
             for model in models:
-
                 for reroute in model.get_reroutes():
                     flight_id = int(str(reroute.arguments[0]))
-                    converted_instance_matrix[flight_id, :] = -1
+                    flight_ids.append(flight_id)
 
                 for flight in model.get_flights():
+                    all_flights.append(flight)
 
-                    flight_id = int(str(flight.arguments[0]))
-                    time_id = int(str(flight.arguments[1]))
-                    position_id = int(str(flight.arguments[2]))
+            flight_ids = np.array(flight_ids)
+            capacity_demand_diff_matrix = self.system_loads_computation_v2(converted_instance_matrix, fill_value, flight_ids, capacity_demand_diff_matrix)
+            converted_instance_matrix[flight_ids, :] = -1
 
-                    if time_id >= converted_instance_matrix.shape[1]:
-                        extra_col = -1 * np.ones((converted_instance_matrix.shape[0], 1), dtype=int)
-                        converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
-                    
+            new_flight_durations = {}
+            for flight in all_flights:
+                flight_id = int(str(flight.arguments[0]))
+                time_id = int(str(flight.arguments[1]))
+                position_id = int(str(flight.arguments[2]))
 
-                    converted_instance_matrix[flight_id, time_id] = position_id
+                #if time_id >= converted_instance_matrix.shape[1]:
+                #    extra_col = -1 * np.ones((converted_instance_matrix.shape[0], 1), dtype=int)
+                #    converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+
+                converted_instance_matrix[flight_id, time_id] = position_id
+
+                if flight_id not in new_flight_durations:
+                    new_flight_durations[flight_id] = {}
+                    new_flight_durations[flight_id]["min"] = time_id
+                    new_flight_durations[flight_id]["max"] = time_id
+                    new_flight_durations[flight_id]["duration"] = new_flight_durations[flight_id]["max"] - new_flight_durations[flight_id]["min"]
+
+                if time_id < new_flight_durations[flight_id]["min"]:
+                    new_flight_durations[flight_id]["min"] = time_id
+
+                if time_id > new_flight_durations[flight_id]["max"]:
+                    new_flight_durations[flight_id]["max"] = time_id
+
+                new_flight_durations[flight_id]["duration"] = new_flight_durations[flight_id]["max"] - new_flight_durations[flight_id]["min"]
+
 
 
             # Rerun check if there are still things to solve:
 
-            system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
-            capacity_time_matrix = self.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity)
-            capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+            # TODO -> TIME DELTA EVALUTAION!
+            # BETTER SYSTEM_LOADS/CAPACITY_TIME_MATRIX/etc. computation (as only 2 flights changed... never all sectors!)
+            # MAYBE ALSO BETTER DURATION COMPUTATION?
+
+
+            flights_affected = converted_instance_matrix[flight_ids,:]
+            to_change = (flights_affected[:,1:] != fill_value) & (flights_affected[:,1:] != flights_affected[:,:-1])
+            to_change_first = np.reshape(flights_affected[:,0] != fill_value, (flights_affected.shape[0],1))
+
+            to_change = np.hstack((to_change_first, to_change)) 
+            to_change_indices = np.nonzero(to_change)
+            flight_affected_buckets = flights_affected[to_change_indices]
+
+            np.add.at(capacity_demand_diff_matrix, (flight_affected_buckets, to_change_indices[1]), -1)
+
+            #system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+            #capacity_time_matrix = self.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity)
+            #capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+
             capacity_overload_mask = capacity_demand_diff_matrix < 0
+
+            #np.testing.assert_array_equal(capacity_demand_diff_matrix, capacity_demand_diff_matrix_cpy)
 
             # OLD - Just number of conflicting sectors:
             #number_of_conflicts_prev = number_of_conflicts
@@ -376,6 +420,9 @@ class Main:
                     additional_time_increase = 0
                     self._max_explored_vertices = original_max_explored_vertices
 
+                    for flight_id in new_flight_durations.keys():
+                        flight_durations[flight_id] = new_flight_durations[flight_id]["duration"]
+
                     if max_number_processors < 20 or max_number_airplanes_considered_in_ASP > 2:
                         if self.verbosity > 1:
                             print(f">>> RESET PROCESSOR COUNT TO:{max_number_processors}; AIRPLANES TO: {max_number_airplanes_considered_in_ASP}")
@@ -411,10 +458,11 @@ class Main:
         #np.savetxt("20250821_final_matrix.csv", converted_instance_matrix, delimiter=",", fmt="%i") 
 
 
-    def build_jobs(self, time_index: int,
+    def build_job(self, time_index: int,
                 bucket_index: int,
                 converted_instance_matrix: np.ndarray,
                 capacity_time_matrix: np.ndarray,
+                system_loads: np.ndarray,
                 capacity_demand_diff_matrix: np.ndarray,
                 additional_time_increase: int,
                 fill_value: int,
@@ -427,6 +475,7 @@ class Main:
                 navaid_sector,
                 airplanes,
                 navaid_sector_lookup,
+                duration,
                 ):
         """
         Split the candidate rows into *n_proc* equally‑sized chunks
@@ -443,7 +492,6 @@ class Main:
         #print(f"===> Trying to solve sector:{bucket_index} for time: {time_index}, with overload: {capacity_demand_diff_matrix[bucket_index, time_index]}, candidates: {len(candidate)}")
         #bucket_index_mask = bucket_index_mask.any(axis=1)
 
-        _, _, duration = self.flight_spans_contiguous(converted_instance_matrix, fill_value=-1)
 
         candidate_duration = duration[candidate]
 
@@ -468,36 +516,84 @@ class Main:
         n_chunks   = min(n_proc, len(rows_pool) // chunk_size)
         n_chunks = max(n_chunks, 1)
 
-        jobs = []
-
         chunk_index = 0
         rows = rows_pool[chunk_index*chunk_size:(chunk_index+1)*chunk_size]
 
         flights = converted_instance_matrix[rows, :]
+        de_facto_max_time = converted_instance_matrix.shape[1]
 
-        instance_matrix_cpy = converted_instance_matrix.copy()
-        instance_matrix_cpy[rows,:] = -1
+        #capacity_demand_diff_matrix_tmp = self.system_loads_computation_v0(converted_instance_matrix, rows, capacity_time_matrix, de_facto_max_time)
+        #capacity_demand_diff_matrix_cpy = self.system_loads_computation_v1(time_index, converted_instance_matrix, capacity_time_matrix, system_loads, fill_value, rows)
+        capacity_demand_diff_matrix_cpy_2 = capacity_demand_diff_matrix.copy()
+        capacity_demand_diff_matrix_cpy_2 = self.system_loads_computation_v2(converted_instance_matrix, fill_value, rows, capacity_demand_diff_matrix_cpy_2)
 
-        de_facto_max_time = instance_matrix_cpy.shape[1]
+        #np.testing.assert_array_equal(capacity_demand_diff_matrix_tmp, capacity_demand_diff_matrix_cpy)
+        #np.testing.assert_array_equal(capacity_demand_diff_matrix_tmp, capacity_demand_diff_matrix_cpy_2)
 
-        system_loads_tmp = OptimizeFlights.bucket_histogram(instance_matrix_cpy, self.sectors, self.sectors.shape[0], de_facto_max_time, self._timestep_granularity)
-        
-        capacity_time_matrix = self.capacity_time_matrix(self.sectors, de_facto_max_time, self._timestep_granularity)
-        capacity_demand_diff_matrix_tmp = capacity_time_matrix - system_loads_tmp
-
-        jobs.append((self.encoding, self.sectors, self.graph, self.airports,
+        job = (self.encoding, self.sectors, self.graph, self.airports,
                                     flights, rows, converted_instance_matrix, time_index,
-                                    bucket_index, capacity_time_matrix, capacity_demand_diff_matrix_tmp,
+                                    bucket_index, capacity_time_matrix, capacity_demand_diff_matrix_cpy_2,
                                     additional_time_increase,
                                     networkx_graph, planned_arrival_times,
                                     airplane_flight, airplanes, flights,
                                     navaid_sector, navaid_sector_lookup,
+                                    self.nearest_neighbors_lookup,
                                     fill_value, self._timestep_granularity, self._seed,
                                     self._max_explored_vertices, self._max_delay_per_iteration, 
                                     original_max_time)
-        )
 
-        return jobs, rows_pool
+        return job, rows_pool
+
+    def system_loads_computation_v1(self, time_index, converted_instance_matrix, capacity_time_matrix, system_loads, fill_value, rows):
+        system_loads_cpy = system_loads.copy()
+
+
+        # THESE TWO METHODS ARE TOO SLOW:
+        for row in rows:
+            flight_affected = converted_instance_matrix[row,:]
+            
+            if time_index > 0:
+                to_change = (flight_affected[1:] != fill_value) & (flight_affected[1:] != flight_affected[:-1])
+                to_change_first = flight_affected[0] != fill_value
+                to_change = np.hstack((to_change_first, to_change)) 
+            else:
+                raise NotImplementedError("NOT YET IMPLEMENTED!!!")
+            
+            to_change_indices = np.nonzero(to_change)[0]
+            system_loads_cpy[flight_affected[to_change_indices], to_change_indices] = system_loads_cpy[flight_affected[to_change_indices], to_change_indices] - 1
+
+        capacity_demand_diff_matrix_cpy = capacity_time_matrix - system_loads_cpy
+        return capacity_demand_diff_matrix_cpy
+
+    def system_loads_computation_v0(self, converted_instance_matrix, rows, capacity_time_matrix, de_facto_max_time):
+
+        instance_matrix_cpy = converted_instance_matrix.copy()
+        instance_matrix_cpy[rows,:] = -1
+
+        system_loads_tmp = OptimizeFlights.bucket_histogram(instance_matrix_cpy, self.sectors, self.sectors.shape[0], de_facto_max_time, self._timestep_granularity)
+        capacity_demand_diff_matrix_tmp = capacity_time_matrix - system_loads_tmp
+        return capacity_demand_diff_matrix_tmp
+
+    def system_loads_computation_v2(self, converted_instance_matrix, fill_value, rows, capacity_demand_diff_matrix):
+
+        #system_loads_cpy_2 = system_loads.copy()
+
+
+        flights_affected = converted_instance_matrix[rows,:]
+        to_change = (flights_affected[:,1:] != fill_value) & (flights_affected[:,1:] != flights_affected[:,:-1])
+        to_change_first = np.reshape(flights_affected[:,0] != fill_value, (flights_affected.shape[0],1))
+
+        to_change = np.hstack((to_change_first, to_change)) 
+        to_change_indices = np.nonzero(to_change)
+        flight_affected_buckets = flights_affected[to_change_indices]
+
+        #np.subtract.at(system_loads_cpy_2, (flight_affected_buckets, to_change_indices[1]), 1)
+        np.add.at(capacity_demand_diff_matrix, (flight_affected_buckets, to_change_indices[1]), 1)
+        # THIS CAN BE IMPROVED
+
+        #capacity_demand_diff_matrix_cpy_2 = capacity_time_matrix - system_loads_cpy_2
+
+        return capacity_demand_diff_matrix
     
     def flight_spans_contiguous(self, matrix: np.ndarray, *, fill_value: int = -1):
         """
