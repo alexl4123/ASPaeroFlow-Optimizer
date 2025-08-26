@@ -84,9 +84,9 @@ def default_flight_counts() -> List[int]:
         3000,
         6000,
         10000,
-        #30000,
-        #60000,
-        #100000,
+        30000,
+        60000,
+        100000,
         ]
 
 # default constants
