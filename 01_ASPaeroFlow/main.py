@@ -248,9 +248,9 @@ class Main:
             last_idx = int(idxs[-1]) if idxs.size else -1     
             safety_factor = self._timestep_granularity * 2
 
-            if last_idx + self._max_delay_per_iteration * (additional_time_increase + 1) + safety_factor  > converted_instance_matrix.shape[1]:
+            if last_idx + self._max_delay_per_iteration * (additional_time_increase + 1) + safety_factor >= converted_instance_matrix.shape[1]:
                 # INCREASE MATRIX SIZE (TIME) AUTOMATICALLY
-                diff = last_idx + self._max_delay_per_iteration * (additional_time_increase + 1) + safety_factor - converted_instance_matrix.shape[1]
+                diff = last_idx + self._max_delay_per_iteration * (additional_time_increase + 1) + safety_factor - converted_instance_matrix.shape[1] + 1
                 in_units = math.ceil(diff / self._timestep_granularity)
                 extra_col = -1 * np.ones((converted_instance_matrix.shape[0], in_units * self._timestep_granularity), dtype=int)
                 converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
@@ -279,7 +279,8 @@ class Main:
                                 system_loads, capacity_demand_diff_matrix, additional_time_increase, fill_value, 
                                 max_number_airplanes_considered_in_ASP, max_number_processors, original_max_time,
                                 self.networkx_navpoint_graph, planned_arrival_times, self.airplane_flight, self.navaid_sector,
-                                self.airplanes, navaid_sector_lookup, flight_durations)
+                                self.airplanes, navaid_sector_lookup, flight_durations,
+                                iteration)
                 
                 all_new = True
                 for candidate in candidates:
@@ -322,9 +323,22 @@ class Main:
                 time_id = int(str(flight.arguments[1]))
                 position_id = int(str(flight.arguments[2]))
 
-                #if time_id >= converted_instance_matrix.shape[1]:
-                #    extra_col = -1 * np.ones((converted_instance_matrix.shape[0], 1), dtype=int)
-                #    converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+                if time_id >= converted_instance_matrix.shape[1]:
+                    #extra_col = -1 * np.ones((converted_instance_matrix.shape[0], 1), dtype=int)
+                    #converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+
+                    in_units = 1
+                    extra_col = -1 * np.ones((converted_instance_matrix.shape[0], in_units * self._timestep_granularity), dtype=int)
+                    converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+
+                    # 2.) Create demand matrix (|R|x|T|)
+                    system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+                    # 3.) Create capacity matrix (|R|x|T|)
+                    capacity_time_matrix = self.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity)
+                    # 4.) Subtract demand from capacity (|R|x|T|)
+                    capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+                    # 5.) Create capacity overload matrix
+                    capacity_overload_mask = capacity_demand_diff_matrix < 0
 
                 converted_instance_matrix[flight_id, time_id] = position_id
 
@@ -426,7 +440,22 @@ class Main:
                     if max_number_processors < 20 or max_number_airplanes_considered_in_ASP > 2:
                         if self.verbosity > 1:
                             print(f">>> RESET PROCESSOR COUNT TO:{max_number_processors}; AIRPLANES TO: {max_number_airplanes_considered_in_ASP}")
+
             # -----------------------------------------------------------------------------
+
+            if self.verbosity > 1:
+                t_init  = self.last_valid_pos(original_converted_instance_matrix)      # last non--1 in the *initial* schedule
+                t_final = self.last_valid_pos(converted_instance_matrix)     # last non--1 in the *final* schedule
+
+                # --- 3. compute delays --------------------------------------------------------
+                # Flights that disappear completely (-1 in *both* files) get a delay of 0
+                delay = np.where(t_init >= 0, t_final - t_init, 0)          # shape (|I|,)
+
+                # --- 4. aggregate in whichever way you need -----------------------------------
+                total_delay  = delay.sum()
+
+                print(f">>> Current total delay: {total_delay}")
+
 
             iteration += 1
 
@@ -476,6 +505,7 @@ class Main:
                 airplanes,
                 navaid_sector_lookup,
                 duration,
+                iteration,
                 ):
         """
         Split the candidate rows into *n_proc* equally‑sized chunks
@@ -540,7 +570,7 @@ class Main:
                                     self.nearest_neighbors_lookup,
                                     fill_value, self._timestep_granularity, self._seed,
                                     self._max_explored_vertices, self._max_delay_per_iteration, 
-                                    original_max_time)
+                                    original_max_time, iteration, self.verbosity)
 
         return job, rows_pool
 

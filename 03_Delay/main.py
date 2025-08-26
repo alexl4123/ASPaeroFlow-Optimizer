@@ -325,6 +325,24 @@ class Main:
                 #if time_id >= converted_instance_matrix.shape[1]:
                 #    extra_col = -1 * np.ones((converted_instance_matrix.shape[0], 1), dtype=int)
                 #    converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+                if time_id >= converted_instance_matrix.shape[1]:
+                    #extra_col = -1 * np.ones((converted_instance_matrix.shape[0], 1), dtype=int)
+                    #converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+
+                    in_units = 1
+                    extra_col = -1 * np.ones((converted_instance_matrix.shape[0], in_units * self._timestep_granularity), dtype=int)
+                    converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+
+                    # 2.) Create demand matrix (|R|x|T|)
+                    system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+                    # 3.) Create capacity matrix (|R|x|T|)
+                    capacity_time_matrix = self.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity)
+                    # 4.) Subtract demand from capacity (|R|x|T|)
+                    capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+                    # 5.) Create capacity overload matrix
+                    capacity_overload_mask = capacity_demand_diff_matrix < 0
+
+
 
                 converted_instance_matrix[flight_id, time_id] = position_id
 

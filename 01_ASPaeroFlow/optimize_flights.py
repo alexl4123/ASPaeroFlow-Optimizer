@@ -32,6 +32,8 @@ class OptimizeFlights:
                  max_vertices_cutoff_value = 6,
                  max_delay_parameter = 4,
                  original_max_time = 24,
+                 iteration = 0,
+                 verbosity = 0,
                  ):
 
         self.encoding = encoding
@@ -58,6 +60,9 @@ class OptimizeFlights:
         self.fill_value = fill_value
         self.timestep_granularity = timestep_granularity
         self.seed = seed
+
+        self.verbosity = verbosity
+        self.iteration = iteration
 
         self.max_vertices_cutoff_value = max_vertices_cutoff_value
         self.max_delay_parameter = max_delay_parameter
@@ -224,6 +229,9 @@ class OptimizeFlights:
         #open(f"test_instance_4_{additional_time_increase}.lp","w").write(instance)
 
         encoding = self.encoding
+        
+        if self.verbosity > 0:
+            open(f"20250826_ASP_{self.iteration}.lp", "w").write(instance)
 
         solver: Model = Solver(encoding, instance)
         model = solver.solve()

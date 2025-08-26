@@ -45,9 +45,10 @@ import psutil
 # ---------------------------------------------
 # Exit‑code conventions for the CSVs
 # ---------------------------------------------
-TIMEOUT_CODE = -1  # time limit hit
-MEMOUT_CODE = -2  # memory limit hit
-ERROR_CODE = -3   # any other error / non‑zero return‑code / unparsable output
+TIMEOUT_CODE = 'T'  # time limit hit
+MEMOUT_CODE = 'M'  # memory limit hit
+ERROR_CODE = 'E'   # any other error / non-zero output
+UNPARSE_CODE = 'P'   #  unparsable output
 
 # ---------------------------------------------
 # Helpers
@@ -100,21 +101,25 @@ def build_system_config(base_dir: Path) -> List[Dict]:
             "key": "01_ASPaeroFlow",
             "script": base_dir / "../01_ASPaeroFlow/main.py",
             "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
+            "verbosity": None,
         },
         {
             "key": "02_ASP",
             "script": base_dir / "../02_ASP/main.py",
             "encoding": base_dir / "../02_ASP/encoding.lp",
+            "verbosity": None,
         },
         {
             "key": "03_Delay",
             "script": base_dir / "../03_Delay/main.py",
             "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
+            "verbosity": None,
         },
         {
             "key": "04_MIP",
             "script": base_dir / "../04_MIP/main.py",
             "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
+            "verbosity": None,
         },
     ]
 
@@ -128,18 +133,27 @@ def build_command(system: Dict, paths: Dict[str, Path], python_bin: str) -> List
     cmd = [
         python_bin,
         str(system["script"].resolve()),
-        f"--path-graph={paths['edges']}",
-        f"--path-capacity={paths['capacity']}",
-        f"--path-instance={paths['instance']}",
-        f"--airport-vertices-path={paths['airport']}",
+        f"--graph-path={paths['graph-edges']}",
+        f"--sectors-path={paths['sectors']}",
+        f"--flights-path={paths['flights']}",
+        f"--airports-path={paths['airports']}",
+        f"--airplanes-path={paths['airplanes']}",
+        f"--airplane-flight-path={paths['airplane-flight']}",
+        f"--navaid-sector-path={paths['navaid-sector']}",
         "--seed=11904657",
-        "--timestep-granularity=1",
+        "--timestep-granularity=60",
         "--number-threads=1",
         "--max-explored-vertices=6",
         "--max-delay-per-iteration=-1",
         "--max-time=24",
-        "--verbosity=0",
     ]
+
+    if system["verbosity"] is not None:
+        cmd.append(f"--verbosity={system['verbosity']}")
+    else:
+        cmd.append(f"--verbosity=0")
+
+
     if system["encoding"] is not None:
         cmd.append(f"--encoding-path={system['encoding']}")
     return cmd
@@ -195,10 +209,13 @@ def run_process(cmd: List[str], time_limit: int, mem_limit_bytes: int) -> Tuple[
 
     # Parse solution (first line of stdout)
     first_line = stdout.splitlines()[0].strip() if stdout else ""
+    print("-------------")
+    print(first_line)
+    print("==============")
     try:
         solution_val = int(first_line)
     except ValueError:
-        solution_val = ERROR_CODE
+        solution_val = UNPARSE_CODE
 
     return runtime, peak["value"], solution_val
 
@@ -221,8 +238,8 @@ def write_csv(path: Path, header: List[str], rows: List[List]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="ATFCM benchmark driver")
     parser.add_argument("instance_dir", type=Path, help="Folder containing instance sub‑directories")
-    parser.add_argument("--time-limit", type=int, default=1800, help="Wall‑clock limit (s)")
-    parser.add_argument("--memory-limit", type=int, default=5, help="Memory limit (GiB)")
+    parser.add_argument("--time-limit", type=int, default=7200, help="Wall‑clock limit (s)")
+    parser.add_argument("--memory-limit", type=int, default=20, help="Memory limit (GiB)")
     parser.add_argument("--python-bin", default="/home/thinklex/miniconda3/envs/potassco/bin/python", help="Python interpreter for the solvers")
     parser.add_argument("--output-dir", type=Path, default=Path("."), help="Where to place CSVs")
 
@@ -261,28 +278,39 @@ def main() -> None:
                 continue
 
             # Required files
-            f_edges = inst_path / "edges.csv"
-            f_capacity = inst_path / "capacity.csv"
-            f_instance = inst_path / "instance.csv"
+            f_edges = inst_path / "graph_edges.csv"
+            f_capacity = inst_path / "sectors.csv"
+            f_instance = inst_path / "flights.csv"
+            f_airplanes = inst_path / "airplanes.csv"
             f_airport = inst_path / "airports.csv"
+            f_airplane_flight = inst_path / "airplane_flight_assignment.csv"
+            f_navaid_sector = inst_path / "navaid_sector_assignment.csv"
+
 
             paths = {
-                "edges": f_edges,
-                "capacity": f_capacity,
-                "instance": f_instance,
-                "airport": f_airport,
+                "graph-edges": f_edges,
+                "sectors": f_capacity,
+                "flights": f_instance,
+                "airports": f_airport,
+                "airplanes": f_airplanes,
+                "airplane-flight": f_airplane_flight,
+                "navaid-sector": f_navaid_sector,
             }
 
             cmd = build_command(system, paths, args.python_bin)
+
+            #print(" ".join(cmd))
+            #continue
+
             print(f"[{system_name}] {inst_name}: running …", flush=True)
             rt, peak, sol = run_process(cmd, args.time_limit, mem_limit_bytes)
 
             # Store results (convert runtime to seconds with 3 decimals, memory to MiB int)
-            exec_time[inst_name][system_name] = round(rt, 3) if rt not in (TIMEOUT_CODE, MEMOUT_CODE, ERROR_CODE) else rt
-            ram_usage[inst_name][system_name] = int(peak // (1024 ** 2)) if peak not in (TIMEOUT_CODE, MEMOUT_CODE, ERROR_CODE) else peak
+            exec_time[inst_name][system_name] = round(rt, 3) if rt not in (TIMEOUT_CODE, MEMOUT_CODE, ERROR_CODE, UNPARSE_CODE) else rt
+            ram_usage[inst_name][system_name] = int(peak // (1024 ** 2)) if peak not in (TIMEOUT_CODE, MEMOUT_CODE, ERROR_CODE, UNPARSE_CODE) else peak
             sol_value[inst_name][system_name] = sol
 
-            if sol in (TIMEOUT_CODE, MEMOUT_CODE, ERROR_CODE):
+            if sol in (TIMEOUT_CODE, MEMOUT_CODE, ERROR_CODE, UNPARSE_CODE):
                 first_failure[system_name] = sol
 
     # -----------------------------------------
