@@ -19,6 +19,7 @@ class OptimizeFlights:
                  capacity_time_matrix, capacity_demand_diff_matrix,
                  additional_time_increase,
                  networkx_graph,
+                 unit_graphs,
                  planned_arrival_times,
                  airplane_flight,
                  airplanes,
@@ -41,6 +42,7 @@ class OptimizeFlights:
         self.graph = graph
         self.airport_vertices = airport_vertices
         self.networkx_graph = networkx_graph
+        self.unit_graphs = unit_graphs
         self.planned_arrival_times = planned_arrival_times
         self.airplane_flight = airplane_flight
         self.flights = flights
@@ -81,6 +83,7 @@ class OptimizeFlights:
         additional_time_increase = self.additional_time_increase
         fill_value = self.fill_value
         networkx_graph = self.networkx_graph
+        unit_graphs = self.unit_graphs
 
         max_vertices_cutoff_value = self.max_vertices_cutoff_value
         max_delay_parameter = self.max_delay_parameter
@@ -103,6 +106,10 @@ class OptimizeFlights:
 
             flight_index = rows[flight_affected_index]
 
+            airplane_id = (self.airplane_flight[self.airplane_flight[:,1] == flight_index])[0,0]
+            airplane_speed_kts = self.airplanes[airplane_id,1]
+            #current_flight = self.flights[self.flights[:,0] == flight_index]
+
             flight_affected = flights_affected[flight_affected_index,:]
 
             #actual_arrival_time = (flight_affected >= 0).argmax() - 1
@@ -123,12 +130,9 @@ class OptimizeFlights:
             # THIS IS INCLUDED IN THE SHORTEST PATH:
             #flight_sector_instances, flight_times_instance, sector_instance, graph_instance = self.create_filed_flight_plan_atoms(flight_sector_instances, flight_times_instance, sector_instance, graph_instance, flight_index, flight_affected, capacity_demand_diff_matrix, start_time)
 
-            paths = self.k_diverse_near_shortest_paths(networkx_graph, origin, destination, k=k, eps=0.1, jaccard_max=0.6,
-                                               penalty_scale=0.1, max_tries=50, weight_key="weight")
+            paths = self.k_diverse_near_shortest_paths(unit_graphs[airplane_speed_kts], origin, destination, self.nearest_neighbors_lookup[airplane_speed_kts],
+                                                k=k, eps=0.1, jaccard_max=0.6, penalty_scale=0.1, max_tries=50, weight_key="weight")
             
-            airplane_id = (self.airplane_flight[self.airplane_flight[:,1] == flight_index])[0,0]
-            airplane_speed_kts = self.airplanes[airplane_id,1]
-            current_flight = self.flights[self.flights[:,0] == flight_index]
 
             path_number = 0
 
@@ -276,7 +280,7 @@ class OptimizeFlights:
     
     def k_diverse_near_shortest_paths(
         self,
-        G, s, t, k=5, eps=0.10, jaccard_max=0.6,
+        G, s, t, nearest_neighbors_lookup, k=5, eps=0.10, jaccard_max=0.6,
         penalty_scale=0.5, max_tries=200, weight_key="weight"
     ):
         
@@ -286,17 +290,17 @@ class OptimizeFlights:
 
         # 1) shortest length & prune to a small corridor: ds[u]+dt[u] ≤ (1+eps)*L0
         #
-        if s not in self.nearest_neighbors_lookup:
+        if s not in nearest_neighbors_lookup:
             ds = nx.single_source_dijkstra_path_length(G, s, weight=weight_key)
-            self.nearest_neighbors_lookup[s] = ds
+            nearest_neighbors_lookup[s] = ds
         else:
-            ds = self.nearest_neighbors_lookup[s]
+            ds = nearest_neighbors_lookup[s]
 
-        if t not in self.nearest_neighbors_lookup:
+        if t not in nearest_neighbors_lookup:
             dt = nx.single_source_dijkstra_path_length(G, t, weight=weight_key)
-            self.nearest_neighbors_lookup[t] = dt
+            nearest_neighbors_lookup[t] = dt
         else:
-            dt = self.nearest_neighbors_lookup[t]
+            dt = nearest_neighbors_lookup[t]
 
         keep = {u for u in G if u in ds and u in dt and ds[u] + dt[u] <= allowed}
 

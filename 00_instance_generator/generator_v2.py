@@ -84,9 +84,9 @@ def default_flight_counts() -> List[int]:
         3000,
         6000,
         10000,
-        30000,
-        60000,
-        100000,
+        #30000,
+        #60000,
+        #100000,
         ]
 
 # default constants
@@ -167,6 +167,34 @@ def generate_flights(
     for airplane_id in range(airplanes_needed):
         airplanes.append([airplane_id,airplane_speed])
 
+    # SEMI-MOCKUP-FOR-FUTURE (multiple speed of airplanes)
+    # GENERATE ONE GRAPH PER AIRPLANE SPEED
+    unit_weight_graphs = {}
+    unit_weight_graphs[airplane_speed] = G.copy()
+    
+    for cur_airplane_speed in unit_weight_graphs.keys():
+        graph = unit_weight_graphs[cur_airplane_speed]
+
+        tmp_edges = {}
+
+        for edge in graph.edges(data=True):
+
+            distance = edge[2]["weight"]
+            # CONVERT AIRPLANE SPEED TO m/s
+            airplane_speed_ms = cur_airplane_speed * 0.51444
+            duration_in_seconds = distance/airplane_speed_ms
+            factor_to_unit_standard = 3600.00 / float(time_granularity)
+            duration_in_unit_standards = math.ceil(duration_in_seconds / factor_to_unit_standard)
+
+            duration_in_unit_standards = max(duration_in_unit_standards, 1)
+
+            tmp_edges[(edge[0],edge[1])] = {"weight":duration_in_unit_standards}
+
+            #print(f"{distance}/{airplane_speed_ms} = {duration_in_seconds}")
+            #print(f"{duration_in_seconds}/{factor_to_unit_standard} = {duration_in_unit_standards}")
+
+        nx.set_edge_attributes(graph, tmp_edges)
+        
     # If the graph might be disconnected, be robust:
     max_trials_per_flight = 200
 
@@ -182,13 +210,16 @@ def generate_flights(
         path = None
         src = tgt = None
 
-        
+
+        # CONVERT AIRPLANE SPEED TO m/s
+        airplane_speed_kts = airplanes[current_airplane][1]
+        airplane_speed_ms = airplane_speed_kts * 0.51444
 
         # Find a valid airport pair with a path
         while trials < max_trials_per_flight and path is None:
             src, tgt = rng.sample(airport_nodes, 2)
             try:
-                path = nx.shortest_path(G, src, tgt, weight='weight')
+                path = nx.shortest_path(unit_weight_graphs[airplane_speed_kts], src, tgt, weight='weight')
             except (nx.NetworkXNoPath, nx.NodeNotFound):
                 path = None
             trials += 1
@@ -223,20 +254,13 @@ def generate_flights(
                 # En-route/destination
 
                 prev_vertex = path[hop -1]
-                distance = G[prev_vertex][vertex]["weight"]
+                duration_in_unit_standards = unit_weight_graphs[airplane_speed_kts][prev_vertex][vertex]["weight"]
 
-                # CONVERT SPEED TO m/s
-                airplane_speed_kts = airplanes[current_airplane][1]
-                airplane_speed_ms = airplane_speed_kts * 0.51444
 
                 # Compute duration from prev to vertex in unit time:
-                duration_in_seconds = distance/airplane_speed_ms
-                factor_to_unit_standard = 3600.00 / float(time_granularity)
-                duration_in_unit_standards = math.ceil(duration_in_seconds / factor_to_unit_standard)
-
-                print(f"{distance}/{airplane_speed_ms} = {duration_in_seconds}")
-                print(f"{duration_in_seconds}/{factor_to_unit_standard} = {duration_in_unit_standards}")
-
+                #duration_in_seconds = distance/airplane_speed_ms
+                #factor_to_unit_standard = 3600.00 / float(time_granularity)
+                #duration_in_unit_standards = math.ceil(duration_in_seconds / factor_to_unit_standard)
                 current_time = current_time + duration_in_unit_standards
 
                 t_slot=current_time
