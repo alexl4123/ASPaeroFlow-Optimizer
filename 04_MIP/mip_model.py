@@ -4,19 +4,21 @@ from gurobipy import GRB
 
 import pandas as pd
 import numpy as np
+import networkx as nx
+import math
 
 
 class MIPModel:
 
-    def __init__(self, airport_vertices, max_time, max_explored_vertices, seed, timestep_granularity, max_threads, capacity, verbosity):
+    def __init__(self, airport_vertices, max_time, max_explored_vertices, seed, timestep_granularity, verbosity, number_threads, navaid_sector_lookup):
 
         self.airport_vertices = airport_vertices
         self._max_time = max_time
         self._max_explored_vertices = max_explored_vertices
         self._seed = seed
         self._timestep_granularity = timestep_granularity
-        self._max_number_threads = max_threads
-        self.capacity = capacity
+        self._max_number_threads = number_threads
+        self.navaid_sector_lookup = navaid_sector_lookup
 
         self.env = gp.Env(empty=True)          
         self.env.setParam('OutputFlag', 1)     
@@ -28,7 +30,7 @@ class MIPModel:
 
         self.env.start()
 
-    def create_model(self, converted_instance_matrix, capacity_time_matrix, edge_distances, max_delay):
+    def create_model(self, converted_instance_matrix, capacity_time_matrix, unit_graphs, airplanes, max_delay):
 
         solution = None
         self._max_time += max_delay
@@ -39,15 +41,16 @@ class MIPModel:
             extra_col = -1 * np.ones((converted_instance_matrix.shape[0], diff), dtype=int)
             converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
 
-        system_loads = self.bucket_histogram(converted_instance_matrix, capacity_time_matrix.shape[0], self._timestep_granularity)
-        capacity_time_matrix = self.capacity_time_matrix(self.capacity,system_loads.shape[1])
-
         while solution is None:
 
             model = gp.Model(env=self.env, name="toy")
             model.Params.Threads = self._max_number_threads
 
-            flight_variables_pd, sector_variables_pd = self.add_variables(model, converted_instance_matrix, edge_distances, max_delay)
+            flight_variables_pd, sector_variables_pd = self.add_variables(model, converted_instance_matrix, unit_graphs, airplanes, max_delay)
+
+            print("SUCCESS - VARS ADDED")
+            quit()
+
 
             model.update()
 
@@ -85,9 +88,114 @@ class MIPModel:
                 solution = converted_instance_matrix
 
         return converted_instance_matrix
+    
+    def k_diverse_near_shortest_paths(
+        self,
+        G, s, t, nearest_neighbors_lookup, k=5, eps=0.10, jaccard_max=0.6,
+        penalty_scale=0.5, max_tries=200, weight_key="weight"
+    ):
+        
+        s_t_length, _ = nx.bidirectional_dijkstra(G, s, t, weight=weight_key)
 
+        allowed = (1.0 + eps) * s_t_length
 
-    def add_variables(self, model, converted_instance_matrix, edge_distances, max_delay, fill_value = -1):
+        # 1) shortest length & prune to a small corridor: ds[u]+dt[u] ≤ (1+eps)*L0
+        #
+        if s not in nearest_neighbors_lookup:
+            ds = nx.single_source_dijkstra_path_length(G, s, weight=weight_key)
+            nearest_neighbors_lookup[s] = ds
+        else:
+            ds = nearest_neighbors_lookup[s]
+
+        if t not in nearest_neighbors_lookup:
+            dt = nx.single_source_dijkstra_path_length(G, t, weight=weight_key)
+            nearest_neighbors_lookup[t] = dt
+        else:
+            dt = nearest_neighbors_lookup[t]
+
+        keep = {u for u in G if u in ds and u in dt and ds[u] + dt[u] <= allowed}
+
+        H = G.subgraph(keep).copy()
+
+        # Edge-penalties (undirected key)
+        def ekey(u, v):
+            return (u, v) if u <= v else (v, u)
+        penalties = {}
+
+        # Penalized weight function
+        def w(u, v, d):
+            base = d.get(weight_key, 1.0)
+            pen = penalties.get(ekey(u, v), 0.0)
+            return base + pen
+
+        paths, edge_sets, tries = [], [], 0
+        while len(paths) < k and tries < max_tries:
+            tries += 1
+            try:
+                p = nx.shortest_path(H, s, t, weight=w)
+            except nx.NetworkXNoPath:
+                break
+
+            # Evaluate real (unpenalized) length
+            L = nx.path_weight(G, p, weight=weight_key)
+            if L > allowed:
+                break  # can’t find more within slack
+
+            # Edge-set and diversity check (Jaccard on edges)
+            E = {ekey(u, v) for u, v in zip(p, p[1:])}
+            similar = any(len(E & Es) / len(E | Es) > jaccard_max for Es in edge_sets)
+
+            # Always penalize current path to push the next one away
+            avg_edge = L / max(1, len(E))
+            for e in E:
+                penalties[e] = penalties.get(e, 0.0) + penalty_scale * avg_edge
+
+            if similar:
+                continue  # reject, keep searching
+
+            paths.append(p)
+            edge_sets.append(E)
+
+        return paths
+    
+    def get_flight_navpoint_trajectory(self, flights_affected, networkx_graph, flight_index, start_time, airplane_speed_kts, path, timestep_granularity):
+
+        traj = []
+        current_time = start_time
+        for hop, vertex in enumerate(path):
+            if hop == 0:
+                # Origin
+                t_slot = current_time
+
+                if t_slot >= flights_affected.shape[1]:
+                    raise Exception("In optimize_flights max time exceeded current allowed time.")
+
+            else:
+                # En-route/destination
+                prev_vertex = path[hop -1]
+                distance = networkx_graph[prev_vertex][vertex]["weight"]
+
+                # CONVERT SPEED TO m/s
+                airplane_speed_ms = airplane_speed_kts * 0.51444
+
+                # Compute duration from prev to vertex in unit time:
+                duration_in_seconds = distance/airplane_speed_ms
+                factor_to_unit_standard = 3600.00 / float(timestep_granularity)
+                duration_in_unit_standards = math.ceil(duration_in_seconds / factor_to_unit_standard)
+
+                current_time = current_time + duration_in_unit_standards
+
+                t_slot=current_time
+
+                if t_slot >= flights_affected.shape[1]:
+                    raise Exception("In optimize_flights max time exceeded current allowed time.")
+
+            traj.append((flight_index, vertex, t_slot))
+
+        return traj
+ 
+
+    def add_variables(self, model, converted_instance_matrix, unit_graphs, airplanes, max_delay, fill_value = -1):
 
         # |F|x|D|x|T|x|V|
         # F=flights, D=possible-delays, T=time, V=vertices
@@ -96,93 +204,138 @@ class MIPModel:
         considered_vertices = set()
 
         #max_delay = max_delay + 1
+        self.nearest_neighbors_lookup = {}
+        k = 6
 
         for flight_affected_index in range(converted_instance_matrix.shape[0]):
 
             flight_affected = converted_instance_matrix[flight_affected_index,:]
+            flights_affected = converted_instance_matrix[np.array([flight_affected_index]),:]
+
+            airplane_speed = airplanes[airplanes[:,0]==flight_affected_index][0,1]
+            airplane_id = airplanes[airplanes[:,0]==flight_affected_index][0,0]
+
+            if airplane_speed not in self.nearest_neighbors_lookup:
+                self.nearest_neighbors_lookup[airplane_speed] = {}
+
+            unit_graph = unit_graphs[airplane_speed]
+
 
             start_time = np.flatnonzero(flight_affected != fill_value)
             start_time = start_time[0] if start_time.size else 0
             
             flight_affected = flight_affected[flight_affected != fill_value]
-
+            if len(flight_affected) == 0:
+                continue
             origin = flight_affected[0]
             destination = flight_affected[-1]
 
-            origin_to_destination_time = edge_distances[origin,destination]
 
-            considered_vertices = considered_vertices.union(set([origin,destination]))
+            paths = self.k_diverse_near_shortest_paths(unit_graph, origin, destination, self.nearest_neighbors_lookup[airplane_speed],
+                                                k=k, eps=0.1, jaccard_max=0.6, penalty_scale=0.1, max_tries=50, weight_key="weight")
 
-            prev_vertices = None
+            graph_instance = []
+            flight_sector_instances = []
+            flight_times_instance = []
+            sector_instance = [] 
+            actual_arrival_time_instance = []
+            additional_time_increase = 0
+            time_window = 10
+            actual_delay = 0
 
-            for possible_start_time in range(start_time, start_time+max_delay+1):
 
-                delay = possible_start_time - start_time
+            for path in paths:
+
+                navpoint_trajectory = self.get_flight_navpoint_trajectory(flights_affected, unit_graph, flight_affected_index, start_time, airplane_speed, path, self._timestep_granularity)
+
+                for delay in range(additional_time_increase * time_window,time_window * (additional_time_increase + 1)):
+
+                    flight_time = 0
+                    current_time = start_time
+
+                    for flight_hop_index in range(len(navpoint_trajectory)):
+
+                        navaid = navpoint_trajectory[flight_hop_index][1]
+                        time = navpoint_trajectory[flight_hop_index][2]
+                        #sector = (self.navaid_sector[self.navaid_sector[:,0] == navaid])[0,1]
+                        sector = self.navaid_sector_lookup[navaid]
+
+                        if flight_hop_index == 0:
+
+                            for _ in range(actual_delay + delay + 1):
                 
-                origin_variable = model.addVar(vtype=GRB.BINARY, name=f"x[{flight_affected_index},{delay},{possible_start_time},{origin}]")
+                                origin_variable = model.addVar(vtype=GRB.BINARY, name=f"x[{flight_affected_index},{delay},{current_time},{origin}]")
 
-                #flight_variables[flight_affected_index][delay][possible_start_time][origin] = origin_variable
+                                entry = pd.DataFrame.from_dict({
+                                    "F": [flight_affected_index],
+                                    "D": [delay],
+                                    "T": [current_time],
+                                    "V": [origin],
+                                    "obj": [origin_variable]
+                                })
 
-                entry = pd.DataFrame.from_dict({
-                    "F": [flight_affected_index],
-                    "D": [delay],
-                    "T": [possible_start_time],
-                    "V": [origin],
-                    "obj": [origin_variable]
-                })
+                                flight_variables_pd = pd.concat([flight_variables_pd,entry], ignore_index = True)
 
-                flight_variables_pd = pd.concat([flight_variables_pd,entry], ignore_index = True)
+                                #flight_sector_instances.append(f"sectorFlight({flight_index},{flight_time},{sector},{path_number}).")
+                                #flight_times_instance.append(f"flightTime({flight_index},{flight_time}).")
+                                #sector_instance[f"sector({sector},{current_time},{capacity_demand_diff_matrix[sector,current_time]})."] = True
 
-                origin_variable = model.addVar(vtype=GRB.BINARY, name=f"y[{flight_affected_index},{delay},{possible_start_time},{origin}]")
-                entry = pd.DataFrame.from_dict({
-                    "F": [flight_affected_index],
-                    "D": [delay],
-                    "T": [possible_start_time],
-                    "V": [origin],
-                    "obj": [origin_variable]
-                })
-                sector_variables_pd = pd.concat([sector_variables_pd,entry], ignore_index = True)
+                                flight_time += 1
+                                current_time += 1
 
-            for from_origin_time in range(1,origin_to_destination_time + 1): # The +1 means that we add the destination airport
-                
-                time_to_destination_diff = origin_to_destination_time - from_origin_time
+                        else:
 
-                origin_vertices = edge_distances[origin,:] == from_origin_time
-                destination_vertices = edge_distances[destination,:] == time_to_destination_diff
+                            prev_navaid = navpoint_trajectory[flight_hop_index-1][1]
+                            prev_time = navpoint_trajectory[flight_hop_index-1][2]
+                            prev_sector = self.navaid_sector_lookup[prev_navaid]
 
-                matching_vertices = origin_vertices & destination_vertices
+                            #graph_instance[f"sectorEdge({prev_sector},{sector})."] = True
 
-                vertex_ids = np.where(matching_vertices)[0]
-                vertex_ids = self.restrict_max_vertices(prev_vertices, vertex_ids, matching_vertices, flight_affected, from_origin_time, edge_distances)
-                prev_vertices = list(vertex_ids)
+                            for time_index in range(1, time-prev_time + 1):
+                                
+                                #flight_times_instance.append(f"flightTime({flight_index},{flight_time}).")
 
-                for vertex_id in vertex_ids:
+                                if time_index <= math.floor((time - prev_time)/2):
 
-                    for possible_time in range(start_time + from_origin_time, start_time+max_delay+1+from_origin_time):
-                        
-                        delay = possible_time - start_time - from_origin_time
+                                    origin_variable = model.addVar(vtype=GRB.BINARY, name=f"x[{flight_affected_index},{delay},{current_time},{prev_sector}]")
 
-                        origin_variable = model.addVar(vtype=GRB.BINARY, name=f"x[{flight_affected_index},{delay},{possible_time},{vertex_id}]")
+                                    entry = pd.DataFrame.from_dict({
+                                        "F": [flight_affected_index],
+                                        "D": [delay],
+                                        "T": [current_time],
+                                        "V": [prev_sector],
+                                        "obj": [origin_variable]
+                                    })
 
-                        entry = pd.DataFrame.from_dict({
-                            "F": [flight_affected_index],
-                            "D": [delay],
-                            "T": [possible_time],
-                            "V": [vertex_id],
-                            "obj": [origin_variable]
-                        })
+                                    flight_variables_pd = pd.concat([flight_variables_pd,entry], ignore_index = True)
 
-                        flight_variables_pd = pd.concat([flight_variables_pd,entry], ignore_index = True)
+                                    #flight_sector_instances.append(f"sectorFlight({flight_affected_index},{flight_time},{prev_sector},{path_number}).")
+                                    #sector_instance[f"sector({prev_sector},{current_time},{capacity_demand_diff_matrix[prev_sector,current_time]})."] = True
 
-                        origin_variable = model.addVar(vtype=GRB.BINARY, name=f"y[{flight_affected_index},{delay},{possible_time},{vertex_id}]")
-                        entry = pd.DataFrame.from_dict({
-                            "F": [flight_affected_index],
-                            "D": [delay],
-                            "T": [possible_time],
-                            "V": [vertex_id],
-                            "obj": [origin_variable]
-                        })
-                        sector_variables_pd = pd.concat([sector_variables_pd,entry], ignore_index = True)
+                                else:
+
+                                    origin_variable = model.addVar(vtype=GRB.BINARY, name=f"x[{flight_affected_index},{delay},{current_time},{sector}]")
+
+                                    entry = pd.DataFrame.from_dict({
+                                        "F": [flight_affected_index],
+                                        "D": [delay],
+                                        "T": [current_time],
+                                        "V": [sector],
+                                        "obj": [origin_variable]
+                                    })
+
+                                    flight_variables_pd = pd.concat([flight_variables_pd,entry], ignore_index = True)
+
+                                    #flight_sector_instances.append(f"sectorFlight({flight_index},{flight_time},{sector},{path_number}).")
+                                    #sector_instance[f"sector({sector},{current_time},{capacity_demand_diff_matrix[sector,current_time]})."] = True
+
+                                current_time += 1
+                                flight_time += 1
+
+                    #actual_arrival_time_instance.append(f"actualArrivalTime({airplane_id},{current_time - 1},{path_number}).")
+
+                    # path_numbers = #PATHS * #DELAYS
+                    #path_number += 1
 
         return flight_variables_pd, sector_variables_pd
 
@@ -190,12 +343,15 @@ class MIPModel:
     def add_capacity_constraint(self, model: gp.Model, flight_variables_pd, sector_variables_pd, capacity_time_matrix, edge_distances, converted_instance_matrix, fill_value = -1 ):
 
         ############################
-        # CONSTRAINTS (1,2,3,4):
+        # CONSTRAINTS (1,2,3):
         for sector in range(capacity_time_matrix.shape[0]):
 
             timestep_granularity_window = []
 
             for time in range(self._max_time):
+
+                current_sector_variables = []
+                next_sector_variables = []
 
                 considered_rows = flight_variables_pd.loc[(flight_variables_pd["V"]==sector)&(flight_variables_pd["T"]==time)]
 
@@ -232,24 +388,27 @@ class MIPModel:
                             sector_variable = row["obj"]
 
                         #print(f"{flight_variable.VarName} - ({'+'.join([var.VarName for var in negative_capacity_variables])}) <= {sector_variable.VarName}") 
-                        model.addConstr(flight_variable - gp.quicksum(negative_capacity_variables) <= sector_variable)
-                        model.addConstr(sector_variable <= flight_variable)
+                        #model.addConstr(flight_variable - gp.quicksum(negative_capacity_variables) <= sector_variable)
+                        #model.addConstr(sector_variable <= flight_variable)
 
-                        sector_variables.append(sector_variable)
+                        current_sector_variables.append(flight_variable)
+                        next_sector_variables += negative_capacity_variables
 
 
-                    timestep_granularity_window.append(sector_variables)
+                        #sector_variables.append(sector_variable)
 
-                    all_sector_variables = []
-                    for sector_vars in timestep_granularity_window:
-                        all_sector_variables += sector_vars
+                    model.addConstr(gp.quicksum(current_sector_variables) - gp.quicksum(next_sector_variables) <= capacity_time_matrix[sector, time])
+
+                    #timestep_granularity_window.append(sector_variables)
+                    #all_sector_variables = []
+                    #for sector_vars in timestep_granularity_window:
+                    #    all_sector_variables += sector_vars
 
                     #print(f"{'+'.join([var.VarName for var in all_sector_variables])} <= {capacity_time_matrix[sector, time]}")
-                    model.addConstr(gp.quicksum(all_sector_variables) <= capacity_time_matrix[sector, time]) 
+                    #model.addConstr(gp.quicksum(all_sector_variables) <= capacity_time_matrix[sector, time]) 
 
-
-                    if len(timestep_granularity_window) >= self._timestep_granularity:
-                        timestep_granularity_window.pop(0)
+                    #if len(timestep_granularity_window) >= self._timestep_granularity:
+                    #    timestep_granularity_window.pop(0)
 
 
 
@@ -344,9 +503,8 @@ class MIPModel:
                                         right_variables.append(vertex_row["obj"])
 
                             # CONSTRAINT (NO EN-ROUTE HOLDING DELAY):
+                            # PUT OTHERWISE, WE ENSURE A PATH (at least a part)
                             model.addConstr(left_variable - gp.quicksum(right_variables) <= 0)
-    
-
 
             # CONSTRAINTS (5)&(6): 
             considered_rows_2 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]==max_delay))]

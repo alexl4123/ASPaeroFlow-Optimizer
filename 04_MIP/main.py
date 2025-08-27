@@ -15,9 +15,12 @@ import argparse
 import sys
 import time
 
+import networkx as nx
+import numpy as np
+import math
+
 import pandas as pd
 
-import numpy as np
 import pickle
 
 import multiprocessing as mp
@@ -76,35 +79,50 @@ class Main:
     def __init__(
         self,
         graph_path: Optional[Path],
-        capacity_path: Optional[Path],
-        instance_path: Optional[Path],
-        airport_vertices_path: Optional[Path],
+        sectors_path: Optional[Path],
+        flights_path: Optional[Path],
+        airports_path: Optional[Path],
+        airplanes_path: Optional[Path],
+        airplane_flight_path: Optional[Path],
+        navaid_sector_path: Optional[Path],
         encoding_path: Optional[Path],
         seed: Optional[int],
         number_threads: Optional[int],
         timestep_granularity: Optional[int],
         max_explored_vertices: Optional[int],
+        max_delay_per_iteration: Optional[int],
         max_time: Optional[int],
         verbosity: Optional[int],
     ) -> None:
+
         self._graph_path: Optional[Path] = graph_path
-        self._capacity_path: Optional[Path] = capacity_path
-        self._instance_path: Optional[Path] = instance_path
-        self._airport_vertices_path: Optional[Path] = airport_vertices_path
+        self._sectors_path: Optional[Path] = sectors_path
+        self._flights_path: Optional[Path] = flights_path
+        self._airports_path: Optional[Path] = airports_path
+        self._airplanes_path: Optional[Path] = airplanes_path
+        self._airplane_flight_path: Optional[Path] = airplane_flight_path
+        self._navaid_sector_path: Optional[Path] = navaid_sector_path
+
         self._encoding_path: Optional[Path] = encoding_path
+
         self._seed: Optional[int] = seed
         self._number_threads: Optional[int] = number_threads
         self._timestep_granularity: Optional[int] = timestep_granularity
-        self._verbosity: Optional[int] = verbosity
+        self._max_time: Optional[int] = max_time
+        self.verbosity: Optional[int] = verbosity
 
         self._max_explored_vertices: Optional[int] = max_explored_vertices
-        self._max_time: Optional[int] = max_time
+        self._max_delay_per_iteration: Optional[int] = max_delay_per_iteration
 
         # Data containers — populated by :pymeth:`load_data`.
         self.graph: Optional[np.ndarray] = None
-        self.capacity: Optional[np.ndarray] = None
-        self.instance: Optional[np.ndarray] = None
+        self.sectors: Optional[np.ndarray] = None
+        self.flights: Optional[np.ndarray] = None
         self.encoding: Optional[np.ndarray] = None
+
+        self.nearest_neighbors_lookup = {}
+
+
 
     # ---------------------------------------------------------------------
     # Public API
@@ -114,85 +132,108 @@ class Main:
         """Load all CSV files provided on the command line."""
         if self._graph_path is not None:
             self.graph = _load_csv(self._graph_path)
-        if self._capacity_path is not None:
-            self.capacity = _load_csv(self._capacity_path)
-        if self._instance_path is not None:
-            self.instance = _load_csv(self._instance_path)
-        if self._airport_vertices_path is not None:
-            self.airport_vertices = _load_csv(self._airport_vertices_path)
+        if self._sectors_path is not None:
+            self.sectors = _load_csv(self._sectors_path)
+        if self._flights_path is not None:
+            self.flights = _load_csv(self._flights_path)
+        if self._airports_path is not None:
+            self.airports = _load_csv(self._airports_path)
+        if self._airplanes_path is not None:
+            self.airplanes = _load_csv(self._airplanes_path)
+        if self._airplane_flight_path is not None:
+            self.airplane_flight = _load_csv(self._airplane_flight_path)
+        if self._navaid_sector_path is not None:
+            self.navaid_sector = _load_csv(self._navaid_sector_path)
+
         if self._encoding_path is not None:
             with open(self._encoding_path, "r") as file:
                 self.encoding = file.read()
+
+
 
     def run(self) -> None:  # noqa: D401 – imperatives okay here
         """Run the application"""
         self.load_data()
         
-        if self._verbosity > 0:
+        if self.verbosity > 0:
             # --- Demonstration output — remove/replace in production ---------
             print("  graph   :", None if self.graph is None else self.graph.shape)
-            print("  capacity:", None if self.capacity is None else self.capacity.shape)
-            print("  instance:", None if self.instance is None else self.instance.shape)
-            print("  airport-vertices:", None if self.airport_vertices is None else self.airport_vertices.shape)
+            print("  capacity:", None if self.sectors is None else self.sectors.shape)
+            print("  instance:", None if self.flights is None else self.flights.shape)
+            print("  airport-vertices:", None if self.airports is None else self.airports.shape)
             # -----------------------------------------------------------------
 
-        edges_instance = []
+        sources = self.graph[:,0]
+        targets = self.graph[:,1]
+        dists = self.graph[:,2]
+        self.networkx_navpoint_graph = nx.Graph()
+        self.networkx_navpoint_graph.add_weighted_edges_from(zip(sources, targets, dists))
 
-        for row_index in range(self.graph.shape[0]):
-            row = self.graph[row_index,: ]
-            edges_instance.append(f"sectorEdge({row[0]},{row[1]}).")
+        self.unit_graphs = {}
 
-        edges_instance = "\n".join(edges_instance)
+        different_speeds = list(set(list(self.airplanes[:,1])))
+        for cur_airplane_speed in different_speeds:
 
-        edge_distances = self.compute_distance_matrix()
+            self.unit_graphs[cur_airplane_speed] = self.networkx_navpoint_graph.copy()
+            graph = self.unit_graphs[cur_airplane_speed]
+
+            self.nearest_neighbors_lookup[cur_airplane_speed] = {}
+
+            tmp_edges = {}
+
+            for edge in graph.edges(data=True):
+
+                distance = edge[2]["weight"]
+                # CONVERT AIRPLANE SPEED TO m/s
+                airplane_speed_ms = cur_airplane_speed * 0.51444
+                duration_in_seconds = distance/airplane_speed_ms
+                factor_to_unit_standard = 3600.00 / float(self._timestep_granularity)
+                duration_in_unit_standards = math.ceil(duration_in_seconds / factor_to_unit_standard)
+
+                duration_in_unit_standards = max(duration_in_unit_standards, 1)
+
+                tmp_edges[(edge[0],edge[1])] = {"weight":duration_in_unit_standards}
+
+                #print(f"{distance}/{airplane_speed_ms} = {duration_in_seconds}")
+                #print(f"{duration_in_seconds}/{factor_to_unit_standard} = {duration_in_unit_standards}")
+
+            nx.set_edge_attributes(graph, tmp_edges)
+
 
         airport_instance = []
 
-        for row_index in range(self.airport_vertices.shape[0]):
-            row = self.airport_vertices[row_index]
+        for row_index in range(self.airports.shape[0]):
+            row = self.airports[row_index]
             airport_instance.append(f"airport({row}).")
 
         airport_instance = "\n".join(airport_instance)
 
-        # |T| = 24 (1h-simulation), or 24*4 (15 minute simulation)
-        # |F| = number of flights
-        # |R| = number of regions (self.capacity.shape[0])
+        navaid_sector_lookup = {}
+        for row_index in range(self.navaid_sector.shape[0]):
+            navaid_sector_lookup[self.navaid_sector[row_index,0]] = self.navaid_sector[row_index, 1]
+
 
         # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
-        converted_instance_matrix = self.instance_to_matrix(self.instance, self._max_time)
+        converted_instance_matrix, planned_arrival_times = self.instance_to_matrix_vectorized(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity, navaid_sector_lookup)
+        #converted_instance_matrix, planned_arrival_times = self.instance_to_matrix(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity, navaid_sector_lookup)
+
+        #np.testing.assert_array_equal(converted_instance_matrix, converted_instance_matrix_2)
+        #quit()
+
         # 2.) Create demand matrix (|R|x|T|)
-        system_loads = self.bucket_histogram(converted_instance_matrix, self.capacity.shape[0], self._timestep_granularity)
+        system_loads = self.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+
         # 3.) Create capacity matrix (|R|x|T|)
-        capacity_time_matrix = self.capacity_time_matrix(self.capacity,system_loads.shape[1])
+        capacity_time_matrix = self.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity)
+
         # 4.) Subtract demand from capacity (|R|x|T|)
         capacity_demand_diff_matrix = capacity_time_matrix - system_loads
         # 5.) Create capacity overload matrix
-        capacity_overload_mask = capacity_demand_diff_matrix < 0
-
-        #number_of_conflicts = capacity_overload_mask.sum()
-        number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
-        number_of_conflicts_prev = None
-
-        counter_equal_solutions = 0
-        additional_time_increase = 0
-        max_number_airplanes_considered_in_ASP = 2
-
-        iteration = 0
-        fill_value = -1
-
-        max_number_processors = self._number_threads
-        seed = self._seed
-
-        #np.savetxt("00_initial_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
-        original_converted_instance_matrix = converted_instance_matrix.copy()
-
-
 
         start_time = time.time()
 
-        converted_instance_matrix = self.build_MIP_model(edge_distances, converted_instance_matrix, capacity_time_matrix,
-                        capacity_demand_diff_matrix, additional_time_increase, fill_value, 
-                        max_number_airplanes_considered_in_ASP, max_number_processors)
+
+        converted_instance_matrix = self.build_MIP_model(self.unit_graphs, converted_instance_matrix, capacity_time_matrix)
 
         end_time = time.time()
         if self._verbosity > 0:
@@ -234,27 +275,26 @@ class Main:
 
 
     def build_MIP_model(self,
-                edge_distances: np.ndarray,
+                unit_graphs,
                 converted_instance_matrix: np.ndarray,
                 capacity_time_matrix: np.ndarray,
-                capacity_demand_diff_matrix: np.ndarray,
-                additional_time_increase: int,
-                fill_value: int,
-                max_rows: int,
-                max_number_processors: int,
                 ):
         """
         Split the candidate rows into *n_proc* equally‑sized chunks
         (≤ max_rows each) and build one ``OptimizeFlights`` instance per chunk.
         """
 
+        navaid_sector_lookup = {}
+        for row_index in range(self.navaid_sector.shape[0]):
+            navaid_sector_lookup[self.navaid_sector[row_index,0]] = self.navaid_sector[row_index, 1]
 
         max_time = max(self._max_time, converted_instance_matrix.shape[1])
 
         max_delay = 24
+        
+        mipModel = MIPModel(self.airports, max_time, self._max_explored_vertices, self._seed, self._timestep_granularity, self.verbosity, self._number_threads, navaid_sector_lookup)
 
-        mipModel = MIPModel(self.airport_vertices, max_time, self._max_explored_vertices, self._seed, self._timestep_granularity, max_number_processors, self.capacity, self._verbosity)
-        converted_instance_matrix = mipModel.create_model(converted_instance_matrix, capacity_time_matrix, edge_distances, max_delay)
+        converted_instance_matrix = mipModel.create_model(converted_instance_matrix, capacity_time_matrix, unit_graphs, self.airplanes, max_delay)
 
         return converted_instance_matrix
     
@@ -391,186 +431,214 @@ class Main:
             dist = np.where(np.isinf(dist), -1, dist.astype(np.int32))
 
         return dist
-
-    def instance_to_matrix(self, inst: np.ndarray,
-                           max_time: int,
-                        *,
-                        fill_value: int = -1,
-                        compress: bool = False) -> np.ndarray:
+ 
+    def instance_to_matrix_vectorized(self,
+                                    flights: np.ndarray,
+                                    airplane_flight: np.ndarray,
+                                    navaid_sector: np.ndarray,
+                                    max_time: int,
+                                    time_granularity: int,
+                                    navaid_sector_lookup,
+                                    *,
+                                    fill_value: int = -1,
+                                    compress: bool = False):
         """
-        Convert an *instance* array with shape (n, 3) into a 2-D matrix.
-
-        Parameters
-        ----------
-        inst
-            Each row is (row_id, value, col_id).
-        fill_value
-            Placeholder put where no entry is defined (defaults to -1).
-        compress
-            • False  ➜ allocate rows = max(row_id)+1, cols = max(col_id)+1  
-            (fastest, but can be large if indices are sparse).
-
-            • True   ➜ map the *unique* row/col labels to consecutive
-            indices before building the matrix.  Returns the compact
-            matrix plus the label mappings (see below).
-
-        Returns
-        -------
-        If `compress is False`:
-            2-D `np.ndarray` with dtype taken from `inst[:,1]`.
-        If `compress is True`:
-            (matrix, row_labels, col_labels)
+        Vectorized/semi-vectorized rewrite instance_to_matrix.
+        Assumes IDs are non-negative ints (reasonably dense).
         """
-        rows = inst[:, 0].astype(int)
-        vals = inst[:, 1]
-        cols = inst[:, 2].astype(int)
 
-        out = np.full((rows.max() + 1, cols.max() + 1),
-                        fill_value,
-                        dtype=vals.dtype)
-        out[rows, cols] = vals
+        # --- ensure integer views without copies where possible
+        flights = flights.astype(np.int64, copy=False)
+        airplane_flight = airplane_flight.astype(np.int64, copy=False)
 
-        if out.shape[1] < max_time:
-            diff = max_time - out.shape[1]
-            extra_col = -1 * np.ones((out.shape[0], diff), dtype=int)
-            out = np.hstack((out, extra_col)) 
+        # --- build flight -> airplane mapping (array is fastest if IDs are dense)
+        fid_map_max = int(max(flights[:,0].max(), airplane_flight[:,1].max()))
+        flight_to_airplane = np.full(fid_map_max + 1, -1, dtype=np.int64)
+        flight_to_airplane[airplane_flight[:,1]] = airplane_flight[:,0]
 
-        return out
+        # --- build navaid -> sector mapping
+        # prefer an array map (fast); fall back to fromiter if needed
+        navaids_used = flights[:,1]
+        try:
+            max_nav_id = int(max(navaids_used.max(), max(navaid_sector_lookup.keys())))
+            nav2sec = np.full(max_nav_id + 1, fill_value, dtype=np.int64)
+            for k, v in navaid_sector_lookup.items():
+                nav2sec[int(k)] = int(v)
+            sectors = nav2sec[navaids_used]
+        except Exception:
+            # works even if lookup is a dict with sparse/large keys
+            sectors = np.fromiter((int(navaid_sector_lookup[int(x)]) for x in navaids_used),
+                                dtype=np.int64, count=navaids_used.size)
 
+        # --- sort by flight, then time (stable contiguous blocks per flight)
+        order = np.lexsort((flights[:,2], flights[:,0]))
+        f_sorted = flights[order]
+        s_sorted = sectors[order]
+
+        fid = f_sorted[:,0]
+        t   = f_sorted[:,2]
+        sec = s_sorted
+
+        # --- output matrix shape (airplane_id rows, time columns)
+        n_rows = int(airplane_flight[:,0].max()) + 1
+        max_time_dim = int(max(t.max(), (max_time + 1) * time_granularity))
+        out = np.full((n_rows, max_time_dim), fill_value, dtype=sec.dtype)
+
+        # --- group boundaries per flight (contiguous in sorted array)
+        u, idx_first, counts = np.unique(fid, return_index=True, return_counts=True)
+
+        # planned arrival times = last time per group (vectorized)
+        last_idx = idx_first + counts - 1
+        planned_arrival_times = dict(zip(u.tolist(), t[last_idx].tolist()))
+
+        # --- fill per-flight via slices (no per-timestep loops)
+        # For each consecutive pair (prev_time -> next_time):
+        #   first half  -> prev_sector
+        #   second half -> next_sector
+        for g, start in enumerate(idx_first):
+            end = start + counts[g]
+
+            a_id = int(flight_to_airplane[int(u[g])])
+            if a_id < 0:
+                # flight has no airplane mapping; skip defensively
+                continue
+
+            times = t[start:end]
+            secs  = sec[start:end]
+            if times.size == 0:
+                continue
+
+            # first hop: set the exact event time
+            out[a_id, times[0]] = secs[0]
+
+            if times.size >= 2:
+                prev_times = times[:-1]
+                next_times = times[1:]
+                prev_secs  = secs[:-1]
+                next_secs  = secs[1:]
+
+                L = next_times - prev_times
+                mids = prev_times + (L // 2)
+
+                # slice-assign per segment (loop over segments; no inner time loop)
+                for i in range(prev_times.size):
+                    s0 = prev_times[i] + 1       # start (exclusive of prev_time)
+                    m1 = mids[i] + 1             # first-half end (inclusive) -> slice stop
+                    e1 = next_times[i] + 1       # segment end (inclusive) -> slice stop
+
+                    # first half [prev_time+1, mid]
+                    if m1 > s0:
+                        out[a_id, s0:m1] = prev_secs[i]
+                    # second half [mid+1, next_time]
+                    if e1 > m1:
+                        out[a_id, m1:e1] = next_secs[i]
+
+        return out, planned_arrival_times
    
-    def first_overload(self, mask: np.ndarray):
-        """
-        Return (time, bucket) of the first *True* entry in `mask`
-        using lexicographic order (time, bucket).  If none found
-        return `None`.
 
-        `mask` shape: (num_buckets, num_times)
-                    rows   → bucket IDs
-                    columns→ time steps
-        """
-        # 1. Find the first time step that has *any* overload
-        time_candidates = np.flatnonzero(mask.any(axis=0))
-        if time_candidates.size == 0:
-            return None                # no overloads at all
-
-        t = time_candidates[0]         # earliest time
-
-        # 2. Within that column, find the first bucket
-        b = np.flatnonzero(mask[:, t])[0]
-
-        return (t, b)                  # (time, bucket)
-
-    def capacity_time_matrix(self, cap: np.ndarray,
+    def capacity_time_matrix(self,
+                            cap: np.ndarray,
                             n_times: int,
-                            *,
-                            sort_by_bucket: bool = False) -> np.ndarray:
+                            time_granularity: int) -> np.ndarray:
         """
-        Expand the per-bucket capacity vector to shape (|B|, n_times).
-
-        Parameters
-        ----------
-        cap
-            2-column array ``[bucket_id, capacity_value]`` with shape (|B|, 2).
-        n_times
-            Number of time steps (usually ``counts.shape[1]``).
-        sort_by_bucket
-            If *True* (default) the rows are first sorted by *bucket_id*
-            so that row *i* corresponds to bucket *i* (0 … |B|–1).
-
-        Returns
-        -------
-        cap_mat : np.ndarray
-            Shape (|B|, n_times) where every row is the bucket’s capacity.
+        cap: shape (N, >=2), capacity in column 1
+        returns: (N, n_times)
         """
-        if sort_by_bucket:
-            cap = cap[np.argsort(cap[:, 0])]
+        N = cap.shape[0]
+        T = int(time_granularity)
 
-        # Extract the capacity column → shape (|B|,)
-        cap_vals = cap[:, 1]
+        # Integer math: base fill + remainder
+        capacity = np.asarray(cap[:, 1], dtype=np.int64)
+        base = capacity // T                 # per-slot baseline
+        rem  = capacity %  T                 # how many +1 to sprinkle
 
-        # Broadcast to (|B|, n_times) without an explicit loop
-        cap_mat = np.broadcast_to(cap_vals[:, None], (cap_vals.size, n_times))
-        # cap_mat = cap_mat.copy()
+        # Start with the baseline replicated across T columns
+        # (broadcast then copy to get a writeable array)
+        template = np.broadcast_to(base[:, None], (N, T)).astype(np.int32, copy=True)
+
+        # Fast remainder placement: for each row i, add +1 at
+        # columns: step[i] * np.arange(rem[i]), where step = floor(T/rem)
+        max_r = int(rem.max())
+        if max_r > 0:
+            # step is irrelevant where rem==0, but we still fill an array (won't be used)
+            step = np.empty_like(rem, dtype=np.int64)
+            # Avoid division-by-zero; values where rem==0 are ignored by mask below
+            np.floor_divide(T, rem, out=step, where=rem > 0)
+
+            J = np.arange(max_r, dtype=np.int64)                  # 0..max(rem)-1
+            mask = J[None, :] < rem[:, None]                      # N x max_r (True only for first rem[i])
+            rows2d = np.broadcast_to(np.arange(N)[:, None], (N, max_r))
+            cols2d = step[:, None] * J[None, :]
+
+            r_idx = rows2d[mask]
+            c_idx = cols2d[mask]
+
+            # Scatter-add the remainders
+            np.add.at(template, (r_idx, c_idx), 1)
+
+        # Repeat the base block to cover n_times
+        if n_times % T != 0:
+            raise ValueError("n_times must be a multiple of time_granularity")
+        reps = n_times // T
+
+        cap_mat = np.tile(template, (1, reps))   # (N, n_times)
+
+        #np.savetxt("20250819_cap_mat.csv", cap_mat, delimiter=",",fmt="%i")
 
         return cap_mat
-    
 
+
+   
     def bucket_histogram(self, instance_matrix: np.ndarray,
-                        num_buckets: int,
-                        timestep_granularity: int,
-                        *,
-                        fill_value: int = -1) -> np.ndarray:
-        """
-        Count how many elements occupy each *bucket* at each *time step*.
+                         sectors: np.ndarray,                # unused, kept for signature compat
+                         num_buckets: int,
+                         n_times: int,
+                         timestep_granularity: int,          # unused, kept for signature compat
+                         *,
+                         fill_value: int = -1) -> np.ndarray:
 
-        Parameters
-        ----------
-        instance_matrix
-            2-D array produced by `instance_to_matrix`  
-            shape = (num_elements, num_time_steps)
-        num_buckets
-            Equals `self.capacity.shape[0]`
-        fill_value
-            The placeholder used for “no assignment” (default −1)
+        inst = np.asarray(instance_matrix)
+        if inst.ndim != 2:
+            raise ValueError("instance_matrix must be 2D (flights x time)")
+        F, T = inst.shape
+        if T != n_times:
+            raise ValueError(f"n_times ({n_times}) != instance_matrix.shape[1] ({T})")
 
-        Returns
-        -------
-        counts : np.ndarray
-            shape = (num_buckets, num_time_steps)  
-            `counts[bucket, t]` is the occupancy of *bucket* at time *t*.
-        """
-        n_elems, n_times = instance_matrix.shape
+        # Early exit if everything is fill_value
+        valid = inst != fill_value
+        if not valid.any():
+            return np.zeros((num_buckets, T), dtype=np.int32)
 
-        # ------------------------------------------------------------------
-        # 1.  Mask out empty cells (if any)
-        # ------------------------------------------------------------------
+        # Mark entries (new sector occurrences) at each time:
+        # - t = 0: any valid value
+        # - t > 0: valid and changed vs previous time
+        change = np.zeros_like(valid, dtype=bool)
+        change[:, 0] = valid[:, 0]
+        if T > 1:
+            change[:, 1:] = valid[:, 1:] & (inst[:, 1:] != inst[:, :-1])
 
-        # Generate mask of values that differ from fill_value = -1
-        valid_mask = instance_matrix != fill_value
-        if not np.any(valid_mask):                       
-            # Shortcut if all cells empty
-            return np.zeros((num_buckets, n_times), dtype=int)
+        # Gather (sector_id, time_idx) pairs where an entry happens
+        sectors_at_entries = inst[change]
+        time_idx = np.nonzero(change)[1]  # column indices where change==True
 
-        # ------------------------------------------------------------------
-        # 2.  Gather bucket IDs and their time indices
-        # ------------------------------------------------------------------
-        buckets = instance_matrix[valid_mask]                        # (K,) bucket id
-        # 
+        # Optional safety: ensure sector ids are in [0, num_buckets)
+        if sectors_at_entries.size:
+            mn = int(sectors_at_entries.min())
+            mx = int(sectors_at_entries.max())
+            if mn < 0 or mx >= num_buckets:
+                raise ValueError(
+                    f"sector id(s) out of range [0, {num_buckets}): found min={mn}, max={mx}"
+                )
 
-        # np.nonzero --> Get indices of non-zero elements of valid_mask (non false)
-        # --> with np.nonzero(valid_mask)[1] we take the time indices
+        # Scatter-add 1 for each (sector, time) event
+        hist = np.zeros((num_buckets, T), dtype=np.int32)
+        np.add.at(hist, (sectors_at_entries, time_idx), 1)
 
-        times   = np.nonzero(valid_mask)[1]              # (K,) time index
+        #np.savetxt("20250819_histogram.csv", hist, delimiter=",",fmt="%i")
 
-        # ------------------------------------------------------------------
-        # 3.  Vectorised scatter using `np.add.at`
-        # ------------------------------------------------------------------
-        counts = np.zeros((num_buckets, n_times), dtype=int)
-
-        # Performs unbuffered in place operation on operand ‘a’ for elements specified by ‘indices’.
-        # ufunc.at(a, indices, b=None, /)
-        # --> Buckets and times specify the indices
-        np.add.at(counts, (buckets, times), 1)
-
-        # Performs a sliding window aggregation according to timestep-granularity
-        # To account for hour/minute/etc. computation
-        axis = 1
-
-        pad_width = [(0, 0)] * counts.ndim
-        pad_width[axis] = (0, timestep_granularity - 1)
-        padded = np.pad(counts, pad_width, mode="constant")
-
-        windows = np.lib.stride_tricks.sliding_window_view(padded,
-                                                    window_shape=timestep_granularity,
-                                                    axis=axis)
-        windows = windows.sum(axis=2)
-
-        return windows
+        return hist
 
 
-    
-
- 
 # ---------------------------------------------------------------------------
 # CLI utilities
 # ---------------------------------------------------------------------------
@@ -578,44 +646,59 @@ class Main:
 def _build_arg_parser() -> argparse.ArgumentParser:
     """Return a fully‑configured :pyclass:`argparse.ArgumentParser`."""
     parser = argparse.ArgumentParser(
-        prog="ATFM-MIP-Implementation",
-        description="MIP implementation for solving the ATFM problem.",
+        prog="ATFM-NM-Tool",
+        description="Highly efficient ATFM problem solver for the network manager - including XAI.",
     )
 
     parser.add_argument(
-        "--path-graph",
+        "--graph-path",
         type=Path,
-        default=Path("instances","edges.csv"),  
         metavar="FILE",
         help="Location of the graph CSV file.",
     )
     parser.add_argument(
-        "--path-capacity",
+        "--sectors-path",
         type=Path,
-        default=Path("instances","capacity.csv"), 
         metavar="FILE",
-        help="Location of the capacity CSV file.",
+        help="Location of the sector (capacity) CSV file.",
     )
     parser.add_argument(
-        "--path-instance",
+        "--flights-path",
         type=Path,
-        default=Path("instances","instance_100.csv"), 
         metavar="FILE",
-        help="Location of the instance CSV file.",
+        help="Location of the flights CSV file.",
     )
     parser.add_argument(
-        "--airport-vertices-path",
+        "--airports-path",
         type=Path,
-        default=Path("instances","airport_vertices.csv"), 
         metavar="FILE",
         help="Location of the airport-vertices CSV file.",
     )
+    parser.add_argument(
+        "--airplanes-path",
+        type=Path,
+        metavar="FILE",
+        help="Location of the airplanes CSV file.",
+    )
+    parser.add_argument(
+        "--airplane-flight-path",
+        type=Path,
+        metavar="FILE",
+        help="Location of the airplane-flight-assignment CSV file.",
+    )
+    parser.add_argument(
+        "--navaid-sector-path",
+        type=Path,
+        metavar="FILE",
+        help="Location of the navaids-sector assignment CSV file.",
+    )
+
     parser.add_argument(
         "--encoding-path",
         type=Path,
         default=Path("encoding.lp"), 
         metavar="FILE",
-        help="NOT USED",
+        help="Location of the encoding for the optimization problem.",
     )
     parser.add_argument(
         "--seed",
@@ -645,7 +728,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--max-delay-per-iteration",
         type=int,
         default=-1,
-        help="NOT USED"
+        help="Maximum hours of delay per solve iteration explored (larger=more compute time, but faster descent; -1 is automatically fetch  according to max. time steps)."
     )
     parser.add_argument(
         "--max-time",
@@ -657,10 +740,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--verbosity",
         type=int,
         default=0,
-        help="Verbosity levels (0,1)"
+        help="Verbosity levels (0,1,2)"
     )
-   
+
     return parser
+
+
 
 
 def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -677,11 +762,13 @@ def main(argv: Optional[List[str]] = None) -> None:
     """Script entry‑point compatible with both `python -m` and `poetry run`."""
     args = parse_cli(argv)
 
-    app = Main(args.path_graph, args.path_capacity, args.path_instance,
-               args.airport_vertices_path, args.encoding_path,
+    app = Main(args.graph_path, args.sectors_path, args.flights_path,
+               args.airports_path, args.airplanes_path,
+               args.airplane_flight_path, args.navaid_sector_path,
+               args.encoding_path,
                args.seed,args.number_threads, args.timestep_granularity,
-               args.max_explored_vertices, args.max_time,
-               args.verbosity)
+               args.max_explored_vertices, args.max_delay_per_iteration,
+               args.max_time, args.verbosity)
     app.run()
 
 
