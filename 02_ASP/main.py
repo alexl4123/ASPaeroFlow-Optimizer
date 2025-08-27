@@ -23,37 +23,52 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     """Return a fully‑configured :pyclass:`argparse.ArgumentParser`."""
     parser = argparse.ArgumentParser(
         prog="ATFM-NM-Tool",
-        description="Solving ATFM with pure ASP - standard encoding.",
+        description="Highly efficient ATFM problem solver for the network manager - including XAI.",
     )
 
     parser.add_argument(
-        "--path-graph",
+        "--graph-path",
         type=Path,
-        default=Path("instances","edges.csv"),  
         metavar="FILE",
         help="Location of the graph CSV file.",
     )
     parser.add_argument(
-        "--path-capacity",
+        "--sectors-path",
         type=Path,
-        default=Path("instances","capacity.csv"), 
         metavar="FILE",
-        help="Location of the capacity CSV file.",
+        help="Location of the sector (capacity) CSV file.",
     )
     parser.add_argument(
-        "--path-instance",
+        "--flights-path",
         type=Path,
-        default=Path("instances","instance_100.csv"), 
         metavar="FILE",
-        help="Location of the instance CSV file.",
+        help="Location of the flights CSV file.",
     )
     parser.add_argument(
-        "--airport-vertices-path",
+        "--airports-path",
         type=Path,
-        default=Path("instances","airport_vertices.csv"), 
         metavar="FILE",
         help="Location of the airport-vertices CSV file.",
     )
+    parser.add_argument(
+        "--airplanes-path",
+        type=Path,
+        metavar="FILE",
+        help="Location of the airplanes CSV file.",
+    )
+    parser.add_argument(
+        "--airplane-flight-path",
+        type=Path,
+        metavar="FILE",
+        help="Location of the airplane-flight-assignment CSV file.",
+    )
+    parser.add_argument(
+        "--navaid-sector-path",
+        type=Path,
+        metavar="FILE",
+        help="Location of the navaids-sector assignment CSV file.",
+    )
+
     parser.add_argument(
         "--encoding-path",
         type=Path,
@@ -71,25 +86,25 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--number-threads",
         type=int,
         default=20,
-        help="NOT USED."
+        help="Number of parallel ASP solving threads."
     )
     parser.add_argument(
         "--timestep-granularity",
         type=int,
         default=1,
-        help="Specifies the computation window in timesteps."
+        help="Specifies how long one stimulated timestep is (time-step=1h/granularity). So granularity=1 means 1h, granularity=4 means 15 minutes."
     )
     parser.add_argument(
         "--max-explored-vertices",
         type=int,
         default=6,
-        help="NOT USED"
+        help="Maximum vertices explored in parallel - effectively restricts number of explored paths (larger=possibly better solution, but more compute time needed)."
     )
     parser.add_argument(
         "--max-delay-per-iteration",
         type=int,
         default=-1,
-        help="NOT USED"
+        help="Maximum hours of delay per solve iteration explored (larger=more compute time, but faster descent; -1 is automatically fetch  according to max. time steps)."
     )
     parser.add_argument(
         "--max-time",
@@ -101,10 +116,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--verbosity",
         type=int,
         default=0,
-        help="Verbosity levels (0,1)"
+        help="Verbosity levels (0,1,2)"
     )
 
     return parser
+
+
 
 
 def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -121,10 +138,14 @@ def main(argv: Optional[List[str]] = None) -> None:
     """Script entry‑point compatible with both `python -m` and `poetry run`."""
     args = parse_cli(argv)
 
-    edges_csv = args.path_graph
-    capacity_csv = args.path_capacity
-    instance_csv = args.path_instance
-    airport_vertices_csv = args.airport_vertices_path
+    graph_csv = args.graph_path
+    sectors_csv = args.sectors_path
+    flights_csv = args.flights_path
+    airports_csv = args.airports_path
+    airplanes_csv = args.airplanes_path
+    airplane_flight_csv = args.airplane_flight_path
+    navaid_sector_csv = args.navaid_sector_path
+
     encoding_path = args.encoding_path
     verbosity = args.verbosity
 
@@ -132,27 +153,23 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     timestep_granularity = args.timestep_granularity
 
-    adjusted_timesteps = args.max_time
-    max_time = adjusted_timesteps
+    max_time = args.max_time
 
-    asp_atoms, inferred_max_time = TranslateCSVtoLogicProgram().main(edges_csv,instance_csv, capacity_csv, airport_vertices_csv, timestep_granularity)
+    asp_instance = TranslateCSVtoLogicProgram().main(graph_csv, flights_csv, sectors_csv,
+        airports_csv, airplanes_csv, airplane_flight_csv, navaid_sector_csv, encoding_path, timestep_granularity, max_time)
+    
+    instance_asp_atoms = "\n".join(asp_instance)
 
-    if inferred_max_time > max_time:
-        max_time = inferred_max_time
-
-    instance_asp_atoms = "\n".join(asp_atoms)
-
+    #open("20250827_instance.lp","w").write(instance_asp_atoms)
 
     encoding = open(encoding_path, "r").read()
 
     model = None
 
     while model is None:
-        instance = instance_asp_atoms + "\n" + f"maxTimeOriginal({max_time})."
 
-        solver: Model = Solver(encoding, instance, seed=seed)
+        solver: Model = Solver(encoding, instance_asp_atoms, seed=seed)
         model = solver.solve()
-        max_time += adjusted_timesteps
         
     if verbosity > 0:
         print(f"""
@@ -182,7 +199,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         print(model.get_rerouted_airplanes())
 
     print(model.get_total_atfm_delay())
-    np.savetxt(sys.stdout, converted_instance_matrix, delimiter=",", fmt="%i") 
+    #np.savetxt(sys.stdout, converted_instance_matrix, delimiter=",", fmt="%i") 
 
     return model.get_total_atfm_delay()
 

@@ -90,7 +90,6 @@ class Model:
     def get_total_atfm_delay(self):
 
         total = sum(operator.attrgetter("arguments")(arrival_delay)[1].number for arrival_delay in self.atfm_delays)
-        print(self.atfm_delays)
 
         return total
 
