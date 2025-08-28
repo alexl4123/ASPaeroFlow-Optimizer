@@ -231,12 +231,14 @@ class Main:
         # 5.) Create capacity overload matrix
 
         start_time = time.time()
+        
+        original_converted_instance_matrix = converted_instance_matrix.copy()
 
 
-        converted_instance_matrix = self.build_MIP_model(self.unit_graphs, converted_instance_matrix, capacity_time_matrix)
+        converted_instance_matrix = self.build_MIP_model(self.unit_graphs, converted_instance_matrix, capacity_time_matrix, planned_arrival_times)
 
         end_time = time.time()
-        if self._verbosity > 0:
+        if self.verbosity > 0:
             print(f">> Elapsed solving time: {end_time - start_time}")
 
 
@@ -245,7 +247,7 @@ class Main:
         t_init  = self.last_valid_pos(original_converted_instance_matrix)      # last non--1 in the *initial* schedule
         t_final = self.last_valid_pos(converted_instance_matrix)     # last non--1 in the *final* schedule
 
-        if self._verbosity > 0:
+        if self.verbosity > 0:
             print("<<<<<<<<<<<<<<<<----------------->>>>>>>>>>>>>>>>")
             print("                  FINAL RESULTS")
             print("<<<<<<<<<<<<<<<<----------------->>>>>>>>>>>>>>>>")
@@ -261,7 +263,7 @@ class Main:
             max_delay    = delay.max()
             #per_flight   = delay.tolist()
 
-            if self._verbosity > 0:
+            if self.verbosity > 0:
                 print(f"Total delay (all flights): {total_delay}")
                 print(f"Average delay per flight:  {mean_delay:.2f}")
                 print(f"Maximum single-flight delay: {max_delay}")
@@ -270,7 +272,7 @@ class Main:
             np.savetxt(sys.stdout, converted_instance_matrix, delimiter=",", fmt="%i") 
 
         else:
-            if self._verbosity > 0:
+            if self.verbosity > 0:
                 print("Could not find a solution.")
 
 
@@ -278,6 +280,7 @@ class Main:
                 unit_graphs,
                 converted_instance_matrix: np.ndarray,
                 capacity_time_matrix: np.ndarray,
+                planned_arrival_times
                 ):
         """
         Split the candidate rows into *n_proc* equally‑sized chunks
@@ -294,7 +297,7 @@ class Main:
         
         mipModel = MIPModel(self.airports, max_time, self._max_explored_vertices, self._seed, self._timestep_granularity, self.verbosity, self._number_threads, navaid_sector_lookup)
 
-        converted_instance_matrix = mipModel.create_model(converted_instance_matrix, capacity_time_matrix, unit_graphs, self.airplanes, max_delay)
+        converted_instance_matrix = mipModel.create_model(converted_instance_matrix, capacity_time_matrix, unit_graphs, self.airplanes, max_delay, planned_arrival_times)
 
         return converted_instance_matrix
     
