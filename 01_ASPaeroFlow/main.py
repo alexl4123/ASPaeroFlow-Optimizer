@@ -172,7 +172,6 @@ class Main:
             print("  airport-vertices:", None if self.airports is None else self.airports.shape)
             # -----------------------------------------------------------------
 
-
         sources = self.graph[:,0]
         targets = self.graph[:,1]
         dists = self.graph[:,2]

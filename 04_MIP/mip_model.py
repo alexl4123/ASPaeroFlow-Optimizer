@@ -58,6 +58,7 @@ class MIPModel:
                     arrival_variable = actual_arrival_row['obj']
 
                     real_delay = actual_arrival_time - planned_arrival_time
+
                     optimization_variables.append(real_delay * arrival_variable)
 
         return optimization_variables
@@ -66,7 +67,6 @@ class MIPModel:
 
         solution = None
         self._max_time += max_delay
-
 
         if converted_instance_matrix.shape[1] < self._max_time:
             diff = self._max_time - converted_instance_matrix.shape[1]
@@ -679,8 +679,6 @@ class MIPModel:
         model.optimize()
 
     def reconstruct_solution(self, model, flight_variables_pd, sector_variables_pd, converted_instance_matrix, max_delay, fill_value = -1):
-
-        print(f"Objective Value: {model.ObjVal}")
 
         result_matrix = -1 * np.ones((converted_instance_matrix.shape[0], converted_instance_matrix.shape[1] + max_delay), dtype=int)
 
