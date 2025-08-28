@@ -78,16 +78,18 @@ def default_flight_counts() -> List[int]:
         30,
         60,
         100,
-        300,
-        600,
-        1000,
-        3000,
-        6000,
-        10000,
-        30000,
-        60000,
-        100000,
-        ]
+    ]
+    """
+    300,
+    600,
+    1000,
+    3000,
+    6000,
+    10000,
+    30000,
+    60000,
+    100000,
+    """
 
 # default constants
 GRID_WIDTH = GRID_HEIGHT = 5
@@ -103,7 +105,7 @@ RND_SEED = 42  # for reproducibility; set None to disable seeding
 # Helper functions
 ################################################################################
 
-def generate_grid(width: int, height: int, step: int) -> Tuple[nx.Graph, List[int]]:
+def generate_grid(width: int, height: int, step: int, distance) -> Tuple[nx.Graph, List[int]]:
     """Return (graph, list_of_airport_vertices)."""
 
     # 1. Grid core ﹙en‑route sectors﹚
@@ -124,6 +126,10 @@ def generate_grid(width: int, height: int, step: int) -> Tuple[nx.Graph, List[in
             G.add_edge(anchor, next_id)
             airport_nodes.append(next_id)
             next_id += 1
+
+    for edge in G.edges():
+        G[edge[0]][edge[1]]["weight"] = distance
+
 
     return G, airport_nodes
 
@@ -469,8 +475,9 @@ def main(argv: List[str] | None = None) -> None:  # noqa: D401
         G, airport_nodes = load_graph_from_csv(edges_csv, airports_csv)
         print(f"[i] Reusing graph from {edges_csv.parent if args.graph_dir else edges_csv}")
     else:
-        G, airport_nodes = generate_grid(GRID_WIDTH, GRID_HEIGHT, AIRPORT_STEP)
-        print(f"[i] Generated grid {grid_h}×{grid_w} with airports every {AIRPORT_STEP} nodes")
+        DISTANCE = 100000 # DISTANCE between two nodes in m
+        G, airport_nodes = generate_grid(GRID_WIDTH, GRID_HEIGHT, AIRPORT_STEP, DISTANCE)
+        print(f"[i] Generated grid {GRID_HEIGHT}×{GRID_WIDTH} with airports every {AIRPORT_STEP} nodes - separated by {DISTANCE}m")
 
     # Pre-compute static tables
     edges = list(G.edges(data=True))
@@ -499,7 +506,8 @@ def main(argv: List[str] | None = None) -> None:  # noqa: D401
     if args.edges_file or args.graph_dir:
         capacity_factor_graph = 0.5
     else:
-        capacity_factor_graph = _compute_graph_capacity_factor(GRID_WIDTH, GRID_HEIGHT)
+        capacity_factor_graph = 0.5
+        #_compute_graph_capacity_factor(GRID_WIDTH, GRID_HEIGHT)
 
     for n in args.flights:
         folder = output_folder / f"{n:07d}"
@@ -508,7 +516,8 @@ def main(argv: List[str] | None = None) -> None:  # noqa: D401
         if args.edges_file or args.graph_dir:
             capacity_factor_flights = 0.5
         else:
-            capacity_factor_flights = float(n) / base_aircraft_number
+            capacity_factor_flights = 0.5
+            #capacity_factor_flights = float(n) / base_aircraft_number
 
         navaid_assignment, sectors, airport_sectors = assign_navaids_to_sectors(G, airport_nodes)
 
