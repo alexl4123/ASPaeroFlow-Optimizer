@@ -17,6 +17,7 @@ class MIPModel:
         self._max_explored_vertices = max_explored_vertices
         self._seed = seed
         self._timestep_granularity = timestep_granularity
+
         self._max_number_threads = number_threads
         self.navaid_sector_lookup = navaid_sector_lookup
 
@@ -204,15 +205,7 @@ class MIPModel:
             else:
                 # En-route/destination
                 prev_vertex = path[hop -1]
-                distance = networkx_graph[prev_vertex][vertex]["weight"]
-
-                # CONVERT SPEED TO m/s
-                airplane_speed_ms = airplane_speed_kts * 0.51444
-
-                # Compute duration from prev to vertex in unit time:
-                duration_in_seconds = distance/airplane_speed_ms
-                factor_to_unit_standard = 3600.00 / float(timestep_granularity)
-                duration_in_unit_standards = math.ceil(duration_in_seconds / factor_to_unit_standard)
+                duration_in_unit_standards = networkx_graph[prev_vertex][vertex]["weight"]
 
                 current_time = current_time + duration_in_unit_standards
 
@@ -400,6 +393,10 @@ class MIPModel:
                 #actual_arrival_time_instance.append(f"actualArrivalTime({airplane_id},{current_time - 1},{path_number}).")
                 # path_numbers = #PATHS * #DELAYS
                 path_number += 1
+
+        #considered_variables = flight_variables_pd[(flight_variables_pd['F']==0)&(flight_variables_pd['D']==30)]
+        #print(considered_variables)
+        #quit()
 
         return flight_variables_pd, sector_variables_pd, next_sector, previous_sectors, max_effective_delay
 
@@ -701,17 +698,17 @@ class MIPModel:
 
             considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["V"]==destination)]
             
-            #considered_rows_tmp = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd['D']==0)]
+            considered_rows_tmp = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd['V']==origin)]
+            start_time = min(list(considered_rows_tmp['T']))
+            considered_rows_tmp = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd['V']==origin)&(flight_variables_pd['T']==start_time)]
             #print(considered_rows_tmp)
-            #quit()
 
             actual_delay = max_delay
 
-            for _,row in considered_rows.iterrows():
+            for _,row in considered_rows_tmp.iterrows():
 
-                if row["obj"].X >= 1 and row["D"] < actual_delay:
+                if row["obj"].X >= 1:
                     actual_delay = row["D"]
-
 
             considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]==actual_delay)]
 

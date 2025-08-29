@@ -194,10 +194,8 @@ class Main:
 
                 tmp_edges[(edge[0],edge[1])] = {"weight":duration_in_unit_standards}
 
-                #print(f"{distance}/{airplane_speed_ms} = {duration_in_seconds}")
-                #print(f"{duration_in_seconds}/{factor_to_unit_standard} = {duration_in_unit_standards}")
-
             nx.set_edge_attributes(graph, tmp_edges)
+
 
 
         airport_instance = []
@@ -269,7 +267,8 @@ class Main:
                 print(f"Maximum single-flight delay: {max_delay}")
 
             print(total_delay)
-            np.savetxt(sys.stdout, converted_instance_matrix, delimiter=",", fmt="%i") 
+            np.savetxt("tmp_new.csv", converted_instance_matrix, delimiter=",", fmt="%i") 
+            np.savetxt("tmp_orig.csv", original_converted_instance_matrix, delimiter=",", fmt="%i") 
 
         else:
             if self.verbosity > 0:
