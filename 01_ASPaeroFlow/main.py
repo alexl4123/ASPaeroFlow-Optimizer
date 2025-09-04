@@ -582,7 +582,7 @@ class Main:
 
         chunk_size = max_rows
         n_chunks   = min(n_proc, len(rows_pool) // chunk_size)
-        n_chunks = max(n_chunks, 1)
+        n_chunks = max(n_chunks, 3)
 
         chunk_index = 0
         rows = rows_pool[chunk_index*chunk_size:(chunk_index+1)*chunk_size]

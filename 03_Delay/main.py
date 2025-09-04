@@ -123,7 +123,7 @@ class Main:
         self._max_time: Optional[int] = max_time
         self.verbosity: Optional[int] = verbosity
 
-        self._max_explored_vertices: Optional[int] = max_explored_vertices
+        self._max_explored_vertices: Optional[int] = 1
         self._max_delay_per_iteration: Optional[int] = max_delay_per_iteration
 
         # Data containers — populated by :pymeth:`load_data`.
@@ -266,7 +266,7 @@ class Main:
 
         if self._max_delay_per_iteration < 0:
             #self._max_delay_per_iteration = original_max_time
-            self._max_delay_per_iteration = 20
+            self._max_delay_per_iteration = 10
 
         if np.any(capacity_overload_mask, where=True):
             old_converted_instance = converted_instance_matrix.copy()
