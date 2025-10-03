@@ -726,10 +726,14 @@ class OptimizeFlights:
         # Mark entries (new sector occurrences) at each time:
         # - t = 0: any valid value
         # - t > 0: valid and changed vs previous time
+        """
+        # Code for entry/diff demand measure:
         change = np.zeros_like(valid, dtype=bool)
         change[:, 0] = valid[:, 0]
         if T > 1:
             change[:, 1:] = valid[:, 1:] & (inst[:, 1:] != inst[:, :-1])
+        """
+        change = valid
 
         # Gather (sector_id, time_idx) pairs where an entry happens
         sectors_at_entries = inst[change]
@@ -748,7 +752,7 @@ class OptimizeFlights:
         hist = np.zeros((num_buckets, T), dtype=np.int32)
         np.add.at(hist, (sectors_at_entries, time_idx), 1)
 
-        #np.savetxt("20250819_histogram.csv", hist, delimiter=",",fmt="%i")
+        np.savetxt("20251003_histogram.csv", hist, delimiter=",",fmt="%i")
 
         return hist
 
