@@ -18,6 +18,8 @@ import math
 import networkx as nx
 
 import numpy as np
+import warnings
+
 import pickle
 
 import multiprocessing as mp
@@ -168,6 +170,13 @@ class Main:
         """Run the application"""
         self.load_data()
 
+
+        # For NumPy floating-point issues (divide/overflow/invalid/underflow):
+        np.seterr(all='raise')  # or: with np.errstate(divide='raise', invalid='raise', over='raise')
+
+        # For NumPy warnings that use Python’s warnings system (e.g., RuntimeWarning):
+        warnings.filterwarnings("error", category=RuntimeWarning)
+
         if self.verbosity > 0:
             # --- Demonstration output ---------
             print("  graph   :", None if self.graph is None else self.graph.shape)
@@ -225,7 +234,8 @@ class Main:
         navaid_sector_time_assignment = self.create_initial_navpoint_sector_assignment(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity)
 
         # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
-        converted_instance_matrix, planned_arrival_times = self.instance_to_matrix_vectorized(self.flights, self.airplane_flight, navaid_sector_time_assignment.shape[1], self._timestep_granularity, navaid_sector_time_assignment)
+        converted_navpoint_matrix, _ = self.instance_navpoint_matrix(self.flights, navaid_sector_time_assignment.shape[1], fill_value=-1)
+        converted_instance_matrix, planned_arrival_times = OptimizeFlights.instance_to_matrix_vectorized(self.flights, self.airplane_flight, navaid_sector_time_assignment.shape[1], self._timestep_granularity, navaid_sector_time_assignment)
         #converted_instance_matrix, planned_arrival_times = self.instance_to_matrix(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity, navaid_sector_lookup)
         #
         #np.testing.assert_array_equal(converted_instance_matrix, converted_instance_matrix_2)
@@ -276,6 +286,7 @@ class Main:
 
         if np.any(capacity_overload_mask, where=True):
             old_converted_instance = converted_instance_matrix.copy()
+            old_converted_navpoint_matrix = converted_navpoint_matrix.copy()
             old_navaid_sector_time_assignment = navaid_sector_time_assignment.copy()
 
             _, _, flight_durations = self.flight_spans_contiguous(converted_instance_matrix, fill_value=-1)
@@ -302,6 +313,10 @@ class Main:
                 # 1.) Handle Instance Matrix:
                 extra_col = -1 * np.ones((converted_instance_matrix.shape[0], number_new_cols), dtype=int)
                 converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+
+                extra_col = -1 * np.ones((converted_navpoint_matrix.shape[0], number_new_cols), dtype=int)
+                converted_navpoint_matrix = np.hstack((converted_navpoint_matrix, extra_col)) 
+                
                 # 2.) Create demand matrix (|R|x|T|):
                 system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
                 # 3.) Create capacity matrix (|R|x|T|):
@@ -329,7 +344,8 @@ class Main:
                 print(capacity_demand_diff_matrix[sector_index, time_index])
                 
                 #_, _, flight_durations = self.flight_spans_contiguous(converted_instance_matrix, fill_value=-1)
-                job, candidates = self.build_job(time_index, sector_index, converted_instance_matrix, capacity_time_matrix,
+                job, candidates = self.build_job(time_index, sector_index, converted_instance_matrix, converted_navpoint_matrix,
+                                capacity_time_matrix,
                                 system_loads, capacity_demand_diff_matrix, additional_time_increase, fill_value, 
                                 max_number_airplanes_considered_in_ASP, max_number_processors, original_max_time,
                                 self.networkx_navpoint_graph, self.unit_graphs, planned_arrival_times, self.airplane_flight,
@@ -360,7 +376,8 @@ class Main:
             #models = self.run_parallel(jobs)
 
             flight_ids = []
-            all_flights = []
+            all_sector_flights = []
+            all_navpoint_flights = []
             sector_configs = []
 
             for model, sector_config_restore_dict in solutions:
@@ -371,8 +388,11 @@ class Main:
                     flight_id = int(str(reroute.arguments[0]))
                     flight_ids.append(flight_id)
 
-                for flight in model.get_flights():
-                    all_flights.append(flight)
+                for flight in model.get_sector_flights():
+                    all_sector_flights.append(flight)
+
+                for flight in model.get_navpoint_flights():
+                    all_navpoint_flights.append(flight)
 
             flight_ids = np.array(flight_ids, dtype=int)
 
@@ -403,10 +423,12 @@ class Main:
 
             flight_ids = np.array(flight_ids)
             capacity_demand_diff_matrix = self.system_loads_computation_v2(converted_instance_matrix, fill_value, flight_ids, capacity_demand_diff_matrix)
+
             converted_instance_matrix[flight_ids, :] = -1
+            converted_navpoint_matrix[flight_ids, :] = -1
 
             new_flight_durations = {}
-            for flight in all_flights:
+            for flight in all_sector_flights:
                 flight_id = int(str(flight.arguments[0]))
                 position_id = int(str(flight.arguments[1]))
                 time_id = int(str(flight.arguments[2]))
@@ -423,6 +445,10 @@ class Main:
                     # 1.) Converted instance matrix
                     extra_col = -1 * np.ones((converted_instance_matrix.shape[0], number_new_cols), dtype=int)
                     converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+
+                    extra_col = -1 * np.ones((converted_navpoint_matrix.shape[0], number_new_cols), dtype=int)
+                    converted_navpoint_matrix = np.hstack((converted_navpoint_matrix, extra_col)) 
+                    
                     # 2.) Create demand matrix (|R|x|T|)
                     system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
                     # 3.) Create capacity matrix (|R|x|T|)
@@ -449,6 +475,13 @@ class Main:
 
                 new_flight_durations[flight_id]["duration"] = new_flight_durations[flight_id]["max"] - new_flight_durations[flight_id]["min"]
 
+            for navpoint_flight in all_navpoint_flights:
+
+                flight_id = int(str(flight.arguments[0]))
+                navpoint_id = int(str(flight.arguments[1]))
+                time_id = int(str(flight.arguments[2]))
+                
+                converted_navpoint_matrix[flight_id, time_id] = navpoint_id
 
 
             # Rerun check if there are still things to solve:
@@ -507,6 +540,7 @@ class Main:
 
                     navaid_sector_time_assignment = old_navaid_sector_time_assignment
                     converted_instance_matrix = old_converted_instance
+                    converted_navpoint_matrix = old_converted_navpoint_matrix
 
                     system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
 
@@ -522,6 +556,8 @@ class Main:
                 else:
                     old_navaid_sector_time_assignment = navaid_sector_time_assignment.copy()
                     old_converted_instance = converted_instance_matrix.copy()
+                    old_converted_navpoint_matrix = converted_navpoint_matrix.copy()
+
                     counter_equal_solutions = 0
                     max_number_processors = 20
                     max_number_airplanes_considered_in_ASP = 2
@@ -589,6 +625,7 @@ class Main:
     def build_job(self, time_index: int,
                 sector_index: int,
                 converted_instance_matrix: np.ndarray,
+                converted_navpoint_matrix: np.ndarray,
                 capacity_time_matrix: np.ndarray,
                 system_loads: np.ndarray,
                 capacity_demand_diff_matrix: np.ndarray,
@@ -669,7 +706,8 @@ class Main:
         #np.testing.assert_array_equal(capacity_demand_diff_matrix_tmp, capacity_demand_diff_matrix_cpy_2)
 
         job = (self.encoding, self.sectors, self.graph, self.airports,
-                                    flights, rows, converted_instance_matrix, time_index,
+                                    flights, rows, converted_instance_matrix, converted_navpoint_matrix,
+                                    time_index,
                                     sector_index, capacity_time_matrix, capacity_demand_diff_matrix_cpy_2,
                                     additional_time_increase,
                                     networkx_graph, unit_graphs, planned_arrival_times,
@@ -1083,121 +1121,7 @@ class Main:
                         out[a_id, m1:e1] = next_secs[i]
 
         return out, planned_arrival_times
-    
-    def instance_to_matrix_vectorized(self,
-                                    flights: np.ndarray,
-                                    airplane_flight: np.ndarray,
-                                    max_time: int,
-                                    time_granularity: int,
-                                    navaid_sector_time_assignment: np.ndarray,
-                                    *,
-                                    fill_value: int = -1,
-                                    compress: bool = False):
-        """
-        Vectorized/semi-vectorized rewrite.
-        Dynamic sector assignment via navaid_sector_time_assignment (shape N x T):
-        sector_at_event = navaid_sector_time_assignment[navaid_id, time]
-        Assumes IDs are non-negative ints (reasonably dense).
-        """
-
-        # --- ensure integer views without copies where possible
-        flights = flights.astype(np.int64, copy=False)
-        airplane_flight = airplane_flight.astype(np.int64, copy=False)
-
-        # --- build flight -> airplane mapping (array is fastest if IDs are dense)
-        fid_map_max = int(max(flights[:, 0].max(), airplane_flight[:, 1].max()))
-        flight_to_airplane = np.full(fid_map_max + 1, -1, dtype=np.int64)
-        flight_to_airplane[airplane_flight[:, 1]] = airplane_flight[:, 0]
-
-        # --- sort by flight, then time (stable contiguous blocks per flight)
-        order = np.lexsort((flights[:, 2], flights[:, 0]))
-        f_sorted = flights[order]
-
-        fid = f_sorted[:, 0]
-        nav = f_sorted[:, 1]
-        t   = f_sorted[:, 2]
-
-        # --- dynamic navaid -> sector from (N x T) matrix using pairwise advanced indexing
-        N, T = navaid_sector_time_assignment.shape
-        if nav.size:
-            nav_min, nav_max = int(nav.min()), int(nav.max())
-            t_min, t_max     = int(t.min()),   int(t.max())
-            if nav_min < 0 or nav_max >= N:
-                raise ValueError(
-                    f"Navpoint id out of bounds: got range [{nav_min}, {nav_max}], matrix has N={N}."
-                )
-            if t_min < 0 or t_max >= T:
-                raise ValueError(
-                    f"Time index out of bounds: got range [{t_min}, {t_max}], matrix has T={T}."
-                )
-
-        sec = navaid_sector_time_assignment[nav, t]  # 1D array aligned with f_sorted
-
-        # --- output matrix shape (airplane_id rows, time columns)
-        n_rows = int(airplane_flight[:, 0].max()) + 1
-        out = np.full((n_rows, int(max_time)), fill_value, dtype=sec.dtype if sec.size else np.int64)
-
-        # --- group boundaries per flight (contiguous in sorted array)
-        if fid.size == 0:
-            return out, {}
-
-        u, idx_first, counts = np.unique(fid, return_index=True, return_counts=True)
-
-        # planned arrival times = last time per group (vectorized)
-        last_idx = idx_first + counts - 1
-        planned_arrival_times = dict(zip(u.tolist(), t[last_idx].tolist()))
-
-        # --- fill per-flight via slices (no per-timestep inner loops)
-        for g, start in enumerate(idx_first):
-            end = start + counts[g]
-
-            a_id = int(flight_to_airplane[int(u[g])])
-            if a_id < 0:
-                # flight has no airplane mapping; skip defensively
-                continue
-
-            times = t[start:end]
-            secs  = sec[start:end]
-            if times.size == 0:
-                continue
-
-            # set the exact event time
-            out[a_id, times[0]] = secs[0]
-
-            if times.size >= 2:
-                prev_times = times[:-1]
-                next_times = times[1:]
-                prev_secs  = secs[:-1]
-                next_secs  = secs[1:]
-
-                L = next_times - prev_times
-                mids = prev_times + (L // 2)
-
-                # slice-assign per segment
-                for i in range(prev_times.size):
-                    s0 = prev_times[i] + 1       # start (exclusive)
-                    m1 = mids[i] + 1             # first-half end (inclusive) -> slice stop
-                    e1 = next_times[i] + 1       # segment end (inclusive) -> slice stop
-
-                    # first half [prev_time+1, mid]
-                    if m1 > s0:
-                        out[a_id, s0:m1] = prev_secs[i]
-                    # second half [mid+1, next_time]
-                    if e1 > m1:
-                        out[a_id, m1:e1] = next_secs[i]
-
-        # Optional: compress width to actually-used time if requested
-        if compress and out.shape[1] > 0:
-            used_cols = np.any(out != fill_value, axis=0)
-            if used_cols.any():
-                last_used = np.flatnonzero(used_cols)[-1] + 1
-                out = out[:, :last_used]
-            else:
-                out = out[:, :1]  # keep at least one column
-
-        return out, planned_arrival_times
-
-   
+      
     def first_overload(self, mask: np.ndarray):
         """
         Return (time, bucket) of the first *True* entry in `mask`
@@ -1455,6 +1379,31 @@ class Main:
         np.savetxt("20251003_cap_mat.csv", cap_mat, delimiter=",",fmt="%i")
 
         return cap_mat
+    
+    def instance_navpoint_matrix(self, triplets, max_time, *, t0=0, fill_value=-1):
+        """
+        triplets: (N x 3) array-like of [flight_id, navpoint_id, time_first_reached]
+        max_time: largest time index to include (inclusive)
+        t0:       optional time offset (use t0=min_time if your times don't start at 0)
+        """
+        a = np.asarray(triplets, dtype=int)
+        f = a[:, 0]
+        n = a[:, 1]
+        t = a[:, 2] - t0  # shift if needed so time starts at 0
+
+        # Map possibly non-contiguous flight IDs to row indices
+        flights, f_idx = np.unique(f, return_inverse=True)
+        F = flights.size
+        T = max_time - t0 + 1  # inclusive of max_time
+
+        out = np.full((F, T), fill_value, dtype=int)
+
+        # keep only times that land inside [0, T-1]
+        m = (t >= 0) & (t < T)
+        out[f_idx[m], t[m]] = n[m]  # last write wins if duplicates
+
+        return out, flights  # 'flights' tells you which row corresponds to which flight_id
+
 
  
 # ---------------------------------------------------------------------------

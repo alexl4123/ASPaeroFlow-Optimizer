@@ -26,6 +26,9 @@ sector_flight(ID,SEC0,T) :- plannedDepartureTime(ID,TSTART), chosen_path(ID,P), 
 sector_flight(ID,SEC0,T) :- plannedDepartureTime(ID,TSTART), chosen_path(ID,P), time(T), next_pos(ID,P,NAV0,T0,NAV1,T1), NAV0 != NAV1, T >= T0 + TSTART, T <= T1 + TSTART, DT = (T1 - T0)/2, T <= DT + T0 + TSTART, navpoint_sector_assignment(NAV0,SEC0,T).
 sector_flight(ID,SEC1,T) :- plannedDepartureTime(ID,TSTART), chosen_path(ID,P), time(T), next_pos(ID,P,NAV0,T0,NAV1,T1), NAV0 != NAV1, T >= T0 + TSTART, T <= T1 + TSTART, DT = (T1 - T0)/2, T > DT + T0 + TSTART, navpoint_sector_assignment(NAV1,SEC1,T).
 
+navpoint_flight(ID,NAV0,T) :- plannedDepartureTime(ID,TSTART), chosen_path(ID,P), next_pos(ID,P,NAV0,T0,_,_), T = T0 + TSTART.
+navpoint_flight(ID,NAV1,T) :- plannedDepartureTime(ID,TSTART), chosen_path(ID,P), next_pos(ID,P,_,_,NAV1,T1), T = T1 + TSTART.
+
 % CAPACITY CONSTRAINT:
 overload(SEC, T, LOAD-CAPACITY) :- sector_capacity(SEC,CAPACITY,T), #count{ID:sector_flight(ID,SEC,T)} = LOAD, LOAD > CAPACITY.
 % WITH DIFFS:
