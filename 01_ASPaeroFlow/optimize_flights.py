@@ -260,7 +260,7 @@ class OptimizeFlights:
         # END CONFIG = 0
         current_config += 1
 
-        if True:
+        if False:
 
             navpoints_in_sector = np.nonzero(self.navaid_sector_time_assignment[:,time_index] == sector_index)[0]
             navpoints_in_sector = list(set(navpoints_in_sector) & set(self.networkx_graph))   # keep only nodes that are actually in G
@@ -520,7 +520,6 @@ class OptimizeFlights:
 {sector_capacity_instance}
 {navpoint_sector_assignment_instance}
         """
-
 
         #if time_index == 727 and sector_index == 6 and additional_time_increase > 0:
         #    quit()
