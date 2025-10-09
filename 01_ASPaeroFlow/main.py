@@ -236,6 +236,7 @@ class Main:
         # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
         converted_navpoint_matrix, _ = self.instance_navpoint_matrix(self.flights, navaid_sector_time_assignment.shape[1], fill_value=-1)
         converted_instance_matrix, planned_arrival_times = OptimizeFlights.instance_to_matrix_vectorized(self.flights, self.airplane_flight, navaid_sector_time_assignment.shape[1], self._timestep_granularity, navaid_sector_time_assignment)
+
         #converted_instance_matrix, planned_arrival_times = self.instance_to_matrix(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity, navaid_sector_lookup)
         #
         #np.testing.assert_array_equal(converted_instance_matrix, converted_instance_matrix_2)
@@ -712,9 +713,49 @@ class Main:
         n_chunks = max(n_chunks, 3)
 
         chunk_index = 0
-        rows = rows_pool[chunk_index*chunk_size:(chunk_index+1)*chunk_size]
+        problematic_flight_indices = rows_pool[chunk_index*chunk_size:(chunk_index+1)*chunk_size]
 
-        flights = converted_instance_matrix[rows, :]
+        # Get all associated problematic flights:
+        airplane_indices = self.airplane_flight[np.isin(self.airplane_flight[:,1],problematic_flight_indices),0]
+        airplane_flight_map = {}
+
+        all_potentially_problematic_flight_indices = list(problematic_flight_indices)
+
+        for airplane_index in airplane_indices:
+
+
+            flights_per_airplane = self.airplane_flight[self.airplane_flight[:,0] == airplane_index, 1]
+
+
+            flight_start_time_list = []
+
+            for flight in flights_per_airplane:
+                
+                flight_operation_start_time = np.flatnonzero(converted_instance_matrix[flight,:] != fill_value)[0]
+
+                if flight in problematic_flight_indices:
+                    problematic_start_time = flight_operation_start_time
+
+                flight_start_time_list.append((flight_operation_start_time,flight))
+
+            flight_start_time_list = sorted(flight_start_time_list)
+
+            considered_flight_indices = []
+
+            for start_time, flight in flight_start_time_list:
+
+                if start_time < problematic_start_time:
+                    continue
+                else:
+                    considered_flight_indices.append(flight)
+
+                    all_potentially_problematic_flight_indices.append(flight)
+
+            airplane_flight_map[airplane_index] = considered_flight_indices
+
+        all_potentially_problematic_flight_indices = np.array(all_potentially_problematic_flight_indices)
+
+        problematic_flights = converted_instance_matrix[problematic_flight_indices, :]
         #de_facto_max_time = converted_instance_matrix.shape[1]
 
         #capacity_demand_diff_matrix_tmp = self.system_loads_computation_v0(converted_instance_matrix, rows, capacity_time_matrix, de_facto_max_time)
@@ -722,21 +763,22 @@ class Main:
 
         # Create capacity demand diff matrix where only the values for the candidates have changed:
         capacity_demand_diff_matrix_cpy_2 = capacity_demand_diff_matrix.copy()
-        capacity_demand_diff_matrix_cpy_2 = self.system_loads_computation_v2(converted_instance_matrix, fill_value, rows, capacity_demand_diff_matrix_cpy_2)
+        capacity_demand_diff_matrix_cpy_2 = self.system_loads_computation_v2(converted_instance_matrix, fill_value, all_potentially_problematic_flight_indices, capacity_demand_diff_matrix_cpy_2)
 
         #np.testing.assert_array_equal(capacity_demand_diff_matrix_tmp, capacity_demand_diff_matrix_cpy)
         #np.testing.assert_array_equal(capacity_demand_diff_matrix_tmp, capacity_demand_diff_matrix_cpy_2)
 
         job = (self.encoding, self.sectors, self.graph, self.airports,
-                                    flights, rows, converted_instance_matrix, converted_navpoint_matrix,
+                                    problematic_flight_indices, converted_instance_matrix, converted_navpoint_matrix,
                                     time_index,
                                     sector_index, capacity_time_matrix, capacity_demand_diff_matrix_cpy_2,
                                     additional_time_increase,
                                     networkx_graph, unit_graphs, planned_arrival_times,
-                                    airplane_flight, airplanes, flights,
+                                    airplane_flight, airplanes, problematic_flights,
                                     navaid_sector_time_assignment,
                                     self.nearest_neighbors_lookup,
                                     sector_capacity_factor, filed_flights,
+                                    airplane_flight_map,
                                     fill_value, self._timestep_granularity, self._seed,
                                     self._max_explored_vertices, self._max_delay_per_iteration, 
                                     original_max_time, iteration, self.verbosity,

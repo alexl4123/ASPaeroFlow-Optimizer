@@ -20,7 +20,7 @@ class OptimizeFlights:
 
     def __init__(self,
                  encoding, capacity, graph, airport_vertices,
-                 flights_affected, rows, 
+                 problematic_flight_indices, 
                  converted_instance_matrix, converted_navpoint_matrix,
                  time_index, sector_index,
                  capacity_time_matrix, capacity_demand_diff_matrix,
@@ -30,11 +30,12 @@ class OptimizeFlights:
                  planned_arrival_times,
                  airplane_flight,
                  airplanes,
-                 flights,
+                 problematic_flights,
                  navaid_sector_time_assignment,
                  nearest_neighbors_lookup,
                  sector_capacity_factor,
                  filed_flights,
+                 problematic_airplane_flight_map,
                  fill_value = -1,
                  timestep_granularity = 1,
                  seed = 11904657,
@@ -53,16 +54,16 @@ class OptimizeFlights:
         self.unit_graphs = unit_graphs
         self.planned_arrival_times = planned_arrival_times
         self.airplane_flight = airplane_flight
-        self.flights = flights
+        self.problematic_flights = problematic_flights
         self.navaid_sector_time_assignment = navaid_sector_time_assignment
         self.airplanes = airplanes
         self.nearest_neighbors_lookup = nearest_neighbors_lookup
 
         self.filed_flights = filed_flights
         self.sector_capacity_factor = sector_capacity_factor
-
-        self.flights_affected = flights_affected
-        self.rows = rows
+        
+        self.problematic_airplane_flight_map = problematic_airplane_flight_map
+        self.problematic_flight_indices = problematic_flight_indices
 
         self.converted_instance_matrix = converted_instance_matrix
         self.converted_navpoint_matrix = converted_navpoint_matrix
@@ -86,8 +87,7 @@ class OptimizeFlights:
     def start(self):
 
         timestep_granularity = self.timestep_granularity
-        flights_affected = self.flights_affected
-        rows = self.rows
+        problematic_flights = self.problematic_flight_indices
         converted_instance_matrix = self.converted_instance_matrix
         time_index = self.time_index
         sector_index = self.sector_index
@@ -97,6 +97,7 @@ class OptimizeFlights:
         fill_value = self.fill_value
         networkx_graph = self.networkx_graph
         unit_graphs = self.unit_graphs
+        flights_affected = self.problematic_flights
 
         max_vertices_cutoff_value = self.max_vertices_cutoff_value
         max_delay_parameter = self.max_delay_parameter
@@ -119,7 +120,7 @@ class OptimizeFlights:
 
         for flight_affected_index in range(flights_affected.shape[0]):
 
-            flight_index = rows[flight_affected_index]
+            flight_index = problematic_flights[flight_affected_index]
 
             airplane_id = (self.airplane_flight[self.airplane_flight[:,1] == flight_index])[0,0]
             airplane_speed_kts = self.airplanes[airplane_id,1]
@@ -129,6 +130,16 @@ class OptimizeFlights:
 
             filed_flight_path = self.filed_flights[self.filed_flights[:,0] == flight_index,:]
 
+            potentially_affected_flights = self.problematic_airplane_flight_map[airplane_id]
+
+            potentially_affected_flights_tmp = []
+            for flight_affected_index in potentially_affected_flights:
+                if flight_index != flight_affected_index:
+                    potentially_affected_flights_tmp.append(flight_affected_index)
+
+            potentially_affected_flights = potentially_affected_flights_tmp
+
+
 
             #actual_arrival_time = (flight_affected >= 0).argmax() - 1
             actual_arrival_time = np.flatnonzero(flight_affected >= 0)[-1] 
@@ -136,9 +147,14 @@ class OptimizeFlights:
             planned_arrival_time = self.planned_arrival_times[flight_index]
             actual_delay = actual_arrival_time - planned_arrival_time
 
-            original_start_time = np.flatnonzero(flight_affected != fill_value)
-            original_start_time = original_start_time[0] if original_start_time.size else 0
-            start_time = original_start_time + actual_delay
+            # TURNAROUND TIME:
+            # If a flight needs more than 1 timestep to prepare for departure they coincide; otherwise different
+            actual_flight_operations_start_time = np.flatnonzero(flight_affected != fill_value)[0]
+            actual_flight_departure_time = np.flatnonzero(flight_affected != fill_value)[1] - 1
+            if actual_flight_departure_time < 0:
+                raise Exception("planned_flight_departure_time < 0 => Must never happen")
+
+            #actual_flight_departure_time = planned_flight_departure_time + actual_delay
             
             flight_affected = flight_affected[flight_affected != fill_value]
 
@@ -153,18 +169,21 @@ class OptimizeFlights:
 
             path_number = 0
 
-            planned_departure_time_instance.append(f"plannedDepartureTime({airplane_id},{original_start_time}).")
-            actual_departure_time_instance.append(f"actualDepartureTime({airplane_id},{start_time}).")
-            planned_arrival_time_instance.append(f"plannedArrivalTime({airplane_id},{planned_arrival_time}).")
+            planned_departure_time_instance.append(f"actualFlightOperationsStartTime({flight_index},{actual_flight_operations_start_time}).")
+            #actual_departure_time_instance.append(f"actualDepartureTime({airplane_id},{start_time}).")
+            planned_arrival_time_instance.append(f"plannedArrivalTime({flight_index},{planned_arrival_time}).")
 
             for path in paths:
 
-                navpoint_trajectory = self.get_flight_navpoint_trajectory(flights_affected, networkx_graph, flight_index, start_time, airplane_speed_kts, path, timestep_granularity)
+                navpoint_trajectory = self.get_flight_navpoint_trajectory(flights_affected, networkx_graph, flight_index, actual_flight_departure_time, airplane_speed_kts, path, timestep_granularity)
 
                 for delay in range(additional_time_increase * time_window,time_window * (additional_time_increase + 1)):
 
-                    flight_time = 0
-                    current_time = original_start_time
+                    flight_time = actual_flight_departure_time - actual_flight_operations_start_time
+                    current_time = actual_flight_operations_start_time
+
+                    navaid = navpoint_trajectory[0][1]
+                    flight_navpoint_instance.append(f"next_pos({flight_index},{path_number},{navaid},{0},{navaid},{flight_time}).")
 
                     for flight_hop_index in range(len(navpoint_trajectory)):
 
@@ -218,18 +237,79 @@ class OptimizeFlights:
                             current_time += time_delta
                             flight_time += time_delta
 
-                    actual_arrival_time_instance.append(f"actualArrivalTime({airplane_id},{current_time},{path_number}).")
+                    actual_arrival_time_instance.append(f"actualArrivalTime({flight_index},{current_time},{path_number}).")
+
+
+                    landing_time_previous_lag = current_time
+
+                    #print(f"LANDING_TIME:{landing_time_previous_lag}")
+                    #print(potentially_affected_flights)
+                    #print(flight_index)
+
+                    for potentially_affected_flight in potentially_affected_flights:
+                            
+                        
+                        print(f"Potentially Affected Flight: {potentially_affected_flight}")
+
+                        potentially_actual_flight_operations_start_time = np.flatnonzero(converted_instance_matrix[potentially_affected_flight,:] != fill_value)[0]
+
+                        if potentially_actual_flight_operations_start_time <= landing_time_previous_lag:
+                            print(f"--> IS ACTUALLY AFFECTED: {potentially_affected_flight}")
+                            # NEED TO COMPUTE MINIMUM DELAY OF AFFECTED FLIGHTS
+                            #minimum_induced_rotary_delay = landing_time_previous_lag - actual_flight_operations_start_time + 1
+                            potentially_actual_flight_operations_start_time = landing_time_previous_lag + 1
+
+
+                        planned_departure_time_instance.append(f"actualFlightOperationsStartTime({potentially_affected_flight},{potentially_actual_flight_operations_start_time}).")
+
+                        potentially_planned_arrival_time = self.planned_arrival_times[potentially_affected_flight]
+
+                        planned_arrival_time_instance.append(f"plannedArrivalTime({potentially_affected_flight},{potentially_planned_arrival_time}).")
+
+                        potentially_affected_flight_path_indices = np.flatnonzero(self.converted_navpoint_matrix[potentially_affected_flight,:] != fill_value)
+
+                        flight_time = 0
+                        for hop_index in range(1,len(potentially_affected_flight_path_indices)):
+
+                            prev_navpoint = self.converted_navpoint_matrix[potentially_affected_flight,potentially_affected_flight_path_indices[hop_index - 1]]
+                            cur_navpoint = self.converted_navpoint_matrix[potentially_affected_flight,potentially_affected_flight_path_indices[hop_index]]
+
+                            time_delta = potentially_affected_flight_path_indices[hop_index] - potentially_affected_flight_path_indices[hop_index - 1]
+                            current_time += time_delta
+
+                            flight_navpoint_instance.append(f"next_pos({potentially_affected_flight},{path_number},{prev_navpoint},{flight_time},{cur_navpoint},{flight_time+time_delta}).")
+                            
+                            flight_time += time_delta
+
+                            if cur_navpoint not in needed_capacities_for_navpoint:
+                                # Approximate time_delta/2 to be on the safe side:
+                                needed_capacities_for_navpoint[cur_navpoint] = [max(current_time-time_delta,0), current_time+time_delta]
+                            if current_time-time_delta < needed_capacities_for_navpoint[cur_navpoint][0]:
+                                needed_capacities_for_navpoint[cur_navpoint][0] = max(current_time-time_delta,0)
+                            if current_time + time_delta > needed_capacities_for_navpoint[cur_navpoint][1]:
+                                needed_capacities_for_navpoint[cur_navpoint][1] = current_time + time_delta
+
+                            if prev_navpoint not in needed_capacities_for_navpoint:
+                                # Approximate time_delta/2 to be on the safe side:
+                                needed_capacities_for_navpoint[prev_navpoint] = [max(current_time-time_delta,0), current_time+time_delta]
+                            if current_time-time_delta < needed_capacities_for_navpoint[prev_navpoint][0]:
+                                needed_capacities_for_navpoint[prev_navpoint][0] = max(current_time-time_delta,0)
+                            if current_time + time_delta > needed_capacities_for_navpoint[prev_navpoint][1]:
+                                needed_capacities_for_navpoint[prev_navpoint][1] = current_time + time_delta
+                            
+
+
+                        current_time = potentially_actual_flight_operations_start_time + flight_time
+                        landing_time_previous_lag = current_time
+
+                        actual_arrival_time_instance.append(f"actualArrivalTime({potentially_affected_flight},{current_time},{path_number}).")
+                        path_fact_instances.append(f"chosen_path({potentially_affected_flight},{path_number}) :- chosen_path({flight_index},{path_number}).")
 
                     # path_numbers = #PATHS * #DELAYS
                     path_number += 1
 
-            path_fact_instances.append(f"paths({airplane_id},0..{path_number - 1}).")
+            path_fact_instances.append(f"paths({flight_index},0..{path_number - 1}).")
 
-
-        # DO SECTOR COMPOSITIONS/PARTITIONS:
-        # Variables I need:
-        time_index
-        sector_index
 
         # 1.) Get config for sector sector_index and time_index
         #   a.) Check out what we can do with this sector
@@ -489,12 +569,14 @@ class OptimizeFlights:
 
         # -----------------------------------------------------------
 
+        planned_arrival_time_instance = list(set(planned_arrival_time_instance))
+
         flight_navpoint_instance = "\n".join(flight_navpoint_instance)
         flight_times_instance = "\n".join(flight_times_instance)
 
         path_fact_instances = "\n".join(path_fact_instances)
 
-        flight_plan_instance = self.flight_plan_strings(rows, flights_affected)
+        flight_plan_instance = self.flight_plan_strings(problematic_flights, flights_affected)
         flight_plan_instance = "\n".join(flight_plan_instance)
 
 
@@ -527,9 +609,10 @@ class OptimizeFlights:
         encoding = self.encoding
         
         if self.verbosity > 0:
-            open(f"20251007_test_instance_{additional_time_increase}.lp","w").write(instance)
+            open(f"20251009_test_instance_{additional_time_increase}.lp","w").write(instance)
             #if len(navpoints_in_sector) > 1:
             #    quit()
+            #quit()
 
         solver: Model = Solver(encoding, instance)
         model = solver.solve()
@@ -1340,7 +1423,7 @@ class OptimizeFlights:
         sec = navaid_sector_time_assignment[nav, t]  # 1D array aligned with f_sorted
 
         # --- output matrix shape (airplane_id rows, time columns)
-        n_rows = int(airplane_flight[:, 0].max()) + 1
+        n_rows = int(airplane_flight[:, 1].max()) + 1
         out = np.full((n_rows, int(max_time)), fill_value, dtype=sec.dtype if sec.size else np.int64)
 
         # --- group boundaries per flight (contiguous in sorted array)
@@ -1357,8 +1440,9 @@ class OptimizeFlights:
         for g, start in enumerate(idx_first):
             end = start + counts[g]
 
-            a_id = int(flight_to_airplane[int(u[g])])
-            if a_id < 0:
+            flight_index = g
+
+            if flight_index < 0:
                 # flight has no airplane mapping; skip defensively
                 continue
 
@@ -1368,7 +1452,7 @@ class OptimizeFlights:
                 continue
 
             # set the exact event time
-            out[a_id, times[0]] = secs[0]
+            out[flight_index, times[0]] = secs[0]
 
             if times.size >= 2:
                 prev_times = times[:-1]
@@ -1387,10 +1471,10 @@ class OptimizeFlights:
 
                     # first half [prev_time+1, mid]
                     if m1 > s0:
-                        out[a_id, s0:m1] = prev_secs[i]
+                        out[flight_index, s0:m1] = prev_secs[i]
                     # second half [mid+1, next_time]
                     if e1 > m1:
-                        out[a_id, m1:e1] = next_secs[i]
+                        out[flight_index, m1:e1] = next_secs[i]
 
         # Optional: compress width to actually-used time if requested
         if compress and out.shape[1] > 0:
