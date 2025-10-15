@@ -247,17 +247,20 @@ class OptimizeFlights:
                     #print(flight_index)
 
                     for potentially_affected_flight in potentially_affected_flights:
+
                             
                         
-                        print(f"Potentially Affected Flight: {potentially_affected_flight}")
+                        #print(f"Potentially Affected Flight: {potentially_affected_flight}")
 
                         potentially_actual_flight_operations_start_time = np.flatnonzero(converted_instance_matrix[potentially_affected_flight,:] != fill_value)[0]
 
                         if potentially_actual_flight_operations_start_time <= landing_time_previous_lag:
-                            print(f"--> IS ACTUALLY AFFECTED: {potentially_affected_flight}")
+                            #print(f"--> IS ACTUALLY AFFECTED: {potentially_affected_flight}")
                             # NEED TO COMPUTE MINIMUM DELAY OF AFFECTED FLIGHTS
                             #minimum_induced_rotary_delay = landing_time_previous_lag - actual_flight_operations_start_time + 1
                             potentially_actual_flight_operations_start_time = landing_time_previous_lag + 1
+
+                        current_time = potentially_actual_flight_operations_start_time
 
 
                         planned_departure_time_instance.append(f"actualFlightOperationsStartTime({potentially_affected_flight},{potentially_actual_flight_operations_start_time}).")
@@ -266,9 +269,36 @@ class OptimizeFlights:
 
                         planned_arrival_time_instance.append(f"plannedArrivalTime({potentially_affected_flight},{potentially_planned_arrival_time}).")
 
+
                         potentially_affected_flight_path_indices = np.flatnonzero(self.converted_navpoint_matrix[potentially_affected_flight,:] != fill_value)
 
+                        #if potentially_affected_flight == 83:
+                        #    print("<<<>>>>")
+                        #    print(np.flatnonzero(self.converted_navpoint_matrix[potentially_affected_flight,:] != fill_value))
+                        #    print(potentially_affected_flight_path_indices)
+
                         flight_time = 0
+
+
+                        if len(potentially_affected_flight_path_indices) == 1:
+                            hop_index = 0
+
+                            cur_navpoint = self.converted_navpoint_matrix[potentially_affected_flight,potentially_affected_flight_path_indices[hop_index]]
+
+
+                            flight_navpoint_instance.append(f"single_pos({potentially_affected_flight},{path_number},{cur_navpoint},{flight_time}).")
+                            
+                            if cur_navpoint not in needed_capacities_for_navpoint:
+                                # Approximate time_delta/2 to be on the safe side:
+                                needed_capacities_for_navpoint[cur_navpoint] = [max(current_time-1,0), current_time+1]
+                            if current_time-1 < needed_capacities_for_navpoint[cur_navpoint][0]:
+                                needed_capacities_for_navpoint[cur_navpoint][0] = max(current_time-1,0)
+                            if current_time + 1 > needed_capacities_for_navpoint[cur_navpoint][1]:
+                                needed_capacities_for_navpoint[cur_navpoint][1] = current_time + 1
+
+                            flight_time = 1
+
+
                         for hop_index in range(1,len(potentially_affected_flight_path_indices)):
 
                             prev_navpoint = self.converted_navpoint_matrix[potentially_affected_flight,potentially_affected_flight_path_indices[hop_index - 1]]
