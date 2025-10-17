@@ -160,7 +160,7 @@ class TranslateCSVtoLogicProgram:
         for row_index in range(sectors_matrix.shape[0]):
             for column_index in range(sectors_matrix.shape[1]):
                 # ASP expects flightPlan(<ID>,<TIME>,<LOCATION>)
-                asp_atoms.append(f"sector({row_index},{column_index},{sectors_matrix[row_index,column_index]}).")
+                asp_atoms.append(f"atomic_sector({row_index},{column_index},{sectors_matrix[row_index,column_index]}).")
 
         return asp_atoms
 
@@ -200,7 +200,7 @@ class TranslateCSVtoLogicProgram:
         navaid_sector_instance = []
 
         for row_index in range(navaid_sector.shape[0]):
-            navaid_sector_instance.append(f"navaid_sector({navaid_sector[row_index,0]},{navaid_sector[row_index,1]}).")
+            navaid_sector_instance.append(f"navaid_sector({navaid_sector[row_index,0]},{navaid_sector[row_index,1]},0).")
 
         return navaid_sector_instance
     
@@ -218,7 +218,8 @@ class TranslateCSVtoLogicProgram:
             self.encoding = file.read()
 
     def main(self, graph_path: str, flights_path: str, sectors_path: str, airports_path: str, airplanes_path, airplane_flight_path,
-             navaid_sector_path, encoding_path, timestep_granularity: int, max_time) -> None:
+             navaid_sector_path, encoding_path, timestep_granularity: int, max_time,
+             sector_capactiy_factor) -> None:
         """Read and print rows from the three required CSV files."""
 
         self.load_data(graph_path, sectors_path, flights_path, airports_path, airplanes_path,
@@ -266,12 +267,14 @@ class TranslateCSVtoLogicProgram:
         airplane_flight_instance = self.convert_airplane_flight(self.airplane_flight)
         navaid_sector_instance = self.convert_navaid_sector(self.navaid_sector)
 
+        sector_capactiy_factor_instance = [f"sectorCapacityFactor({sector_capactiy_factor})."]
         timestep_granularity_instance = [f"timestepGranularity({timestep_granularity})."]
         max_time_instance = [f"maxTime({max_time*timestep_granularity})."]
 
         instance = graph_instance + flights_instance + sectors_instance + airplanes_instance +\
             airports_instance + airplane_flight_instance + navaid_sector_instance +\
-            timestep_granularity_instance + max_time_instance
+            timestep_granularity_instance + max_time_instance+\
+            sector_capactiy_factor_instance
 
         return instance
 
