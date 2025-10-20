@@ -128,7 +128,7 @@ def build_system_config(base_dir: Path) -> List[Dict]:
 # Benchmarking logic
 # ---------------------------------------------
 
-def build_command(system: Dict, paths: Dict[str, Path], python_bin: str) -> List[str]:
+def build_command(system: Dict, paths: Dict[str, Path], python_bin: str, timestep_granularity) -> List[str]:
     """Assemble the command‑line for one solver run."""
     cmd = [
         python_bin,
@@ -141,8 +141,8 @@ def build_command(system: Dict, paths: Dict[str, Path], python_bin: str) -> List
         f"--airplane-flight-path={paths['airplane-flight']}",
         f"--navaid-sector-path={paths['navaid-sector']}",
         "--seed=11904657",
-        "--timestep-granularity=60",
-        "--number-threads=1",
+        f"--timestep-granularity={timestep_granularity}",
+        "--number-threads=5",
         "--max-explored-vertices=6",
         "--max-delay-per-iteration=-1",
         "--max-time=24",
@@ -238,10 +238,11 @@ def write_csv(path: Path, header: List[str], rows: List[List]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="ATFCM benchmark driver")
     parser.add_argument("instance_dir", type=Path, help="Folder containing instance sub‑directories")
-    parser.add_argument("--time-limit", type=int, default=7200, help="Wall‑clock limit (s)")
+    parser.add_argument("--time-limit", type=int, default=18000, help="Wall‑clock limit (s)")
     parser.add_argument("--memory-limit", type=int, default=20, help="Memory limit (GiB)")
     parser.add_argument("--python-bin", default="/home/thinklex/miniconda3/envs/potassco/bin/python", help="Python interpreter for the solvers")
     parser.add_argument("--output-dir", type=Path, default=Path("."), help="Where to place CSVs")
+    parser.add_argument("--timestep-granularity", type=int, default=1, help="Timestep granularity")
 
     args = parser.parse_args()
     mem_limit_bytes = args.memory_limit * 1024 ** 3
@@ -263,6 +264,7 @@ def main() -> None:
     # Remember first failure per system to skip later instances
     first_failure: Dict[str, int | None] = {sys_["key"]: None for sys_ in systems}
 
+    timestep_granularity = args.timestep_granularity
 
     # Main loops (solver outermost ⇒ better CPU cache locality, easier skip logic)
     for inst_path in instances:
@@ -297,7 +299,7 @@ def main() -> None:
                 "navaid-sector": f_navaid_sector,
             }
 
-            cmd = build_command(system, paths, args.python_bin)
+            cmd = build_command(system, paths, args.python_bin, timestep_granularity)
 
             #print(" ".join(cmd))
             #continue
