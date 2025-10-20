@@ -288,6 +288,14 @@ def _save_results(args: argparse.Namespace, app) -> None:
     print(f"[✓] Saved results → {out_dir}")
 
 
+class ModelData:
+
+    def __init__(self, navaid_sector_time_assignment, converted_instance_matrix, converted_navpoint_matrix):
+
+        self.navaid_sector_time_assignment = navaid_sector_time_assignment
+        self.converted_instance_matrix = converted_instance_matrix
+        self.converted_navpoint_matrix = converted_navpoint_matrix
+
 
 
 
@@ -348,8 +356,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     for flight in flights:
         distinct_flights.add(flight.arguments[0])
 
-
     converted_instance_matrix = np.ones((len(distinct_flights),max_time+1)) * -1
+    navaid_sector_time_assignment = np.ones((len(distinct_flights),max_time+1)) * -1
+    converted_navpoint_matrix = np.ones((len(distinct_flights),max_time+1)) * -1
 
     for flight in flights:
         flight_id = int(str(flight.arguments[0]))
@@ -358,11 +367,19 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         converted_instance_matrix[flight_id, flight_time] = flight_sector
 
+    model_data = ModelData(navaid_sector_time_assignment,converted_instance_matrix,converted_navpoint_matrix)
+
     if verbosity > 0:
         print(model.get_rerouted_airplanes())
 
     print(model.get_total_atfm_delay())
     #np.savetxt(sys.stdout, converted_instance_matrix, delimiter=",", fmt="%i") 
+
+    # Save results if requested
+    if args.save_results:
+        _save_results(args, model_data)
+
+
 
     return model.get_total_atfm_delay()
 
