@@ -243,6 +243,16 @@ class Main:
             print(f">> Elapsed solving time: {end_time - start_time}")
 
 
+        self.converted_instance_matrix = converted_instance_matrix
+
+        valid = converted_instance_matrix != -1
+        print(np.nonzero(valid[0,:]))
+        print(np.nonzero(valid[1,:]))
+        print(np.nonzero(valid[2,:]))
+
+        navaid_sector_time_assignment = np.ones((converted_instance_matrix.shape[0],converted_instance_matrix.shape[1])) * -1
+        converted_navpoint_matrix = np.ones((converted_instance_matrix.shape[0], converted_instance_matrix.shape[1])) * -1
+
         #np.savetxt("01_final_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
 
         t_init  = self.last_valid_pos(original_converted_instance_matrix)      # last non--1 in the *initial* schedule
@@ -975,6 +985,14 @@ def main(argv: Optional[List[str]] = None) -> None:
                args.max_explored_vertices, args.max_delay_per_iteration,
                args.max_time, args.verbosity)
     app.run()
+
+
+
+    # Save results if requested
+    if args.save_results:
+        _save_results(args, app)
+
+
 
 
 if __name__ == "__main__":  # pragma: no cover — direct execution guard
