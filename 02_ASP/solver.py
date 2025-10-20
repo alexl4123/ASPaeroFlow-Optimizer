@@ -34,8 +34,6 @@ class Solver:
         ctl = clingo.Control()
         ctl.configuration.solver.seed = self.seed
 
-        
-
         ##########################################################
         # SILENCE CLINGO (all stdout/warnings directly to devnull):
         fd = sys.stdout.fileno()
@@ -48,7 +46,7 @@ class Solver:
             os.dup2(devnull.fileno(), fd2)     #  <-- redirect at the FD level
             try:
                 with open(os.devnull, 'w') as devnull, contextlib.redirect_stdout(devnull):
-                    ctl.add("base",[],self.encoding + self.instance)
+                    ctl.add("base",[], self.encoding + self.instance )
                     ctl.ground([("base",[])])
                     ctl.solve(on_model=self.on_model)
             finally:
@@ -56,6 +54,7 @@ class Solver:
                 os.close(saved_fd2)
                 os.dup2(saved_fd, fd)
                 os.close(saved_fd)
+                pass
         ##########################################################
 
         end_time = time.time()

@@ -12,6 +12,8 @@ from solver import Solver, Model
 from pathlib import Path
 from typing import Any, List, Optional, Final
 
+from datetime import datetime, timezone
+
 from translate import TranslateCSVtoLogicProgram
 
 
@@ -321,8 +323,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     
     instance_asp_atoms = "\n".join(asp_instance)
 
-    open("20250827_instance.lp","w").write(instance_asp_atoms)
-    quit()
+    #open("20250827_instance.lp","w").write(instance_asp_atoms)
 
     encoding = open(encoding_path, "r").read()
 

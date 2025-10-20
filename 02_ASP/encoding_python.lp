@@ -15,6 +15,23 @@
 % navaid_sector(<NAVAID-ID>,<SECTOR-ID>,<TIME=0 for FACTS>)
 % sectorCapacityFactor({sector_capactiy_factor}).
 
+#script (python)
+
+import clingo
+import math
+N = clingo.Number
+
+def compute_capacity(sec_len, z, avg_cap):
+    if sec_len.number >= z.number:
+        total_capacity = ((z.number+1) * avg_cap.number) / 2
+    else:
+        total_capacity = 0
+        for i in range(sec_len.number):
+            total_capacity = (1 - (i / z.number)) * avg_cap.number
+
+    return N(math.ceil(total_capacity))
+#end.
+
 navaid(NAV) :- navaid_sector(NAV,_,_).
 
 % Sector Guess:
@@ -23,13 +40,10 @@ navaid_sector(SEC,SEC,T) :- navaid(SEC), time(T), airport(SEC).
 :- navaid_sector(NAV,SEC1,T), navaid_sector(NAV,SEC2,T), SEC1 != SEC2.
 :- navaid_sector(NAV,SEC,T), not airport(NAV), airport(SEC).
 
-% SECTOR CAP FUNCTION:
 sector_len(SEC,T,CAP_LEN) :- time(T), navaid(SEC), CAP_LEN = #count{NAV:navaid_sector(NAV,SEC,T)}.
 sector_avg_cap(SEC,T,CAP_SUM / CAP_LEN) :- time(T), navaid(SEC), CAP_SUM = #sum{C:navaid_sector(NAV,SEC,T), atomic_sector(NAV,T,C)}, sector_len(SEC,T,CAP_LEN), CAP_LEN > 0.
 sector_avg_cap(SEC,T,0) :- time(T), navaid(SEC), sector_len(SEC,T,CAP_LEN), CAP_LEN = 0.
-sector_variables(SEC,T,CAP_LEN,Z,CAP_AVG) :- sectorCapacityFactor(Z), navaid_sector(_,SEC,T), sector_len(SEC,T,CAP_LEN), sector_avg_cap(SEC,T,CAP_AVG).
-sector(SEC,T,C) :- sector_variables(SEC,T,CAP_LEN,Z,CAP_AVG), CAP_LEN >= Z, C = (CAP_AVG * (Z+1)) / 2. 
-sector(SEC,T,C) :- sector_variables(SEC,T,CAP_LEN,Z,CAP_AVG), CAP_LEN < Z, C = ((CAP_AVG * 2 * Z * (CAP_LEN+1)) - CAP_LEN * CAP_LEN - CAP_LEN) / (Z*2). 
+sector(SEC,T,@compute_capacity(CAP_LEN,Z,CAP_AVG)) :- sectorCapacityFactor(Z), navaid_sector(_,SEC,T), sector_len(SEC,T,CAP_LEN), sector_avg_cap(SEC,T,CAP_AVG).
 
 % GET ALL AIRPLANE SPEEDS
 airplane_speed(S) :- airplane(_,S).
@@ -63,7 +77,6 @@ overload(X,T,LOAD-C) :- sector(X,T,C), #count{ID:flight(ID,T,X)} = LOAD, LOAD > 
 
 % REROUTE - YES/NO:
 {reroute(ID)} :- navpointFlightPlan(ID,_,_).
-reroute(ID) :- plannedDepartureTime(ID,T), actualDepartureTime(ID,T'), T' > T.
 {navpointFlight(ID,T,X):navpoint(X)}1 :- reroute(ID), time(T).
 
 % ----------------- ONLY FOR REROUTED PLANES --------------------
@@ -76,7 +89,6 @@ plannedDepartureTime(ID,T) :- flightID(ID), T = #min{T':navpointFlightPlan(ID,T'
 plannedOrigin(ID,X) :- reroute(ID),plannedDepartureTime(ID,T),navpointFlightPlan(ID,T,X).
 %navpointFlight(ID,T,X) :- reroute(ID), navpointFlightPlan(ID,T,X), plannedOrigin(ID,X).
 navpointFlight(ID,T,X) :- reroute(ID), actualDepartureTime(ID,T), plannedOrigin(ID,X).
-%:- navpointFlight(ID,T,_), actualDepartureTime(ID,T'), T < T'.
 %navpointFlight(ID,T,X) :- reroute(ID), time(T), plannedDepartureTime(ID,T'), actualDepartureTime(ID,T''), T >= T', T <= T'', plannedOrigin(ID,X).
 
 % FLIGHT ENDS AT DESTINATION:
@@ -119,8 +131,7 @@ flight(ID,T',S') :- navpointFlight(ID,T,X), navpointFlight(ID,T+D,X'), navpointS
 
 % Multi-leg flights:
 :- airplane_flight(AID,FID0), airplane_flight(AID,FID1), FID0 != FID1, plannedArrivalTime(FID0,T0), plannedArrivalTime(FID1,T1), T0 < T1, actualArrivalTime(FID0, T0'), actualDepartureTime(FID1,T1'), T0' >= T1'.
-%lololol(AID,FID0,FID1,T0,T0',FID1,T1,T1'):- airplane_flight(AID,FID0), airplane_flight(AID,FID1), FID0 != FID1, plannedArrivalTime(FID0,T0), plannedArrivalTime(FID1,T1), T0 < T1, actualArrivalTime(FID0, T0'), actualDepartureTime(FID1,T1').%, T0' >= T1'.
-%:- not arrivalDelay(0,2).
+lololol(AID,FID0,T0,T0',FID1,T1,T1'):- airplane_flight(AID,FID0), airplane_flight(AID,FID1), FID0 != FID1, plannedArrivalTime(FID0,T0), plannedArrivalTime(FID1,T1), T0 < T1, actualArrivalTime(FID0, T0'), actualDepartureTime(FID1,T1').%, T0' >= T1'.
 
 % ------------------------------------------------------------------------------
 % PRIMARY WEAK CONSTRAINT:
@@ -138,16 +149,16 @@ output_sec(X,Y,Z) :- sector(X,Y,Z), Y = 12.
 #show navpointFlight/3.
 %#show reroute/1.
 %#show navpointSeq/4.
-%#show actualArrivalTime/2.
-%#show plannedArrivalTime/2.
-#show arrivalDelay/2.
+#show actualArrivalTime/2.
+#show plannedArrivalTime/2.
+%#show arrivalDelay/2.
 %#show overload/3.
 %#show timeStepGranularities/1.
 %#show time/1.
 %#show actualDestinationFirstReachedTime/2.
-%#show plannedDepartureTime/2.
-%#show actualDepartureTime/2.
-#show lololol/8.
+#show plannedDepartureTime/2.
+#show actualDepartureTime/2.
+#show lololol/7.
 %#show navaid_sector/3.
 %#show output_sec_len/3.
 %#show output_sec/3.
