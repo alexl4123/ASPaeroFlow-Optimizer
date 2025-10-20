@@ -36,7 +36,7 @@ from concurrent.futures import ProcessPoolExecutor
 
 
 from mip_model import MIPModel
-
+from datetime import datetime, timezone
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -212,7 +212,10 @@ class Main:
 
 
         # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
-        converted_instance_matrix, planned_arrival_times = self.instance_to_matrix_vectorized(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity, navaid_sector_lookup)
+        #converted_instance_matrix, planned_arrival_times = self.instance_to_matrix_vectorized(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity, navaid_sector_lookup)
+
+        navaid_sector_time_assignment = self.create_initial_navpoint_sector_assignment(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity)
+        converted_instance_matrix, planned_arrival_times = self.instance_to_matrix_vectorized(self.flights, self.airplane_flight, navaid_sector_time_assignment.shape[1], self._timestep_granularity, navaid_sector_time_assignment)
         #converted_instance_matrix, planned_arrival_times = self.instance_to_matrix(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity, navaid_sector_lookup)
 
         #np.testing.assert_array_equal(converted_instance_matrix, converted_instance_matrix_2)
@@ -233,7 +236,7 @@ class Main:
         original_converted_instance_matrix = converted_instance_matrix.copy()
 
 
-        converted_instance_matrix = self.build_MIP_model(self.unit_graphs, converted_instance_matrix, capacity_time_matrix, planned_arrival_times)
+        converted_instance_matrix = self.build_MIP_model(self.unit_graphs, converted_instance_matrix, capacity_time_matrix, planned_arrival_times, self.airplane_flight)
 
         end_time = time.time()
         if self.verbosity > 0:
@@ -279,7 +282,8 @@ class Main:
                 unit_graphs,
                 converted_instance_matrix: np.ndarray,
                 capacity_time_matrix: np.ndarray,
-                planned_arrival_times
+                planned_arrival_times,
+                airplane_flight,
                 ):
         """
         Split the candidate rows into *n_proc* equally‑sized chunks
@@ -296,7 +300,7 @@ class Main:
         
         mipModel = MIPModel(self.airports, max_time, self._max_explored_vertices, self._seed, self._timestep_granularity, self.verbosity, self._number_threads, navaid_sector_lookup)
 
-        converted_instance_matrix = mipModel.create_model(converted_instance_matrix, capacity_time_matrix, unit_graphs, self.airplanes, max_delay, planned_arrival_times)
+        converted_instance_matrix = mipModel.create_model(converted_instance_matrix, capacity_time_matrix, unit_graphs, self.airplanes, max_delay, planned_arrival_times, airplane_flight, self.flights)
 
         return converted_instance_matrix
     
@@ -433,14 +437,129 @@ class Main:
             dist = np.where(np.isinf(dist), -1, dist.astype(np.int32))
 
         return dist
- 
+
     def instance_to_matrix_vectorized(self,
+                                    flights: np.ndarray,
+                                    airplane_flight: np.ndarray,
+                                    max_time: int,
+                                    time_granularity: int,
+                                    navaid_sector_time_assignment: np.ndarray,
+                                    *,
+                                    fill_value: int = -1,
+                                    compress: bool = False):
+        """
+        Vectorized/semi-vectorized rewrite.
+        Dynamic sector assignment via navaid_sector_time_assignment (shape N x T):
+        sector_at_event = navaid_sector_time_assignment[navaid_id, time]
+        Assumes IDs are non-negative ints (reasonably dense).
+        """
+
+        # --- ensure integer views without copies where possible
+        flights = flights.astype(np.int64, copy=False)
+        airplane_flight = airplane_flight.astype(np.int64, copy=False)
+
+        # --- build flight -> airplane mapping (array is fastest if IDs are dense)
+        fid_map_max = int(max(flights[:, 0].max(), airplane_flight[:, 1].max()))
+        flight_to_airplane = np.full(fid_map_max + 1, -1, dtype=np.int64)
+        flight_to_airplane[airplane_flight[:, 1]] = airplane_flight[:, 0]
+
+        # --- sort by flight, then time (stable contiguous blocks per flight)
+        order = np.lexsort((flights[:, 2], flights[:, 0]))
+        f_sorted = flights[order]
+
+        fid = f_sorted[:, 0]
+        nav = f_sorted[:, 1]
+        t   = f_sorted[:, 2]
+
+        # --- dynamic navaid -> sector from (N x T) matrix using pairwise advanced indexing
+        N, T = navaid_sector_time_assignment.shape
+        if nav.size:
+            nav_min, nav_max = int(nav.min()), int(nav.max())
+            t_min, t_max     = int(t.min()),   int(t.max())
+            if nav_min < 0 or nav_max >= N:
+                raise ValueError(
+                    f"Navpoint id out of bounds: got range [{nav_min}, {nav_max}], matrix has N={N}."
+                )
+            if t_min < 0 or t_max >= T:
+                raise ValueError(
+                    f"Time index out of bounds: got range [{t_min}, {t_max}], matrix has T={T}."
+                )
+
+        sec = navaid_sector_time_assignment[nav, t]  # 1D array aligned with f_sorted
+
+        # --- output matrix shape (airplane_id rows, time columns)
+        n_rows = int(airplane_flight[:, 1].max()) + 1
+        out = np.full((n_rows, int(max_time)), fill_value, dtype=sec.dtype if sec.size else np.int64)
+
+        # --- group boundaries per flight (contiguous in sorted array)
+        if fid.size == 0:
+            return out, {}
+
+        u, idx_first, counts = np.unique(fid, return_index=True, return_counts=True)
+
+        # planned arrival times = last time per group (vectorized)
+        last_idx = idx_first + counts - 1
+        planned_arrival_times = dict(zip(u.tolist(), t[last_idx].tolist()))
+
+        # --- fill per-flight via slices (no per-timestep inner loops)
+        for g, start in enumerate(idx_first):
+            end = start + counts[g]
+
+            flight_index = g
+
+            if flight_index < 0:
+                # flight has no airplane mapping; skip defensively
+                continue
+
+            times = t[start:end]
+            secs  = sec[start:end]
+            if times.size == 0:
+                continue
+
+            # set the exact event time
+            out[flight_index, times[0]] = secs[0]
+
+            if times.size >= 2:
+                prev_times = times[:-1]
+                next_times = times[1:]
+                prev_secs  = secs[:-1]
+                next_secs  = secs[1:]
+
+                L = next_times - prev_times
+                mids = prev_times + (L // 2)
+
+                # slice-assign per segment
+                for i in range(prev_times.size):
+                    s0 = prev_times[i] + 1       # start (exclusive)
+                    m1 = mids[i] + 1             # first-half end (inclusive) -> slice stop
+                    e1 = next_times[i] + 1       # segment end (inclusive) -> slice stop
+
+                    # first half [prev_time+1, mid]
+                    if m1 > s0:
+                        out[flight_index, s0:m1] = prev_secs[i]
+                    # second half [mid+1, next_time]
+                    if e1 > m1:
+                        out[flight_index, m1:e1] = next_secs[i]
+
+        # Optional: compress width to actually-used time if requested
+        if compress and out.shape[1] > 0:
+            used_cols = np.any(out != fill_value, axis=0)
+            if used_cols.any():
+                last_used = np.flatnonzero(used_cols)[-1] + 1
+                out = out[:, :last_used]
+            else:
+                out = out[:, :1]  # keep at least one column
+
+        return out, planned_arrival_times
+
+
+
+    def create_initial_navpoint_sector_assignment(self,
                                     flights: np.ndarray,
                                     airplane_flight: np.ndarray,
                                     navaid_sector: np.ndarray,
                                     max_time: int,
                                     time_granularity: int,
-                                    navaid_sector_lookup,
                                     *,
                                     fill_value: int = -1,
                                     compress: bool = False):
@@ -458,85 +577,17 @@ class Main:
         flight_to_airplane = np.full(fid_map_max + 1, -1, dtype=np.int64)
         flight_to_airplane[airplane_flight[:,1]] = airplane_flight[:,0]
 
-        # --- build navaid -> sector mapping
-        # prefer an array map (fast); fall back to fromiter if needed
-        navaids_used = flights[:,1]
-        try:
-            max_nav_id = int(max(navaids_used.max(), max(navaid_sector_lookup.keys())))
-            nav2sec = np.full(max_nav_id + 1, fill_value, dtype=np.int64)
-            for k, v in navaid_sector_lookup.items():
-                nav2sec[int(k)] = int(v)
-            sectors = nav2sec[navaids_used]
-        except Exception:
-            # works even if lookup is a dict with sparse/large keys
-            sectors = np.fromiter((int(navaid_sector_lookup[int(x)]) for x in navaids_used),
-                                dtype=np.int64, count=navaids_used.size)
-
         # --- sort by flight, then time (stable contiguous blocks per flight)
         order = np.lexsort((flights[:,2], flights[:,0]))
         f_sorted = flights[order]
-        s_sorted = sectors[order]
 
-        fid = f_sorted[:,0]
         t   = f_sorted[:,2]
-        sec = s_sorted
 
         # --- output matrix shape (airplane_id rows, time columns)
-        n_rows = int(airplane_flight[:,0].max()) + 1
-        max_time_dim = int(max(t.max(), (max_time + 1) * time_granularity))
-        out = np.full((n_rows, max_time_dim), fill_value, dtype=sec.dtype)
+        max_time_dim = int(max(t.max() + 1, (max_time + 1) * time_granularity))
 
-        # --- group boundaries per flight (contiguous in sorted array)
-        u, idx_first, counts = np.unique(fid, return_index=True, return_counts=True)
-
-        # planned arrival times = last time per group (vectorized)
-        last_idx = idx_first + counts - 1
-        planned_arrival_times = dict(zip(u.tolist(), t[last_idx].tolist()))
-
-        # --- fill per-flight via slices (no per-timestep loops)
-        # For each consecutive pair (prev_time -> next_time):
-        #   first half  -> prev_sector
-        #   second half -> next_sector
-        for g, start in enumerate(idx_first):
-            end = start + counts[g]
-
-            a_id = int(flight_to_airplane[int(u[g])])
-            if a_id < 0:
-                # flight has no airplane mapping; skip defensively
-                continue
-
-            times = t[start:end]
-            secs  = sec[start:end]
-            if times.size == 0:
-                continue
-
-            # first hop: set the exact event time
-            out[a_id, times[0]] = secs[0]
-
-            if times.size >= 2:
-                prev_times = times[:-1]
-                next_times = times[1:]
-                prev_secs  = secs[:-1]
-                next_secs  = secs[1:]
-
-                L = next_times - prev_times
-                mids = prev_times + (L // 2)
-
-                # slice-assign per segment (loop over segments; no inner time loop)
-                for i in range(prev_times.size):
-                    s0 = prev_times[i] + 1       # start (exclusive of prev_time)
-                    m1 = mids[i] + 1             # first-half end (inclusive) -> slice stop
-                    e1 = next_times[i] + 1       # segment end (inclusive) -> slice stop
-
-                    # first half [prev_time+1, mid]
-                    if m1 > s0:
-                        out[a_id, s0:m1] = prev_secs[i]
-                    # second half [mid+1, next_time]
-                    if e1 > m1:
-                        out[a_id, m1:e1] = next_secs[i]
-
-        return out, planned_arrival_times
-   
+        sectors = navaid_sector[:, 1]                      # shape (N,)
+        return np.repeat(sectors[:, None], max_time_dim, axis=1)  # shape (N, T)
 
     def capacity_time_matrix(self,
                             cap: np.ndarray,
@@ -639,121 +690,273 @@ class Main:
         #np.savetxt("20250819_histogram.csv", hist, delimiter=",",fmt="%i")
 
         return hist
-
-
+    
 # ---------------------------------------------------------------------------
-# CLI utilities
+# CLI utilities (with config + bundle directory support)
 # ---------------------------------------------------------------------------
 
-def _build_arg_parser() -> argparse.ArgumentParser:
-    """Return a fully‑configured :pyclass:`argparse.ArgumentParser`."""
+import argparse, json
+from pathlib import Path
+from typing import Optional, List, Dict
+
+DEFAULT_FILENAMES = {
+    "graph_path":              "graph_edges.csv",
+    "sectors_path":            "sectors.csv",
+    "flights_path":            "flights.csv",
+    "airports_path":           "airports.csv",
+    "airplanes_path":          "airplanes.csv",
+    "airplane_flight_path":    "airplane_flight_assignment.csv",
+    "navaid_sector_path":      "navaid_sector_assignment.csv",
+    "encoding_path":           "encoding.lp",
+}
+
+def _cfg_get(cfg: Dict, key: str, default=None):
+    """Get key from cfg with hyphen/underscore tolerance."""
+    if key in cfg: return cfg[key]
+    alt = key.replace("-", "_")
+    if alt in cfg: return cfg[alt]
+    alt2 = key.replace("_", "-")
+    if alt2 in cfg: return cfg[alt2]
+    return default
+
+def _preparse(argv: Optional[List[str]]):
+    """Parse only --config and --data-dir early, so we can load config defaults."""
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--config", type=Path, default=None)
+    p.add_argument("--data-dir", type=Path, default=None)
+    return p.parse_known_args(argv)
+
+def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
+    """Build parser with defaults coming from cfg (if present)."""
+    def C(key, default=None): return _cfg_get(cfg, key, default)
+
     parser = argparse.ArgumentParser(
         prog="ATFM-NM-Tool",
         description="Highly efficient ATFM problem solver for the network manager - including XAI.",
     )
 
+    # New: config + bundle directory
     parser.add_argument(
-        "--graph-path",
-        type=Path,
-        metavar="FILE",
-        help="Location of the graph CSV file.",
+        "--config", type=Path, default=None,
+        help="JSON config file whose values serve as defaults (overridden by CLI)."
     )
     parser.add_argument(
-        "--sectors-path",
-        type=Path,
-        metavar="FILE",
-        help="Location of the sector (capacity) CSV file.",
-    )
-    parser.add_argument(
-        "--flights-path",
-        type=Path,
-        metavar="FILE",
-        help="Location of the flights CSV file.",
-    )
-    parser.add_argument(
-        "--airports-path",
-        type=Path,
-        metavar="FILE",
-        help="Location of the airport-vertices CSV file.",
-    )
-    parser.add_argument(
-        "--airplanes-path",
-        type=Path,
-        metavar="FILE",
-        help="Location of the airplanes CSV file.",
-    )
-    parser.add_argument(
-        "--airplane-flight-path",
-        type=Path,
-        metavar="FILE",
-        help="Location of the airplane-flight-assignment CSV file.",
-    )
-    parser.add_argument(
-        "--navaid-sector-path",
-        type=Path,
-        metavar="FILE",
-        help="Location of the navaids-sector assignment CSV file.",
+        "--data-dir", type=Path, default=C("data-dir", None),
+        help="Directory containing the 7 standard optimizer CSVs. "
+             "Any individual --*-path not provided will default to this directory + default filename."
     )
 
+    # Individual paths (CLI overrides config)
+    parser.add_argument("--graph-path",           type=Path, metavar="FILE", default=C("graph-path", None),
+                        help="Location of the graph CSV file (graph_edges.csv).")
+    parser.add_argument("--sectors-path",         type=Path, metavar="FILE", default=C("sectors-path", None),
+                        help="Location of the sector (capacity) CSV file.")
+    parser.add_argument("--flights-path",         type=Path, metavar="FILE", default=C("flights-path", None),
+                        help="Location of the flights CSV file.")
+    parser.add_argument("--airports-path",        type=Path, metavar="FILE", default=C("airports-path", None),
+                        help="Location of the airport-vertices CSV file.")
+    parser.add_argument("--airplanes-path",       type=Path, metavar="FILE", default=C("airplanes-path", None),
+                        help="Location of the airplanes CSV file.")
+    parser.add_argument("--airplane-flight-path", type=Path, metavar="FILE", default=C("airplane-flight-path", None),
+                        help="Location of the airplane-flight-assignment CSV file.")
+    parser.add_argument("--navaid-sector-path",   type=Path, metavar="FILE", default=C("navaid-sector-path", None),
+                        help="Location of the navaids-sector assignment CSV file.")
+
+    # Results saving
     parser.add_argument(
-        "--encoding-path",
+        "--save-results",
+        type=str,
+        default=str(C("save-results", "true")),
+        help="true/false: save optimizer result matrices to disk (default: true).",
+    )
+    parser.add_argument(
+        "--results-root",
         type=Path,
-        default=Path("encoding.lp"), 
-        metavar="FILE",
-        help="Location of the encoding for the optimization problem.",
+        default=Path(C("results-root", "experiment_output")),
+        help="Root folder to store result matrices (default: experiment_output).",
     )
     parser.add_argument(
-        "--seed",
-        type=int,
-        default=11904657,
-        help="Set the random see."
-    )
-    parser.add_argument(
-        "--number-threads",
-        type=int,
-        default=20,
-        help="Number of parallel ASP solving threads."
-    )
-    parser.add_argument(
-        "--timestep-granularity",
-        type=int,
-        default=1,
-        help="Specifies how long one stimulated timestep is (time-step=1h/granularity). So granularity=1 means 1h, granularity=4 means 15 minutes."
-    )
-    parser.add_argument(
-        "--max-explored-vertices",
-        type=int,
-        default=6,
-        help="Maximum vertices explored in parallel - effectively restricts number of explored paths (larger=possibly better solution, but more compute time needed)."
-    )
-    parser.add_argument(
-        "--max-delay-per-iteration",
-        type=int,
-        default=-1,
-        help="Maximum hours of delay per solve iteration explored (larger=more compute time, but faster descent; -1 is automatically fetch  according to max. time steps)."
-    )
-    parser.add_argument(
-        "--max-time",
-        type=int,
-        default=24,
-        help="Specifies how many timesteps are one day. "
-    )
-    parser.add_argument(
-        "--verbosity",
-        type=int,
-        default=0,
-        help="Verbosity levels (0,1,2)"
+        "--results-format",
+        type=str,
+        choices=["csv","csv.gz","npz"],
+        default=C("results-format", "csv"),
+        help="File format for matrices: 'csv' (default, uncompressed), 'csv.gz', or 'npz'.",
     )
 
+    # Encoding + knobs
+    parser.add_argument("--encoding-path", type=Path, default=Path(C("encoding-path", DEFAULT_FILENAMES["encoding_path"])),
+                        metavar="FILE", help="Location of the encoding for the optimization problem.")
+    parser.add_argument("--seed", type=int, default=int(C("seed", 11904657)),
+                        help="Set the random seed.")
+    parser.add_argument("--number-threads", type=int, default=int(C("number-threads", 20)),
+                        help="Number of parallel ASP solving threads.")
+    parser.add_argument("--timestep-granularity", type=int, default=int(C("timestep-granularity", 1)),
+                        help="Granularity: 1=1h, 4=15min, etc.")
+    parser.add_argument("--max-explored-vertices", type=int, default=int(C("max-explored-vertices", 6)),
+                        help="Max vertices explored in parallel.")
+    parser.add_argument("--max-delay-per-iteration", type=int, default=int(C("max-delay-per-iteration", -1)),
+                        help="Max hours of delay per iteration (−1 = auto).")
+    parser.add_argument("--max-time", type=int, default=int(C("max-time", 24)),
+                        help="Number of timesteps for one day.")
+    parser.add_argument("--verbosity", type=int, default=int(C("verbosity", 0)),
+                        help="Verbosity levels (0,1,2).")
+    parser.add_argument("--sector-capacity-factor", type=int, default=int(C("sector-capacity-factor", 6)),
+                        help="NOT SUPPORTED IN MIP MODEL.")
     return parser
 
+def _apply_data_dir_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    """For any missing *-path, use data_dir / default_filename."""
+    if not args.data_dir:
+        return args
+    base = args.data_dir
 
+    def fill(cur: Optional[Path], fname_key: str) -> Path:
+        return cur if cur else (base / DEFAULT_FILENAMES[fname_key])
 
+    args.graph_path           = fill(args.graph_path,           "graph_path")
+    args.sectors_path         = fill(args.sectors_path,         "sectors_path")
+    args.flights_path         = fill(args.flights_path,         "flights_path")
+    args.airports_path        = fill(args.airports_path,        "airports_path")
+    args.airplanes_path       = fill(args.airplanes_path,       "airplanes_path")
+    args.airplane_flight_path = fill(args.airplane_flight_path, "airplane_flight_path")
+    args.navaid_sector_path   = fill(args.navaid_sector_path,   "navaid_sector_path")
+    # encoding_path already has a default; leave as-is
+
+    return args
+
+def _validate_inputs(args: argparse.Namespace):
+    missing = []
+    for k in [
+        "graph_path","sectors_path","flights_path","airports_path",
+        "airplanes_path","airplane_flight_path","navaid_sector_path","encoding_path"
+    ]:
+        p: Path = getattr(args, k)
+
+        if p is None or not Path(p).exists():
+            missing.append((k, str(p)))
+    if missing:
+        lines = ["Input files not found:"]
+        lines += [f"  - {k}: {v}" for k, v in missing]
+        raise FileNotFoundError("\n".join(lines))
 
 def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    """Return parsed command‑line arguments for *argv* (or *sys.argv*)."""
-    parser = _build_arg_parser()
-    return parser.parse_args(argv)
+    """Parse CLI with priority: CLI > config > built-in defaults."""
+    # 1) preparse to get --config
+    pre, _ = _preparse(argv)
+    cfg = {}
+    if pre.config and pre.config.exists():
+        with open(pre.config, "r") as fh:
+            cfg = json.load(fh) or {}
+
+    # allow config to set a default data-dir as well
+    if pre.data_dir is None:
+        cfg_data_dir = _cfg_get(cfg, "data-dir", None)
+        if cfg_data_dir:
+            pre.data_dir = Path(cfg_data_dir)
+
+    # 2) build the full parser with cfg-derived defaults
+    parser = _build_arg_parser(cfg)
+    args = parser.parse_args(argv)
+
+    # Keep the config path in args for traceability
+    if args.config is None and pre.config:
+        args.config = pre.config
+
+    # 3) If data-dir provided (CLI or config), auto-fill missing file paths
+    if args.data_dir is None and pre.data_dir:
+        args.data_dir = pre.data_dir
+    args = _apply_data_dir_defaults(args)
+
+    # 4) Final validation
+    _validate_inputs(args)
+
+    # normalize booleans
+    def _str2bool(v):
+        if isinstance(v, bool): return v
+        s = str(v).strip().lower()
+        return s in ("1","true","t","yes","y","on")
+    args.save_results = _str2bool(args.save_results)
+
+    return args
+
+def _derive_output_name(args: argparse.Namespace) -> str:
+    """
+    Use the last segment of --data-dir as the experiment name, e.g. 0000763_SEED42.
+    Assumes --data-dir is provided (as per user workflow).
+    """
+    if args.data_dir:
+        return Path(args.data_dir).name
+    # Fallback: try to use flights' parent directory name
+    if args.flights_path:
+        return Path(args.flights_path).parent.name or "RESULTS"
+    return "RESULTS"
+
+def _ensure_dir(p: Path) -> Path:
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+def _save_npz(path: Path, arr, key: str):
+    a = np.asarray(arr)
+    np.savez_compressed(path, **{key: a})
+
+def _save_csv_gz(path: Path, arr):
+    a = np.asarray(arr)
+    # Write as integer CSV (or fall back to float if needed)
+    # We avoid pandas for speed/dep-minimization; numpy.savetxt with gzip works well.
+    import gzip
+    fmt = "%d" if a.dtype.kind in ("i","u","b") else "%g"
+    with gzip.open(path, "wt", encoding="utf-8") as gz:
+        np.savetxt(gz, a, fmt=fmt, delimiter=",")
+
+def _save_csv(path: Path, arr):
+    a = np.asarray(arr)
+    fmt = "%d" if a.dtype.kind in ("i","u","b") else "%g"
+    np.savetxt(path, a, fmt=fmt, delimiter=",")
+
+def _save_results(args: argparse.Namespace, app) -> None:
+    """
+    Persist the three result matrices if present on `app`:
+      - navaid_sector_time_assignment  (|N| x |T|)
+      - converted_instance_matrix      (|F| x |T|)
+      - converted_navpoint_matrix      (|F| x |T|)
+    """
+    out_name = _derive_output_name(args)
+    out_dir  = _ensure_dir(Path(args.results_root) / out_name)
+
+    mats = {
+        "navaid_sector_time_assignment": getattr(app, "navaid_sector_time_assignment", None),
+        "converted_instance_matrix":     getattr(app, "converted_instance_matrix", None),
+        "converted_navpoint_matrix":     getattr(app, "converted_navpoint_matrix", None),
+    }
+
+    saved = {}
+    for key, val in mats.items():
+        if val is None:
+            continue
+        if args.results_format == "npz":
+            _save_npz(out_dir / f"{key}.npz", val, key)
+        elif args.results_format == "csv.gz":
+            _save_csv_gz(out_dir / f"{key}.csv.gz", val)
+        else:  # "csv"
+            _save_csv(out_dir / f"{key}.csv", val)
+
+        a = np.asarray(val)
+        saved[key] = {"shape": list(a.shape), "dtype": str(a.dtype)}
+
+    # Write a small manifest
+    manifest = {
+        "saved": saved,
+        "format": args.results_format,
+        "time_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "source": {
+            "data_dir": str(args.data_dir) if args.data_dir else None,
+            "seed": args.seed,
+            "timestep_granularity": args.timestep_granularity,
+        }
+    }
+    with open(out_dir / "manifest.json", "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, indent=2)
+    print(f"[✓] Saved results → {out_dir}")
 
 
 # ---------------------------------------------------------------------------
