@@ -94,7 +94,7 @@ def kill_descendants(pid: int):
 # System configuration (edit paths here if your layout differs)
 # ---------------------------------------------
 
-def build_system_config(base_dir: Path) -> List[Dict]:
+def build_system_config(base_dir: Path, output_path:Path) -> List[Dict]:
     """Return the list with per‑solver metadata."""
     return [
         {
@@ -102,24 +102,40 @@ def build_system_config(base_dir: Path) -> List[Dict]:
             "script": base_dir / "../01_ASPaeroFlow/main.py",
             "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
             "verbosity": None,
+            "cmd": [
+                "--max-explored-vertices=6",
+                "--max-delay-per-iteration=-1",
+                f"--results-root={output_path}/solver_outputs/01_ASPaeroFlow",
+                ]
         },
         {
             "key": "02_ASP",
             "script": base_dir / "../02_ASP/main.py",
             "encoding": base_dir / "../02_ASP/encoding.lp",
             "verbosity": None,
+            "cmd": [
+                f"--results-root={output_path}/solver_outputs/02_ASP",
+                ]
         },
         {
-            "key": "03_Delay",
-            "script": base_dir / "../03_Delay/main.py",
+            "key": "03_DELAY",
+            "script": base_dir / "../01_ASPaeroFlow/main.py",
             "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
             "verbosity": None,
+            "cmd": [
+                "--max-explored-vertices=6",
+                "--max-delay-per-iteration=-1",
+                f"--results-root={output_path}/solver_outputs/03_DELAY",
+                ]
         },
         {
             "key": "04_MIP",
             "script": base_dir / "../04_MIP/main.py",
             "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
             "verbosity": None,
+            "cmd": [
+                f"--results-root={output_path}/solver_outputs/04_MIP",
+                ]
         },
     ]
 
@@ -128,7 +144,7 @@ def build_system_config(base_dir: Path) -> List[Dict]:
 # Benchmarking logic
 # ---------------------------------------------
 
-def build_command(system: Dict, paths: Dict[str, Path], python_bin: str, timestep_granularity) -> List[str]:
+def build_command(system: Dict, paths: Dict[str, Path], python_bin: str, timestep_granularity, seed:int = 11904657) -> List[str]:
     """Assemble the command‑line for one solver run."""
     cmd = [
         python_bin,
@@ -140,12 +156,9 @@ def build_command(system: Dict, paths: Dict[str, Path], python_bin: str, timeste
         f"--airplanes-path={paths['airplanes']}",
         f"--airplane-flight-path={paths['airplane-flight']}",
         f"--navaid-sector-path={paths['navaid-sector']}",
-        "--seed=11904657",
+        f"--seed={seed}",
         f"--timestep-granularity={timestep_granularity}",
         "--number-threads=5",
-        "--max-explored-vertices=6",
-        "--max-delay-per-iteration=-1",
-        "--max-time=24",
     ]
 
     if system["verbosity"] is not None:
@@ -240,15 +253,20 @@ def main() -> None:
     parser.add_argument("instance_dir", type=Path, help="Folder containing instance sub‑directories")
     parser.add_argument("--time-limit", type=int, default=18000, help="Wall‑clock limit (s)")
     parser.add_argument("--memory-limit", type=int, default=20, help="Memory limit (GiB)")
-    parser.add_argument("--python-bin", default="/home/thinklex/miniconda3/envs/potassco/bin/python", help="Python interpreter for the solvers")
+    parser.add_argument("--python-bin", default="/home/guests/abeiser/miniconda3/envs/potassco/bin/python", help="Python interpreter for the solvers")
     parser.add_argument("--output-dir", type=Path, default=Path("."), help="Where to place CSVs")
+    parser.add_argument("--output-root", type=Path, default=Path("."), help="Where to place CSVs")
     parser.add_argument("--timestep-granularity", type=int, default=1, help="Timestep granularity")
 
     args = parser.parse_args()
     mem_limit_bytes = args.memory_limit * 1024 ** 3
 
+    output_root = args.output_root
+    output_dir = args.output_dir
+    output_path = Path(output_root, output_dir)
+
     base_dir = Path(__file__).resolve().parent
-    systems = build_system_config(base_dir)
+    systems = build_system_config(base_dir, output_path)
 
     # Collect & sort instances
     instances = sorted(p for p in args.instance_dir.iterdir() if p.is_dir())
@@ -265,6 +283,7 @@ def main() -> None:
     first_failure: Dict[str, int | None] = {sys_["key"]: None for sys_ in systems}
 
     timestep_granularity = args.timestep_granularity
+
 
     # Main loops (solver outermost ⇒ better CPU cache locality, easier skip logic)
     for inst_path in instances:
@@ -299,7 +318,9 @@ def main() -> None:
                 "navaid-sector": f_navaid_sector,
             }
 
+
             cmd = build_command(system, paths, args.python_bin, timestep_granularity)
+            cmd += system["cmd"]
 
             #print(" ".join(cmd))
             #continue
@@ -318,19 +339,20 @@ def main() -> None:
     # -----------------------------------------
     # Write CSVs
     # -----------------------------------------
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    output_path.mkdir(parents=True, exist_ok=True)
+
     header = ["Instance"] + [s["key"] for s in systems]
 
     def dicts_to_rows(container: Dict[str, Dict[str, float | int]]) -> List[List]:
         return [[inst] + [container[inst][s["key"]] for s in systems] for inst in (p.name for p in instances)]
 
-    write_csv(args.output_dir / "execution_time.csv", header, dicts_to_rows(exec_time))
-    write_csv(args.output_dir / "ram_usage.csv", header, dicts_to_rows(ram_usage))
-    write_csv(args.output_dir / "solution_value.csv", header, dicts_to_rows(sol_value))
+    write_csv(output_path / "execution_time.csv", header, dicts_to_rows(exec_time))
+    write_csv(output_path / "ram_usage.csv", header, dicts_to_rows(ram_usage))
+    write_csv(output_path / "solution_value.csv", header, dicts_to_rows(sol_value))
 
     print("Benchmarking finished. Results written to:")
     for fn in ("execution_time.csv", "ram_usage.csv", "solution_value.csv"):
-        print("  -", args.output_dir / fn)
+        print("  -", output_path / fn)
 
 
 if __name__ == "__main__":
