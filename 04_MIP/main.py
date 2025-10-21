@@ -236,22 +236,15 @@ class Main:
         original_converted_instance_matrix = converted_instance_matrix.copy()
 
 
-        converted_instance_matrix = self.build_MIP_model(self.unit_graphs, converted_instance_matrix, capacity_time_matrix, planned_arrival_times, self.airplane_flight)
+        converted_instance_matrix, converted_navpoint_matrix, navaid_sector_time_assignment = self.build_MIP_model(self.unit_graphs, converted_instance_matrix, capacity_time_matrix, planned_arrival_times, self.airplane_flight)
 
         end_time = time.time()
         if self.verbosity > 0:
             print(f">> Elapsed solving time: {end_time - start_time}")
 
-
         self.converted_instance_matrix = converted_instance_matrix
-
-        valid = converted_instance_matrix != -1
-        print(np.nonzero(valid[0,:]))
-        print(np.nonzero(valid[1,:]))
-        print(np.nonzero(valid[2,:]))
-
-        navaid_sector_time_assignment = np.ones((converted_instance_matrix.shape[0],converted_instance_matrix.shape[1])) * -1
-        converted_navpoint_matrix = np.ones((converted_instance_matrix.shape[0], converted_instance_matrix.shape[1])) * -1
+        self.converted_navpoint_matrix = converted_navpoint_matrix
+        self.navaid_sector_time_assignment = navaid_sector_time_assignment
 
         #np.savetxt("01_final_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
 
@@ -310,9 +303,9 @@ class Main:
         
         mipModel = MIPModel(self.airports, max_time, self._max_explored_vertices, self._seed, self._timestep_granularity, self.verbosity, self._number_threads, navaid_sector_lookup)
 
-        converted_instance_matrix = mipModel.create_model(converted_instance_matrix, capacity_time_matrix, unit_graphs, self.airplanes, max_delay, planned_arrival_times, airplane_flight, self.flights)
+        converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix = mipModel.create_model(converted_instance_matrix, capacity_time_matrix, unit_graphs, self.airplanes, max_delay, planned_arrival_times, airplane_flight, self.flights)
 
-        return converted_instance_matrix
+        return converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix
     
     def flight_spans_contiguous(self, matrix: np.ndarray, *, fill_value: int = -1):
         """
@@ -966,7 +959,9 @@ def _save_results(args: argparse.Namespace, app) -> None:
     }
     with open(out_dir / "manifest.json", "w", encoding="utf-8") as fh:
         json.dump(manifest, fh, indent=2)
-    print(f"[✓] Saved results → {out_dir}")
+
+    if args.verbosity > 0:
+        print(f"[✓] Saved results → {out_dir}")
 
 
 # ---------------------------------------------------------------------------

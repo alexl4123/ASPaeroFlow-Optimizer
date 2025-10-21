@@ -79,7 +79,7 @@ class MIPModel:
             model = gp.Model(env=self.env, name="toy")
             model.Params.Threads = self._max_number_threads
 
-            flight_variables_pd, sector_variables_pd, next_sectors, previous_sectors, max_effective_delay = self.add_variables(model, converted_instance_matrix, unit_graphs, airplanes, max_delay, filed_flights, airplane_flight)
+            flight_variables_pd, sector_variables_pd, next_sectors, previous_sectors, max_effective_delay, all_flights_navpoints = self.add_variables(model, converted_instance_matrix, unit_graphs, airplanes, max_delay, filed_flights, airplane_flight)
 
             model.update()
 
@@ -102,7 +102,8 @@ class MIPModel:
 
             self.optimize(model, optimization_variables)
 
-            converted_instance_matrix = self.reconstruct_solution(model, flight_variables_pd, sector_variables_pd, converted_instance_matrix, max_delay)
+            converted_instance_matrix, converted_navpoint_matrix = self.reconstruct_solution(model, flight_variables_pd, sector_variables_pd,
+                                                                                             converted_instance_matrix, max_delay, all_flights_navpoints)
 
             mask = converted_instance_matrix != -1                                        # same shape as arr
 
@@ -123,7 +124,7 @@ class MIPModel:
             else:
                 solution = converted_instance_matrix
 
-        return converted_instance_matrix
+        return converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix
     
 
     def add_consecutive_flight_constraints(self, model, flight_variables_pd, airplanes, airplane_flight, converted_instance_matrix):
@@ -296,7 +297,11 @@ class MIPModel:
         self.nearest_neighbors_lookup = {}
         k = 6
 
+        all_flight_navpoints_dict = {}
+
         for flight_affected_index in range(converted_instance_matrix.shape[0]):
+
+            all_flight_navpoints_dict[flight_affected_index] = {}
 
             next_sectors[flight_affected_index] = {}
             previous_sectors[flight_affected_index] = {}
@@ -345,13 +350,13 @@ class MIPModel:
 
             all_variables_dict = {}
 
+
             for path in paths:
 
                 navpoint_trajectory = self.get_flight_navpoint_trajectory(flights_affected, unit_graph, flight_affected_index, start_time, airplane_speed, path, self._timestep_granularity)
 
                 for delay in range(additional_time_increase * time_window,time_window * (additional_time_increase + 1)):
 
-                    flight_time = 0
                     current_time = start_time
                     max_delay_tmp = time_window * (additional_time_increase + 1) 
                     delay_number = (delay) + path_number * max_delay_tmp 
@@ -385,25 +390,24 @@ class MIPModel:
 
                         if flight_hop_index == 0:
 
-                            for _ in range(actual_delay + delay + 1):
+                            for time_index in range(actual_delay + delay + 1):
 
+                                if time_index == actual_delay + delay:
+                                    if f"x[{flight_affected_index},{delay_number},{current_time},{origin}]" not in all_variables_dict:
+                                        all_variables_dict[f"x[{flight_affected_index},{delay_number},{current_time},{origin}]"] = True
 
-                                if f"x[{flight_affected_index},{delay_number},{current_time},{origin}]" not in all_variables_dict:
-                                    all_variables_dict[f"x[{flight_affected_index},{delay_number},{current_time},{origin}]"] = True
-                    
-                                    origin_variable = model.addVar(vtype=GRB.BINARY, name=f"x[{flight_affected_index},{delay_number},{current_time},{origin}]")
+                                        origin_variable = model.addVar(vtype=GRB.BINARY, name=f"x[{flight_affected_index},{delay_number},{current_time},{origin}]")
 
-                                    entry = pd.DataFrame.from_dict({
-                                        "F": [flight_affected_index],
-                                        "D": [delay_number],
-                                        "T": [current_time],
-                                        "V": [origin],
-                                        "obj": [origin_variable]
-                                    })
+                                        entry = pd.DataFrame.from_dict({
+                                            "F": [flight_affected_index],
+                                            "D": [delay_number],
+                                            "T": [current_time],
+                                            "V": [origin],
+                                            "obj": [origin_variable]
+                                        })
 
-                                    flight_variables_pd = pd.concat([flight_variables_pd,entry], ignore_index = True)
+                                        flight_variables_pd = pd.concat([flight_variables_pd,entry], ignore_index = True)
 
-                                flight_time += 1
                                 current_time += 1
 
                         else:
@@ -411,6 +415,12 @@ class MIPModel:
                             prev_navaid = navpoint_trajectory[flight_hop_index-1][1]
                             prev_time = navpoint_trajectory[flight_hop_index-1][2]
                             prev_sector = self.navaid_sector_lookup[prev_navaid]
+
+                            if delay_number not in all_flight_navpoints_dict[flight_affected_index]:
+                                all_flight_navpoints_dict[flight_affected_index][delay_number] = {}
+
+                            if prev_navaid not in all_flight_navpoints_dict[flight_affected_index][delay_number]:
+                                all_flight_navpoints_dict[flight_affected_index][delay_number][prev_navaid] = current_time
 
                             #graph_instance[f"sectorEdge({prev_sector},{sector})."] = True
 
@@ -452,17 +462,19 @@ class MIPModel:
                                         flight_variables_pd = pd.concat([flight_variables_pd,entry], ignore_index = True)
 
                                 current_time += 1
-                                flight_time += 1
+
+                            if navaid not in all_flight_navpoints_dict[flight_affected_index][delay_number]:
+                                all_flight_navpoints_dict[flight_affected_index][delay_number][navaid] = current_time
 
                 #actual_arrival_time_instance.append(f"actualArrivalTime({airplane_id},{current_time - 1},{path_number}).")
                 # path_numbers = #PATHS * #DELAYS
                 path_number += 1
 
-        #considered_variables = flight_variables_pd[(flight_variables_pd['F']==0)&(flight_variables_pd['D']==30)]
+        #considered_variables = flight_variables_pd[(flight_variables_pd['F']==2)&(flight_variables_pd['D']==2)]
         #print(considered_variables)
         #quit()
 
-        return flight_variables_pd, sector_variables_pd, next_sector, previous_sectors, max_effective_delay
+        return flight_variables_pd, sector_variables_pd, next_sector, previous_sectors, max_effective_delay, all_flight_navpoints_dict
 
 
     def add_capacity_constraint(self, model: gp.Model, flight_variables_pd, sector_variables_pd, capacity_time_matrix, unit_graphs, converted_instance_matrix, fill_value = -1 ):
@@ -515,11 +527,17 @@ class MIPModel:
 
         for flight in range(converted_instance_matrix.shape[0]):
             considered_flight = converted_instance_matrix[flight,:]
+
+            considered_flight_time_rows = flight_variables_pd.loc[((flight_variables_pd["F"]==flight))]
+            min_flight_time = min(considered_flight_time_rows["T"])
+            max_flight_time = max(considered_flight_time_rows["T"])
+
             considered_flight = considered_flight[considered_flight != fill_value]
             if len(considered_flight) == 0:
                 continue
 
-            for time in range(converted_instance_matrix.shape[1]):
+            #for time in range(converted_instance_matrix.shape[1]):
+            for time in range(min_flight_time, max_flight_time + 1):
 
                 considered_rows = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["T"]==time))]
 
@@ -534,14 +552,15 @@ class MIPModel:
                         for _, delay_row in delay_matrix.iterrows():
                             delay_variables.append(delay_row['obj'])
                             delay = delay_row["D"]
-                            subsequent_variables = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["T"]==time+1)&(flight_variables_pd["V"]==sector)&(flight_variables_pd["D"]==delay))]
+                            #subsequent_variables = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["T"]==time+1)&(flight_variables_pd["V"]==sector)&(flight_variables_pd["D"]==delay))]
+                            subsequent_variables = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["T"]==time+1)&(flight_variables_pd["D"]==delay))]
 
                             if subsequent_variables.shape[0] == 1:
                                 for _, subsequent_delay_variable in subsequent_variables.iterrows():
                                     # SUBSEQUENT CONSTRAINT
                                     model.addConstr(delay_row["obj"] <= subsequent_delay_variable["obj"])
 
-                        # SINGLE DELAY CONSTRAINT
+                        # SINGLE PATH (DELAY) CONSTRAINT
                         #print(f"{['+'.join([var.VarName for var in delay_variables])]} <= 1") 
                         model.addConstr(gp.quicksum(delay_variables) <= 1)
 
@@ -552,73 +571,22 @@ class MIPModel:
                         variables_list.append(flight_time_row['obj'])
 
                     # ADD UNIQUE PATH CONSTRAINT:
-
                     #print(f"{['+'.join([var.VarName for var in variables_list])]} <= 1") 
                     model.addConstr(gp.quicksum(variables_list) <= 1)
 
-            #####################################################################################
-            #####################################################################################
-            # GRAPH CONSTRAINTS:
-
-            considered_rows = flight_variables_pd.loc[((flight_variables_pd["F"]==flight))]
-
-            for delay in list(set(considered_rows['D'])):
-
-                considered_rows_2 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]==delay))]
-
-                for sector in list(set(considered_rows_2['V'])):
-                    
-                    considered_rows_3 = flight_variables_pd.loc[((flight_variables_pd['F']==flight)&(flight_variables_pd['D']==delay)&(flight_variables_pd['V']==sector))]
-
-                    # NEXT CONSTRAINT:
-                    max_time = max(list(set(considered_rows_3['T'])))
-                    variable_rows = flight_variables_pd.loc[((flight_variables_pd['F']==flight)&(flight_variables_pd['D']==delay)&(flight_variables_pd['V']==sector)&(flight_variables_pd['T']==max_time))]
-
-                    for _, variable_row in variable_rows.iterrows():
-
-                        variable = variable_row['obj']
-                        variable_rows = flight_variables_pd.loc[((flight_variables_pd['F']==flight)&(flight_variables_pd['D']==delay)&(flight_variables_pd['T']==max_time+1))]
-
-                        next_variables = []
-                        for _,next_row in variable_rows.iterrows():
-
-                            next_variables.append(next_row['obj'])
-
-                        if len(next_variables) > 0:
-                            #print(f"{variable.VarName} - {['+'.join([var.VarName for var in next_variables])]} <= 0") 
-                            model.addConstr(variable - gp.quicksum(next_variables) <= 0)
-
-
-                    # PREV CONSTRAINT:
-                    min_time = min(list(set(considered_rows_3['T'])))
-                    variable_rows = flight_variables_pd.loc[((flight_variables_pd['F']==flight)&(flight_variables_pd['D']==delay)&(flight_variables_pd['V']==sector)&(flight_variables_pd['T']==min_time))]
-
-                    for _, variable_row in variable_rows.iterrows():
-
-                        variable = variable_row['obj']
-                        variable_rows = flight_variables_pd.loc[((flight_variables_pd['F']==flight)&(flight_variables_pd['D']==delay)&(flight_variables_pd['T']==min_time-1))]
-
-                        prev_variables = []
-                        for _,next_row in variable_rows.iterrows():
-
-                            prev_variables.append(next_row['obj'])
-
-                        if len(prev_variables) > 0:
-
-                            model.addConstr(gp.quicksum(prev_variables) - variable >= 0)
-
-
             ## START CONSTRAINT:
-            considered_rows = flight_variables_pd.loc[((flight_variables_pd["F"]==flight))]
-
-            min_time = min(list(set(considered_rows['T'])))
-            start_variables_rows = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd['T']==min_time))]
-
             start_variables = []
-            for _, start_variable_row in start_variables_rows.iterrows():
+            considered_rows = flight_variables_pd.loc[((flight_variables_pd["F"]==flight))]
+            for delay_number in list(set(considered_rows['D'])):
+                considered_rows = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]==delay_number))]
 
-                start_variables.append(start_variable_row['obj'])
+                min_time = min(list(set(considered_rows['T'])))
 
+                start_variables_rows = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]== delay_number)&(flight_variables_pd['T']==min_time))]
+
+                for _, start_variable_row in start_variables_rows.iterrows():
+                    start_variables.append(start_variable_row['obj'])
+                        
             model.addConstr(1 <= gp.quicksum(start_variables))
             model.addConstr(gp.quicksum(start_variables) <= 1)
 
@@ -747,14 +715,17 @@ class MIPModel:
         model.setObjective(gp.quicksum(optimization_variables), GRB.MINIMIZE)
         model.optimize()
 
-    def reconstruct_solution(self, model, flight_variables_pd, sector_variables_pd, converted_instance_matrix, max_delay, fill_value = -1):
+    def reconstruct_solution(self, model, flight_variables_pd, sector_variables_pd, converted_instance_matrix,
+                             max_delay, all_flight_navpoint_dict, fill_value = -1):
 
         result_matrix = -1 * np.ones((converted_instance_matrix.shape[0], converted_instance_matrix.shape[1] + max_delay), dtype=int)
+
+        converted_navpoint_matrix = -1 * np.ones((converted_instance_matrix.shape[0], converted_instance_matrix.shape[1] + max_delay), dtype=int)
 
         solution_count = model.getAttr("SolCount")
 
         if solution_count == 0:
-            return result_matrix
+            return result_matrix, None
 
 
         for flight in range(converted_instance_matrix.shape[0]):
@@ -768,20 +739,22 @@ class MIPModel:
             origin = flight_affected[0]
             destination = flight_affected[-1]
 
-            considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["V"]==destination)]
-            
-            considered_rows_tmp = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd['V']==origin)]
-            start_time = min(list(considered_rows_tmp['T']))
-            considered_rows_tmp = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd['V']==origin)&(flight_variables_pd['T']==start_time)]
+            #considered_rows_tmp = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd['V']==origin)]
+            #start_time = min(list(considered_rows_tmp['T']))
+            #considered_rows_tmp = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd['V']==origin)&(flight_variables_pd['T']==start_time)]
             #print(considered_rows_tmp)
 
+            considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["V"]==destination)]
             actual_delay = max_delay
 
-            for _,row in considered_rows_tmp.iterrows():
+            for _,row in considered_rows.iterrows():
 
                 if row["obj"].X >= 1:
                     actual_delay = row["D"]
 
+            for navaid, current_time in all_flight_navpoint_dict[flight][actual_delay].items():
+                converted_navpoint_matrix[flight,current_time] = navaid
+        
             considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]==actual_delay)]
 
             for _,row in considered_rows.iterrows():
@@ -796,7 +769,7 @@ class MIPModel:
                 if row["obj"].X >= 1:
                     result_matrix[flight,row["T"]] = row["V"]
 
-        return result_matrix
+        return result_matrix, converted_navpoint_matrix
 
  
     def restrict_max_vertices(self, prev_vertices, vertex_ids, matching_vertices, flight_affected, from_origin_time, edge_distances):
