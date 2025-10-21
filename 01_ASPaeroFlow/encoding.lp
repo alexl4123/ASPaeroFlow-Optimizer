@@ -26,15 +26,15 @@ time_maximum(T) :- T = #max{T':possible_assignment(_,_,T',_);T':next_pos(_,_,_,_
 time(TMIN..TMAX) :- time_minimum(TMIN), time_maximum(TMAX).
 
 % FOR STARTING AIRPORT:
-sector_flight(ID,SEC0,T) :- actualFlightOperationsStartTime(ID,TSTART), chosen_path(ID,P), single_pos(ID,P,NAV0,T0), navpoint_sector_assignment(NAV0,SEC0,T), T = T0 + TSTART.
-sector_flight(ID,SEC0,T) :- actualFlightOperationsStartTime(ID,TSTART), chosen_path(ID,P), time(T), next_pos(ID,P,NAV0,T0,NAV0,T1), T >= T0 + TSTART, T <= T1 + TSTART, navpoint_sector_assignment(NAV0,SEC0,T).
+sector_flight(ID,SEC0,T) :- actualFlightOperationsStartTime(ID,TSTART,P), chosen_path(ID,P), single_pos(ID,P,NAV0,T0), navpoint_sector_assignment(NAV0,SEC0,T), T = T0 + TSTART.
+sector_flight(ID,SEC0,T) :- actualFlightOperationsStartTime(ID,TSTART,P), chosen_path(ID,P), time(T), next_pos(ID,P,NAV0,T0,NAV0,T1), T >= T0 + TSTART, T <= T1 + TSTART, navpoint_sector_assignment(NAV0,SEC0,T).
 % EN-ROUTE:
-sector_flight(ID,SEC0,T) :- actualFlightOperationsStartTime(ID,TSTART), chosen_path(ID,P), time(T), next_pos(ID,P,NAV0,T0,NAV1,T1), NAV0 != NAV1, T >= T0 + TSTART, T <= T1 + TSTART, DT = (T1 - T0)/2, T <= DT + T0 + TSTART, navpoint_sector_assignment(NAV0,SEC0,T).
-sector_flight(ID,SEC1,T) :- actualFlightOperationsStartTime(ID,TSTART), chosen_path(ID,P), time(T), next_pos(ID,P,NAV0,T0,NAV1,T1), NAV0 != NAV1, T >= T0 + TSTART, T <= T1 + TSTART, DT = (T1 - T0)/2, T > DT + T0 + TSTART, navpoint_sector_assignment(NAV1,SEC1,T).
+sector_flight(ID,SEC0,T) :- actualFlightOperationsStartTime(ID,TSTART,P), chosen_path(ID,P), time(T), next_pos(ID,P,NAV0,T0,NAV1,T1), NAV0 != NAV1, T >= T0 + TSTART, T <= T1 + TSTART, DT = (T1 - T0)/2, T <= DT + T0 + TSTART, navpoint_sector_assignment(NAV0,SEC0,T).
+sector_flight(ID,SEC1,T) :- actualFlightOperationsStartTime(ID,TSTART,P), chosen_path(ID,P), time(T), next_pos(ID,P,NAV0,T0,NAV1,T1), NAV0 != NAV1, T >= T0 + TSTART, T <= T1 + TSTART, DT = (T1 - T0)/2, T > DT + T0 + TSTART, navpoint_sector_assignment(NAV1,SEC1,T).
 
-navpoint_flight(ID,NAV0,T) :- actualFlightOperationsStartTime(ID,TSTART), chosen_path(ID,P), single_pos(ID,P,NAV0,T0), T = T0 + TSTART.
-navpoint_flight(ID,NAV0,T) :- actualFlightOperationsStartTime(ID,TSTART), chosen_path(ID,P), next_pos(ID,P,NAV0,T0,_,_), T = T0 + TSTART.
-navpoint_flight(ID,NAV1,T) :- actualFlightOperationsStartTime(ID,TSTART), chosen_path(ID,P), next_pos(ID,P,_,_,NAV1,T1), T = T1 + TSTART.
+navpoint_flight(ID,NAV0,T) :- actualFlightOperationsStartTime(ID,TSTART,P), chosen_path(ID,P), single_pos(ID,P,NAV0,T0), T = T0 + TSTART.
+navpoint_flight(ID,NAV0,T) :- actualFlightOperationsStartTime(ID,TSTART,P), chosen_path(ID,P), next_pos(ID,P,NAV0,T0,_,_), T = T0 + TSTART.
+navpoint_flight(ID,NAV1,T) :- actualFlightOperationsStartTime(ID,TSTART,P), chosen_path(ID,P), next_pos(ID,P,_,_,NAV1,T1), T = T1 + TSTART.
 
 % CAPACITY CONSTRAINT:
 overload(SEC, T, LOAD-CAPACITY) :- sector_capacity(SEC,CAPACITY,T), #count{ID:sector_flight(ID,SEC,T)} = LOAD, LOAD > CAPACITY.
@@ -51,7 +51,7 @@ overload(SEC, T, LOAD-CAPACITY) :- sector_capacity(SEC,CAPACITY,T), #count{ID:se
 
 % FLIGHT MUST OCCUR:
 flightOccurs(ID) :- sector_flight(ID,_,_).
-%:- flightID(ID), not flightOccurs(ID).
+:- flightID(ID), not flightOccurs(ID).
 
 
 % ------------- OPTIMIZATION ----------------
@@ -71,9 +71,11 @@ arrivalDelay(ID,Y-T) :- chosen_path(ID,P), plannedArrivalTime(ID,T), actualArriv
 :~ reroute(ID). [1@7,ID]
 
 
-#show all_flightID/1.
+%#show output_sec_cap/3.
+%#show show_overload/3.
+%#show all_flightID/1.
 %#show navpoint_flight/3.
-%#show flight/3.
+%#show sector_flight/3.
 %#show reroute/1.
 %#show actualArrivalTime/2.
 %#show plannedArrivalTime/2.
@@ -83,7 +85,7 @@ arrivalDelay(ID,Y-T) :- chosen_path(ID,P), plannedArrivalTime(ID,T), actualArriv
 %#show time/1.
 %#show path/2.
 %#show chosen_config/1.
-%#show chosen_path/2.
+#show chosen_path/2.
 %#show sector_flight/3.
 %#show tmp_output/3.
 %#show tmp_sector_flight/6.

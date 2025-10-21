@@ -779,7 +779,7 @@ class Main:
 
             airplane_flight_map[airplane_index] = considered_flight_indices
 
-        all_potentially_problematic_flight_indices = np.array(all_potentially_problematic_flight_indices)
+        all_potentially_problematic_flight_indices = np.array(list(set(all_potentially_problematic_flight_indices)))
 
         problematic_flights = converted_instance_matrix[problematic_flight_indices, :]
         #de_facto_max_time = converted_instance_matrix.shape[1]
@@ -848,14 +848,17 @@ class Main:
 
         #system_loads_cpy_2 = system_loads.copy()
 
-
         flights_affected = converted_instance_matrix[rows,:]
-        to_change = (flights_affected[:,1:] != fill_value) & (flights_affected[:,1:] != flights_affected[:,:-1])
-        to_change_first = np.reshape(flights_affected[:,0] != fill_value, (flights_affected.shape[0],1))
+        # First entered capacity:
+        #to_change = (flights_affected[:,1:] != fill_value) & (flights_affected[:,1:] != flights_affected[:,:-1])
+        #to_change_first = np.reshape(flights_affected[:,0] != fill_value, (flights_affected.shape[0],1))
+        #to_change = np.hstack((to_change_first, to_change)) 
 
-        to_change = np.hstack((to_change_first, to_change)) 
+        # Capacity slots:
+        to_change = flights_affected != fill_value
         to_change_indices = np.nonzero(to_change)
         flight_affected_buckets = flights_affected[to_change_indices]
+
 
         #np.subtract.at(system_loads_cpy_2, (flight_affected_buckets, to_change_indices[1]), 1)
         np.add.at(capacity_demand_diff_matrix, (flight_affected_buckets, to_change_indices[1]), 1)

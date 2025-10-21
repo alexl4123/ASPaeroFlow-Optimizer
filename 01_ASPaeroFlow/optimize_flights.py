@@ -178,7 +178,6 @@ class OptimizeFlights:
 
             path_number = 0
 
-            planned_departure_time_instance.append(f"actualFlightOperationsStartTime({flight_index},{actual_flight_operations_start_time}).")
             #actual_departure_time_instance.append(f"actualDepartureTime({airplane_id},{start_time}).")
             planned_arrival_time_instance.append(f"plannedArrivalTime({flight_index},{planned_arrival_time}).")
 
@@ -203,7 +202,7 @@ class OptimizeFlights:
 
                         if flight_hop_index == 0:
 
-                            flight_navpoint_instance.append(f"next_pos({flight_index},{path_number},{navaid},{flight_time},{navaid},{flight_time+delay}).")
+                            #flight_navpoint_instance.append(f"next_pos({flight_index},{path_number},{navaid},{flight_time},{navaid},{flight_time+delay}).")
 
                             if navaid not in needed_capacities_for_navpoint:
                                 needed_capacities_for_navpoint[navaid] = [current_time, current_time+delay]
@@ -213,7 +212,9 @@ class OptimizeFlights:
                                 needed_capacities_for_navpoint[navaid][1] = current_time + delay
 
                             current_time += delay
-                            flight_time += delay                            
+                            #flight_time += delay                            
+                            
+                            planned_departure_time_instance.append(f"actualFlightOperationsStartTime({flight_index},{current_time},{path_number}).")
 
                         else:
 
@@ -272,7 +273,7 @@ class OptimizeFlights:
                         current_time = potentially_actual_flight_operations_start_time
 
 
-                        planned_departure_time_instance.append(f"actualFlightOperationsStartTime({potentially_affected_flight},{potentially_actual_flight_operations_start_time}).")
+                        planned_departure_time_instance.append(f"actualFlightOperationsStartTime({potentially_affected_flight},{potentially_actual_flight_operations_start_time},{path_number}).")
 
                         potentially_planned_arrival_time = self.planned_arrival_times[potentially_affected_flight]
 
@@ -649,7 +650,9 @@ class OptimizeFlights:
         encoding = self.encoding
         
         if self.verbosity > 0:
-            open(f"20251009_test_instance_{additional_time_increase}.lp","w").write(instance)
+            #open(f"20251021_test_instance_{additional_time_increase}.lp","w").write(instance)
+            #quit()
+            pass
             #if len(navpoints_in_sector) > 1:
             #    quit()
             #quit()
