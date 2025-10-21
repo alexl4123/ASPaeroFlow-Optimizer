@@ -13,8 +13,10 @@ from typing import Final
 
 ARRIVAL_DELAY: Final[str] = "arrivalDelay"
 FLIGHT: Final[str] = "flight"
+NAVPOINT_FLIGHT: Final[str] = "navpointFlight"
+NAVAID_SECTOR: Final[str] = "navaid_sector"
 REROUTED: Final[str] = "reroute"
-SIGNATURES: Final[set[str]] = {ARRIVAL_DELAY, FLIGHT, REROUTED}
+SIGNATURES: Final[set[str]] = {ARRIVAL_DELAY, FLIGHT, REROUTED, NAVPOINT_FLIGHT, NAVAID_SECTOR}
 
 class Solver:
     def __init__(self, encoding, instance, seed = 1):
@@ -74,17 +76,23 @@ class Solver:
 
         arrival_delays = [symbol for symbol in parsed if symbol.name == ARRIVAL_DELAY]
         flights = [symbol for symbol in parsed if symbol.name in FLIGHT]
+        navpoint_flights = [symbol for symbol in parsed if symbol.name in NAVPOINT_FLIGHT]
+        navaid_sector_time = [symbol for symbol in parsed if symbol.name in NAVAID_SECTOR]
         reroutes = [symbol for symbol in parsed if symbol.name in REROUTED]
-        self.final_model = Model(flights, reroutes, arrival_delays)
+
+        self.final_model = Model(flights, reroutes, arrival_delays, navpoint_flights, navaid_sector_time)
 
 
 class Model:
 
-    def __init__(self, flights, reroutes, atfm_delays):
+    def __init__(self, flights, reroutes, atfm_delays, navpoint_flights, navaid_sector_time):
         self.flights = flights
         self.reroutes = reroutes
         self.atfm_delays = atfm_delays
         self.computation_time = -1
+
+        self.navpoint_flights = navpoint_flights
+        self.navaid_sector_time = navaid_sector_time
 
     def get_total_atfm_delay(self):
 
@@ -102,6 +110,10 @@ class Model:
         self.computation_time = round(runtime,2)
 
     def get_flights(self):
-
         return self.flights
-
+    
+    def get_navpoint_flights(self):
+        return self.navpoint_flights
+    
+    def get_navaid_sector_time_assignment(self):
+        return self.navaid_sector_time
