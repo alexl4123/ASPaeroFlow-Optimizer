@@ -645,13 +645,16 @@ class Main:
             print(f"Average delay per flight:  {mean_delay:.2f}")
             print(f"Maximum single-flight delay: {max_delay}")
 
-        print(total_delay)
+        self.total_atfm_delay = total_delay
         self.navaid_sector_time_assignment = navaid_sector_time_assignment
         self.converted_instance_matrix = converted_instance_matrix
         self.converted_navpoint_matrix = converted_navpoint_matrix
 
         if self.verbosity > 1:
             np.savetxt("20250826_final_matrix.csv", converted_instance_matrix, delimiter=",", fmt="%i") 
+
+    def get_total_atfm_delay(self):
+        return self.total_atfm_delay
 
     def build_job(self, time_index: int,
                 sector_index: int,
@@ -1757,21 +1760,22 @@ def _save_results(args: argparse.Namespace, app) -> None:
 def main(argv: Optional[List[str]] = None) -> None:
     """Script entry-point compatible with both `python -m` and `poetry run`."""
     args = parse_cli(argv)
-
-    # Optional: small echo of resolved inputs
-    print("[i] Using inputs:")
-    print(f"    graph:           {args.graph_path}")
-    print(f"    sectors:         {args.sectors_path}")
-    print(f"    flights:         {args.flights_path}")
-    print(f"    airports:        {args.airports_path}")
-    print(f"    airplanes:       {args.airplanes_path}")
-    print(f"    airplane-flight: {args.airplane_flight_path}")
-    print(f"    navaid-sector:   {args.navaid_sector_path}")
-    print(f"    encoding:        {args.encoding_path}")
-    if args.data_dir:
-        print(f"    data-dir:        {args.data_dir}")
-    if args.config:
-        print(f"    config:          {args.config}")
+    
+    if args.verbosity > 0:
+        # Optional: small echo of resolved inputs
+        print("[i] Using inputs:")
+        print(f"    graph:           {args.graph_path}")
+        print(f"    sectors:         {args.sectors_path}")
+        print(f"    flights:         {args.flights_path}")
+        print(f"    airports:        {args.airports_path}")
+        print(f"    airplanes:       {args.airplanes_path}")
+        print(f"    airplane-flight: {args.airplane_flight_path}")
+        print(f"    navaid-sector:   {args.navaid_sector_path}")
+        print(f"    encoding:        {args.encoding_path}")
+        if args.data_dir:
+            print(f"    data-dir:        {args.data_dir}")
+        if args.config:
+            print(f"    config:          {args.config}")
 
     app = Main(args.graph_path, args.sectors_path, args.flights_path,
                args.airports_path, args.airplanes_path,
@@ -1786,6 +1790,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     # Save results if requested
     if args.save_results:
         _save_results(args, app)
+
+    print(app.get_total_atfm_delay())
 
 
 if __name__ == "__main__":  # pragma: no cover — direct execution guard

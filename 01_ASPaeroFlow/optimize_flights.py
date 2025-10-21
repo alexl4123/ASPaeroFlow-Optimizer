@@ -675,6 +675,7 @@ class OptimizeFlights:
             else:
                 # En-route/destination
                 prev_vertex = path[hop -1]
+                #print(f"prev_vertex:{prev_vertex},vertex:{vertex}")
                 distance = networkx_graph[prev_vertex][vertex]["weight"]
 
                 # CONVERT SPEED TO m/s
