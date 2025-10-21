@@ -285,7 +285,9 @@ def _save_results(args: argparse.Namespace, app) -> None:
     }
     with open(out_dir / "manifest.json", "w", encoding="utf-8") as fh:
         json.dump(manifest, fh, indent=2)
-    print(f"[✓] Saved results → {out_dir}")
+
+    if args.verbosity > 0:
+        print(f"[✓] Saved results → {out_dir}")
 
 
 class ModelData:
@@ -350,15 +352,20 @@ def main(argv: Optional[List[str]] = None) -> None:
     - Rerouted Airplanes: {model.get_rerouted_airplanes()}
         """)
 
-    flights = model.flights
+    flights = model.get_flights()
 
     distinct_flights = set()
     for flight in flights:
         distinct_flights.add(flight.arguments[0])
 
+
+    distinct_navpoints = set()
+    for navpoint_sector in model.get_navaid_sector_time_assignment():
+        distinct_navpoints.add(navpoint_sector.arguments[0])
+        if max_time < int(str(navpoint_sector.arguments[2])):
+            max_time = int(str(navpoint_sector.arguments[2]))
+
     converted_instance_matrix = np.ones((len(distinct_flights),max_time+1)) * -1
-    navaid_sector_time_assignment = np.ones((len(distinct_flights),max_time+1)) * -1
-    converted_navpoint_matrix = np.ones((len(distinct_flights),max_time+1)) * -1
 
     for flight in flights:
         flight_id = int(str(flight.arguments[0]))
@@ -366,6 +373,25 @@ def main(argv: Optional[List[str]] = None) -> None:
         flight_sector = int(str(flight.arguments[2]))
 
         converted_instance_matrix[flight_id, flight_time] = flight_sector
+
+    converted_navpoint_matrix = np.ones((len(distinct_flights),max_time+1)) * -1
+
+    for navpoint_flight in model.get_navpoint_flights():
+        flight_id = int(str(navpoint_flight.arguments[0]))
+        flight_time = int(str(navpoint_flight.arguments[1]))
+        flight_navaid = int(str(navpoint_flight.arguments[2]))
+
+        converted_navpoint_matrix[flight_id, flight_time] = flight_navaid
+
+
+    navaid_sector_time_assignment = np.ones((len(distinct_navpoints),max_time+1)) * -1
+    for navaid_sector in model.get_navaid_sector_time_assignment():
+        navaid = int(str(navaid_sector.arguments[0]))
+        sector = int(str(navaid_sector.arguments[1]))
+        time = int(str(navaid_sector.arguments[2]))
+
+        navaid_sector_time_assignment[navaid, time] = sector
+
 
     model_data = ModelData(navaid_sector_time_assignment,converted_instance_matrix,converted_navpoint_matrix)
 

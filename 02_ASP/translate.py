@@ -269,7 +269,8 @@ class TranslateCSVtoLogicProgram:
 
         sector_capactiy_factor_instance = [f"sectorCapacityFactor({sector_capactiy_factor})."]
         timestep_granularity_instance = [f"timestepGranularity({timestep_granularity})."]
-        max_time_instance = [f"maxTime({max_time*timestep_granularity})."]
+        #max_time_instance = [f"maxTime({max_time*timestep_granularity})."]
+        max_time_instance = [f"maxTime(30)."]
 
         instance = graph_instance + flights_instance + sectors_instance + airplanes_instance +\
             airports_instance + airplane_flight_instance + navaid_sector_instance +\

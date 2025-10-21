@@ -21,15 +21,31 @@ navaid(NAV) :- navaid_sector(NAV,_,_).
 navaid_sector(SEC,SEC,T) :- navaid(SEC), time(T), airport(SEC).
 1{navaid_sector(NAV,SEC,T):navaid_sector(_,SEC,0)}1:- navaid(NAV), time(T).
 :- navaid_sector(NAV,SEC1,T), navaid_sector(NAV,SEC2,T), SEC1 != SEC2.
+%:- navaid_sector(NAV1,SEC,T), navaid_sector(NAV2,SEC,T), NAV1 != NAV2.
 :- navaid_sector(NAV,SEC,T), not airport(NAV), airport(SEC).
+
+navaid_sector(2,2,5).
+
+output_len(2,5,CAP_LEN) :- sector_len(2,5,CAP_LEN).
+output_avg(2,5,AVG) :- sector_avg_cap(2,5,AVG).
+output_var(2,5,CAP_LEN,Z,CAP_AVG) :- sector_variables(2,5,CAP_LEN,Z,CAP_AVG).
+output_sector(2,5,C) :- sector(2,5,C).
+%sector(SEC,T,C) :- sector_variables(SEC,T,CAP_LEN,Z,CAP_AVG), CAP_LEN < Z, C = ((CAP_AVG * 2 * Z * (CAP_LEN+1)) - CAP_LEN * CAP_LEN - CAP_LEN) / (Z*2). 
+
+% MINIMIZE NAVAID-SECTOR ASSIGNMENT CHANGES:
+navaid_changed(NAV,T,1) :- navaid_sector(NAV,SEC0,T), navaid_sector(NAV,SEC1,T+1), SEC0 != SEC1.
+navaid_changed(NAV,T,0) :- navaid_sector(NAV,SEC0,T), navaid_sector(NAV,SEC0,T+1).
+sector_diff(SEC,T,DIFF) :- sector_len(SEC,T,_), DIFF = #sum{V,NAV: navaid_changed(NAV,T,V)}.
 
 % SECTOR CAP FUNCTION:
 sector_len(SEC,T,CAP_LEN) :- time(T), navaid(SEC), CAP_LEN = #count{NAV:navaid_sector(NAV,SEC,T)}.
-sector_avg_cap(SEC,T,CAP_SUM / CAP_LEN) :- time(T), navaid(SEC), CAP_SUM = #sum{C:navaid_sector(NAV,SEC,T), atomic_sector(NAV,T,C)}, sector_len(SEC,T,CAP_LEN), CAP_LEN > 0.
+sector_avg_cap(SEC,T,CAP_SUM / CAP_LEN) :- time(T), navaid(SEC), CAP_SUM = #sum{C,NAV:navaid_sector(NAV,SEC,T), atomic_sector(NAV,T,C)}, sector_len(SEC,T,CAP_LEN), CAP_LEN > 0.
 sector_avg_cap(SEC,T,0) :- time(T), navaid(SEC), sector_len(SEC,T,CAP_LEN), CAP_LEN = 0.
 sector_variables(SEC,T,CAP_LEN,Z,CAP_AVG) :- sectorCapacityFactor(Z), navaid_sector(_,SEC,T), sector_len(SEC,T,CAP_LEN), sector_avg_cap(SEC,T,CAP_AVG).
-sector(SEC,T,C) :- sector_variables(SEC,T,CAP_LEN,Z,CAP_AVG), CAP_LEN >= Z, C = (CAP_AVG * (Z+1)) / 2. 
-sector(SEC,T,C) :- sector_variables(SEC,T,CAP_LEN,Z,CAP_AVG), CAP_LEN < Z, C = ((CAP_AVG * 2 * Z * (CAP_LEN+1)) - CAP_LEN * CAP_LEN - CAP_LEN) / (Z*2). 
+sector(SEC,T,C) :- sector_variables(SEC,T,CAP_LEN,Z,CAP_AVG), CAP_LEN >= Z, C = (CAP_AVG * (Z+1)) / 2, CAP_LEN >= 1. 
+sector(SEC,T,C) :- sector_variables(SEC,T,CAP_LEN,Z,CAP_AVG), CAP_LEN < Z, C = (CAP_AVG * (2 * Z * CAP_LEN - CAP_LEN * CAP_LEN + CAP_LEN)) / (Z*2), CAP_LEN >= 1. 
+%sector(SEC,T,CAP_AVG) :- sector_variables(SEC,T,CAP_LEN,Z,CAP_AVG), CAP_LEN = 1. 
+sector(SEC,T,0) :- sector_variables(SEC,T,CAP_LEN,Z,CAP_AVG), CAP_LEN = 0. 
 
 % GET ALL AIRPLANE SPEEDS
 airplane_speed(S) :- airplane(_,S).
@@ -124,31 +140,40 @@ flight(ID,T',S') :- navpointFlight(ID,T,X), navpointFlight(ID,T+D,X'), navpointS
 
 % ------------------------------------------------------------------------------
 % PRIMARY WEAK CONSTRAINT:
-:~ overload(X,T,OVER). [OVER@3,X,T]
+:~ overload(X,T,OVER). [OVER@10,X,T]
 % SECONDARY WEAK CONSTRAINT:
-:~ arrivalDelay(ID,DIFF). [DIFF@2,ID]
+:~ arrivalDelay(ID,DIFF). [DIFF@9,ID]
 % OPTIMIZE FOR MINIMUM TRAVEL TIME:
-:~ actualFlightTime(ID,TA), plannedFlightTime(ID,TP), DIFF = TA - TP. [DIFF@1,ID]
+:~ actualFlightTime(ID,TA), plannedFlightTime(ID,TP), DIFF = TA - TP. [DIFF@8,ID]
+% OPTIMIZE FOR LEAST SECTOR CHANGES:
+:~ sector_diff(SEC,T,DIFF). [DIFF@7,SEC,T]
 
-output_sec_len(X,Y,Z) :- sector_len(X,Y,Z), Y = 12.
-output_sec_avg(X,Y,Z) :- sector_avg_cap(X,Y,Z), Y = 12.
-output_sec(X,Y,Z) :- sector(X,Y,Z), Y = 12.
+%output_sec_len(X,Y,Z) :- sector_len(X,Y,Z), Y = 12.
+%output_sec_avg(X,Y,Z) :- sector_avg_cap(X,Y,Z), Y = 12.
+%output_sec(X,Y,Z) :- sector(X,Y,Z), Y = 12.
 
 %#show flight/3.
-#show navpointFlight/3.
+%#show navpointFlight/3.
 %#show reroute/1.
 %#show navpointSeq/4.
 %#show actualArrivalTime/2.
 %#show plannedArrivalTime/2.
-#show arrivalDelay/2.
+%#show arrivalDelay/2.
 %#show overload/3.
 %#show timeStepGranularities/1.
 %#show time/1.
 %#show actualDestinationFirstReachedTime/2.
 %#show plannedDepartureTime/2.
 %#show actualDepartureTime/2.
-#show lololol/8.
+%#show lololol/8.
 %#show navaid_sector/3.
 %#show output_sec_len/3.
 %#show output_sec/3.
 %#show output_sec_avg/3.
+
+#show output_len/3.
+#show output_avg/3.
+#show output_var/5.
+#show output_sector/3.
+#show output_sum/3.
+
