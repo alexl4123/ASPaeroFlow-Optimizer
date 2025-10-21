@@ -111,8 +111,9 @@ class Main:
         max_time: Optional[int],
         verbosity: Optional[int],
         sector_capacity_factor: Optional[int],
+        number_capacity_management_configs: Optional[int],
+        capacity_management_enabled: Optional[bool]) -> None:
 
-    ) -> None:
         self._graph_path: Optional[Path] = graph_path
         self._sectors_path: Optional[Path] = sectors_path
         self._flights_path: Optional[Path] = flights_path
@@ -120,6 +121,15 @@ class Main:
         self._airplanes_path: Optional[Path] = airplanes_path
         self._airplane_flight_path: Optional[Path] = airplane_flight_path
         self._navaid_sector_path: Optional[Path] = navaid_sector_path
+
+
+        self.number_capacity_management_configs = number_capacity_management_configs
+        if capacity_management_enabled in ["True","true"]:
+            self.capacity_management_enabled = True
+        elif capacity_management_enabled in ["False","false"]:
+            self.capacity_management_enabled = False
+        else:
+            raise Exception("Invalid input for capacity_management_enabled")
 
         self._encoding_path: Optional[Path] = encoding_path
 
@@ -577,7 +587,8 @@ class Main:
 
 
                 else:
-                    print(f">> ACCEPT SOLUTION| OLD = {number_of_conflicts_prev} > {number_of_conflicts} = NEW")
+                    if self.verbosity > 1:
+                        print(f">> ACCEPT SOLUTION| OLD = {number_of_conflicts_prev} > {number_of_conflicts} = NEW")
                     old_navaid_sector_time_assignment = navaid_sector_time_assignment.copy()
                     old_converted_instance = converted_instance_matrix.copy()
                     old_converted_navpoint_matrix = converted_navpoint_matrix.copy()
@@ -797,6 +808,8 @@ class Main:
                                     fill_value, self._timestep_granularity, self._seed,
                                     self._max_explored_vertices, self._max_delay_per_iteration, 
                                     original_max_time, iteration, self.verbosity,
+                                    self.number_capacity_management_configs,
+                                    self.capacity_management_enabled
                                     )
 
         return job, rows_pool
@@ -1595,6 +1608,15 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
                         help="Verbosity levels (0,1,2).")
     parser.add_argument("--sector-capacity-factor", type=int, default=int(C("sector-capacity-factor", 6)),
                         help="Defines capacity of composite sectors.")
+
+
+    parser.add_argument("--number-capacity-management-configs", type=int, default=int(C("number-capacity-management-configs", 7)), help="How many compisitions/partitions to consider (only works when cap-mgmt. is enabled.")
+    parser.add_argument("--capacity-management-enabled",
+        type=str,
+        default=str(C("capacity-management-enabled", "true")),
+        help="true/false: true when cap-mgmt. is enabled.",
+    )
+
     return parser
 
 def _apply_data_dir_defaults(args: argparse.Namespace) -> argparse.Namespace:
@@ -1749,7 +1771,9 @@ def _save_results(args: argparse.Namespace, app) -> None:
     }
     with open(out_dir / "manifest.json", "w", encoding="utf-8") as fh:
         json.dump(manifest, fh, indent=2)
-    print(f"[✓] Saved results → {out_dir}")
+
+    if args.verbosity > 0:
+        print(f"[✓] Saved results → {out_dir}")
 
 
 
@@ -1784,7 +1808,9 @@ def main(argv: Optional[List[str]] = None) -> None:
                args.seed, args.number_threads, args.timestep_granularity,
                args.max_explored_vertices, args.max_delay_per_iteration,
                args.max_time, args.verbosity,
-               args.sector_capacity_factor)
+               args.sector_capacity_factor,
+               args.number_capacity_management_configs,
+               args.capacity_management_enabled)
     app.run()
 
     # Save results if requested

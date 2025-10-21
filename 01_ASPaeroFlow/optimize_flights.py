@@ -44,7 +44,12 @@ class OptimizeFlights:
                  original_max_time = 24,
                  iteration = 0,
                  verbosity = 0,
+                 number_configs = 6,
+                 capacity_management_enabled = False,
                  ):
+
+        self.capacity_management_enabled = capacity_management_enabled
+        self.number_configs = number_configs
 
         self.encoding = encoding
         self.capacity = capacity
@@ -85,6 +90,10 @@ class OptimizeFlights:
         self.original_max_time = original_max_time
  
     def start(self):
+
+
+        capacity_management_enabled = self.capacity_management_enabled
+        number_configs = self.number_configs
 
         timestep_granularity = self.timestep_granularity
         problematic_flights = self.problematic_flight_indices
@@ -369,8 +378,9 @@ class OptimizeFlights:
                 sector_capacity_instance.append(f"possible_sector_capacity({current_sector},{current_capacity},{current_time},{current_config}).")
         # END CONFIG = 0
         current_config += 1
+        number_configs -= 1
 
-        if False:
+        if capacity_management_enabled:
 
             navpoints_in_sector = np.nonzero(self.navaid_sector_time_assignment[:,time_index] == sector_index)[0]
             navpoints_in_sector = list(set(navpoints_in_sector) & set(self.networkx_graph))   # keep only nodes that are actually in G
@@ -381,9 +391,9 @@ class OptimizeFlights:
                 print(sector_index)
                 print("FOUND 0 NAVPOINTS IN SECTOR -> SHOULD NEVER HAPPEN")
                 quit()
-            else:
-                print(time_index)
-                print(sector_index)
+            #else:
+            #    print(time_index)
+            #    print(sector_index)
 
             total_partitions = int(bell(len(navpoints_in_sector)))  # all set partitions
             # exclude trivial one: {whole set}
@@ -403,10 +413,10 @@ class OptimizeFlights:
                 original_capacity = capacity_time_matrix[composition_sectors,:].copy()
                 original_composition = self.navaid_sector_time_assignment[composition_navpoints,:].copy()
 
-                number_partitions = (number_configs-1) / 2
+                number_partitions = (number_configs) / 2
                 number_partitions = min(number_partitions, nontrivial_count)
 
-                number_compositions = (number_configs - 1) - number_partitions
+                number_compositions = (number_configs) - number_partitions
 
                 parts = self.first_l_nontrivial_partitions(navpoints_in_sector, number_partitions)
 
