@@ -66,9 +66,11 @@ arrivalDelay(ID,Y-T) :- chosen_path(ID,P), plannedArrivalTime(ID,T), actualArriv
 % SECONDARY WEAK CONSTRAINT:
 :~ arrivalDelay(ID,DIFF). [DIFF@9,ID]
 % TERTIARY WEAK CONSTRAINT:
-:~ reconfigure_sectors(CONFIG). [1@8,CONFIG]
-% QUARTIARY WEAK CONSTRAINT:
-:~ reroute(ID). [1@7,ID]
+:~ chosen_config(CONFIG), config_number_sectors(CONFIG,NUMBER). [NUMBER@8,CONFIG]
+% QUARTERNARY WEAK CONSTRAINT:
+%:~ reconfigure_sectors(CONFIG). [1@7,CONFIG]
+% QUINARY WEAK CONSTRAINT:
+:~ reroute(ID). [1@6,ID]
 
 
 %#show output_sec_cap/3.

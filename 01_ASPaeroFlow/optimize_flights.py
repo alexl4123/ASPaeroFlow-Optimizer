@@ -15,7 +15,14 @@ from sympy import bell
 # pip install more-itertools
 from more_itertools import set_partitions
 from itertools import islice
-    
+
+
+LINEAR = "linear"
+TRIANGULAR = "triangular"
+MAX = "max"
+
+
+
 class OptimizeFlights:
 
     def __init__(self,
@@ -46,6 +53,7 @@ class OptimizeFlights:
                  verbosity = 0,
                  number_configs = 6,
                  capacity_management_enabled = False,
+                 composite_sector_function  = MAX,
                  ):
 
         self.capacity_management_enabled = capacity_management_enabled
@@ -63,6 +71,8 @@ class OptimizeFlights:
         self.navaid_sector_time_assignment = navaid_sector_time_assignment
         self.airplanes = airplanes
         self.nearest_neighbors_lookup = nearest_neighbors_lookup
+
+        self.composite_sector_function = composite_sector_function
 
         self.filed_flights = filed_flights
         self.sector_capacity_factor = sector_capacity_factor
@@ -365,6 +375,7 @@ class OptimizeFlights:
         # CONFIG = 0
         current_config = 0
         sector_config_instance.append(f"config({current_config}).")
+        sector_config_instance.append(f"config_number_sectors({current_config},{np.unique(self.navaid_sector_time_assignment[:,time_index]).size}).")
 
         for navpoint in needed_capacities_for_navpoint.keys():
             from_time = needed_capacities_for_navpoint[navpoint][0]
@@ -449,7 +460,7 @@ class OptimizeFlights:
                             index += 1
 
                         tmp_atomic_capacities = np.array(tmp_atomic_capacities)
-                        composite_capacity_time_matrix = OptimizeFlights.capacity_time_matrix(tmp_atomic_capacities, self.navaid_sector_time_assignment.shape[1], self.timestep_granularity, tmp_navaid_sector_time_assignment, z = self.sector_capacity_factor)
+                        composite_capacity_time_matrix = OptimizeFlights.capacity_time_matrix(tmp_atomic_capacities, self.navaid_sector_time_assignment.shape[1], self.timestep_granularity, tmp_navaid_sector_time_assignment, z = self.sector_capacity_factor, composite_sector_function=self.composite_sector_function)
                         capacity_time_matrix[cur_sector_index,time_index:] = composite_capacity_time_matrix[0,time_index:]
 
                     # All flights that pass through any navpoint in the composite sector after time_index
@@ -485,8 +496,6 @@ class OptimizeFlights:
                     airplane_flight_mockup = np.array(airplane_flight_mockup)
 
                     converted_instance_matrix, _ = OptimizeFlights.instance_to_matrix_vectorized(triplets, airplane_flight_mockup, self.navaid_sector_time_assignment.shape[1], self.timestep_granularity, self.navaid_sector_time_assignment)
-
-
                     system_loads_tmp = OptimizeFlights.bucket_histogram(converted_instance_matrix, None, self.capacity_time_matrix.shape[0], converted_instance_matrix.shape[1], self.timestep_granularity)
 
                     partition_sectors = np.array(partition_sectors)
@@ -497,6 +506,7 @@ class OptimizeFlights:
 
                     # COMPOSITION CONFIG 
                     sector_config_instance.append(f"config({current_config}).")
+                    sector_config_instance.append(f"config_number_sectors({current_config},{np.unique(self.navaid_sector_time_assignment[:,time_index]).size}).")
 
                     for navpoint in needed_capacities_for_navpoint.keys():
                         from_time = needed_capacities_for_navpoint[navpoint][0]
@@ -560,7 +570,7 @@ class OptimizeFlights:
 
                 tmp_atomic_capacities = np.array(tmp_atomic_capacities)
 
-                composite_capacity_time_matrix = OptimizeFlights.capacity_time_matrix(tmp_atomic_capacities, self.navaid_sector_time_assignment.shape[1], self.timestep_granularity, tmp_navaid_sector_time_assignment, z = self.sector_capacity_factor)
+                composite_capacity_time_matrix = OptimizeFlights.capacity_time_matrix(tmp_atomic_capacities, self.navaid_sector_time_assignment.shape[1], self.timestep_granularity, tmp_navaid_sector_time_assignment, z = self.sector_capacity_factor, composite_sector_function=self.composite_sector_function)
 
                 capacity_time_matrix[composition_sectors,time_index:] = 0
                 capacity_time_matrix[sector_index,time_index:] = composite_capacity_time_matrix[0,time_index:]
@@ -573,6 +583,7 @@ class OptimizeFlights:
 
                 # COMPOSITION CONFIG 
                 sector_config_instance.append(f"config({current_config}).")
+                sector_config_instance.append(f"config_number_sectors({current_config},{np.unique(self.navaid_sector_time_assignment[:,time_index]).size}).")
 
                 for navpoint in needed_capacities_for_navpoint.keys():
                     from_time = needed_capacities_for_navpoint[navpoint][0]
@@ -649,9 +660,10 @@ class OptimizeFlights:
 
         encoding = self.encoding
         
-        if self.verbosity > 0:
-            #open(f"20251021_test_instance_{additional_time_increase}.lp","w").write(instance)
-            #quit()
+        if self.verbosity > 3:
+            open(f"20251021_test_instance_{additional_time_increase}.lp","w").write(instance)
+            print("WRITTEN TEST INSTANCE - QUITTING")
+            quit()
             pass
             #if len(navpoints_in_sector) > 1:
             #    quit()
@@ -1238,114 +1250,6 @@ class OptimizeFlights:
     # ---------------------------------------------------------
     # Vectorized, composite-aware capacity time matrix
     # ---------------------------------------------------------
-    @classmethod
-    def capacity_time_matrix(cls,
-                             cap: np.ndarray,
-                             n_times: int,
-                             time_granularity: int,
-                             navaid_sector_time_assignment: np.ndarray,
-                             z = 1) -> np.ndarray:
-        """
-        cap: shape (N, >=2), atomic capacities in column 1 (per *block* of length T).
-        n_times: total number of time slots.
-        time_granularity (T): slots per block.
-        navaid_sector_time_assignment: (N, n_times), entry [nav, t] = sector-id (0..N-1)
-                                       that nav belongs to at time t (composite sectors allowed).
-
-        Returns:
-            sector_cap: (N, n_times) with capacity for sector-id row at each time.
-                        Semantics match the reference implementation.
-        """
-        N = cap.shape[0]
-        T = int(time_granularity)
-
-        if n_times % T != 0:
-            raise ValueError("n_times must be a multiple of time_granularity (T).")
-
-        if navaid_sector_time_assignment.shape != (N, n_times):
-            raise ValueError(
-                f"navaid_sector_time_assignment must be shape (N, n_times) = ({N}, {n_times})"
-            )
-
-        S = navaid_sector_time_assignment.astype(np.int64, copy=False)
-        if S.min() < 0 or S.max() >= N:
-            print(S)
-            raise ValueError("Sector ids in navaid_sector_time_assignment must be in [0, N-1].")
-
-        # ---- 1) Sum atomic capacities into current sector ids per time (composite-aware)
-        atomic_block_cap = np.asarray(cap[:, 1], dtype=np.int64)  # length N
-
-        # We want: total_atomic_sum[sector, t] = sum_{nav | S[nav,t]==sector} atomic_block_cap[nav]
-        total_atomic_sum = np.zeros((N, n_times), dtype=np.int64)
-
-        # Scatter-add in one go:
-        # indices over flattened (nav, t) grid
-        S_flat = S.ravel(order="C")
-        t_idx_flat = np.tile(np.arange(n_times, dtype=np.int64), N)
-        w_flat = np.repeat(atomic_block_cap, n_times)
-
-        # Sum of atomic per-block caps per (sector,time)
-        total_atomic_sum = np.zeros((N, n_times), dtype=np.int64)
-        np.add.at(total_atomic_sum, (S_flat, t_idx_flat), np.repeat(cap[:, 1].astype(np.int64), n_times))
-
-        # Count of contributors per (sector,time)
-        contrib_count = np.zeros((N, n_times), dtype=np.int64)
-        np.add.at(contrib_count, (S_flat, t_idx_flat), 1)
-
-
-        """
-        avg = np.divide(
-            total_atomic_sum.astype(np.float64),
-            np.maximum(1, contrib_count),  # avoid division by zero
-            where=contrib_count > 0
-        )
-        """
-        avg = total_atomic_sum.astype(np.float64) / np.maximum(1, contrib_count)
-
-
-        # piecewise: if z < k -> ((z+1)/2)*avg  else -> avg * triangular_weight_sum(k, denom)
-        denom = z
-
-        tri = cls._triangular_weight_sum_counts(contrib_count, denom)  # float64 matrix
-
-        total_capacity = np.where(
-            contrib_count > z,
-            np.rint(((z + 1.0) / 2.0) * avg),          # z < k
-            np.rint(avg * tri)                          # z >= k
-        ).astype(np.int64)
-
-
-        """
-        np.add.at(total_atomic_sum, (S_flat, t_idx_flat), w_flat)
-
-        # ---- 2) Apply composite capacity rule (linear for now): total_capacity = int(sum * z)
-        # Grab z from self if available; default 1.0
-        z = float(getattr(self, "z", 1.0))
-        # Vectorized equivalent to compute_sector_capacity(..., z) in the linear case:
-        total_capacity = (total_atomic_sum.astype(np.float64) * z).astype(np.int64)
-        """
-
-        # ---- 3) Distribute capacity across T slots using your exact remainder scheme
-        base = total_capacity // T          # (N, n_times)
-        rem  = total_capacity - base * T    # (N, n_times), 0..T-1
-
-        # Precompute remainder-hit counts table once per call
-        rem_table = cls._remainder_distribution_table(T)  # (T+1, T)
-
-        # For each time column, we need index k = t % T
-        k_mod = np.arange(n_times, dtype=np.int64) % T     # (n_times,)
-
-        # Lookup “extra” increments: duplicates are honored via counts
-        # shapes: rem -> (N, n_times), k_mod[None, :] -> (1, n_times)  ==> (N, n_times)
-        extra = rem_table[rem, k_mod[None, :]]
-
-        sector_cap = (base + extra).astype(np.int64, copy=False)
-
-        # Optional debug dump
-        #np.savetxt("20251004_cap_mat_fast.csv", sector_cap, delimiter=",", fmt="%i")
-
-        return sector_cap
-  
     # ---------------------------------------------------------
     # Fast remainder distribution lookup (matches reference)
     # ---------------------------------------------------------
@@ -1390,32 +1294,138 @@ class OptimizeFlights:
         return tri
 
     @classmethod
-    def compute_sector_capacity(cls, atomic_capacities, z: float) -> int:
+    def capacity_time_matrix(cls,
+                            cap: np.ndarray,
+                            n_times: int,
+                            time_granularity: int,
+                            navaid_sector_time_assignment: np.ndarray,
+                            z=1,
+                            composite_sector_function = MAX
+                            ) -> np.ndarray:
         """
-        atomic_capacities: 1D iterable of per-slot atomic capacities contributing to the composite
-        z: scalar multiplier (can be tuned/changed later)
-        returns int capacity for the composite sector at this time slot
+        Same I/O and validations as before. Now we:
+        1) scatter-add to get per-(sector,time) SUM and COUNT,
+        2) call cls.compute_sector_capacity(avg, count, z)  <-- explicit rule, vectorized,
+        3) distribute remainder over T slots.
         """
+        N = cap.shape[0]
+        T = int(time_granularity)
+
+        if n_times % T != 0:
+            raise ValueError("n_times must be a multiple of time_granularity (T).")
+
+        if navaid_sector_time_assignment.shape != (N, n_times):
+            raise ValueError(
+                f"navaid_sector_time_assignment must be shape (N, n_times) = ({N}, {n_times})"
+            )
+
+        S = navaid_sector_time_assignment.astype(np.int64, copy=False)
+        if S.min() < 0 or S.max() >= N:
+            print(S)
+            raise ValueError("Sector ids in navaid_sector_time_assignment must be in [0, N-1].")
+
+        # ---- 1) Sum atomic per-block caps and contributor counts per (sector,time)
+        atomic_block_cap = np.asarray(cap[:, 1], dtype=np.int64)  # length N
+
+        total_atomic_sum = np.zeros((N, n_times), dtype=np.int64)
+        contrib_count    = np.zeros((N, n_times), dtype=np.int64)
+
+        S_flat      = S.ravel(order="C")
+        t_idx_flat  = np.tile(np.arange(n_times, dtype=np.int64), N)
+        cap_rep_flat= np.repeat(atomic_block_cap, n_times)
+
+        np.add.at(total_atomic_sum, (S_flat, t_idx_flat), cap_rep_flat)
+        np.add.at(contrib_count,    (S_flat, t_idx_flat), 1)
 
 
-        # For now: linear combination
-        #return int(np.rint(np.sum(atomic_capacities) * float(z)))
+        max_atomic = None
+        avg = None
+
+        if composite_sector_function == MAX:
+            # Also compute per-(sector,time) MAX for the "max" rule
+            max_atomic = np.full((N, n_times), np.iinfo(np.int64).min, dtype=np.int64)
+            np.maximum.at(max_atomic, (S_flat, t_idx_flat), cap_rep_flat)
+            max_atomic = np.where(contrib_count > 0, max_atomic, 0)
+
+        if composite_sector_function == TRIANGULAR:
+            # Average with safe denom (still useful for triangular & linear rules)
+            avg = total_atomic_sum.astype(np.float64) / np.maximum(1, contrib_count)
+
+        # ---- 2) Explicit, *vectorized* capacity rule
+        # Returns per-block integer capacities
+        total_capacity = cls.compute_sector_capacity(contrib_count, float(z), avg_ = avg,
+                                                            max_ = max_atomic, sum_=total_atomic_sum, function = composite_sector_function)
+
+        # ---- 3) Distribute per-block capacity across T slots (unchanged)
+        base = total_capacity // T
+        rem  = total_capacity - base * T
+
+        rem_table = cls._remainder_distribution_table(T)   # (T+1, T)
+        k_mod     = np.arange(n_times, dtype=np.int64) % T
+
+        extra      = rem_table[rem, k_mod[None, :]]
+        sector_cap = (base + extra).astype(np.int64, copy=False)
+
+        return sector_cap
     
 
-        if len(atomic_capacities) == 0:
-            return 0
+    @classmethod
+    def compute_sector_capacity(cls,
+                                counts: np.ndarray,
+                                z: float,
+                                avg_ = None,
+                                max_ = None,
+                                sum_ = None,
+                                function = "triangular"
+                                ) -> np.ndarray:
+        """
+        Vectorized capacity rule (edit here to change behavior).
+        Inputs:
+            avg    : (N, n_times) float64, mean atomic per-block capacity for each (sector,time)
+            counts : (N, n_times) int64, number of contributors k per (sector,time)
+            z      : float, rule parameter
+        Returns:
+            int64 (N, n_times) per-block capacities BEFORE remainder distribution.
+        Current rule (matches your earlier piecewise):
+            if k > z:   cap = round(((z+1)/2) * avg)
+            else:       cap = round(avg * triangular_weight_sum(k, z))
+        """
+        
+        empty_mask = (counts == 0)
 
-        avg_cap = sum(atomic_capacities) / len(atomic_capacities)
+        if function == LINEAR:
+            if sum_ is None:
+                raise ValueError("compute_sector_capacity(rule='linear') requires sum_.")
+            out = sum_.astype(np.int64, copy=False)
+            out = np.where(empty_mask, 0, out)
+            return out
+        
+        if function == MAX:
 
-        if z < len(atomic_capacities):
-            return ((z+1)*avg_cap) / 2
-        else: # z >= len(atomic_capacities)
-            sum_ = 0
-            for i in range(len(atomic_capacities)):
-                sum_ += (1 - (i / z)) * avg_cap
+            if max_ is None:
+                raise ValueError("compute_sector_capacity(rule='max') requires max_.")
+            out = max_.astype(np.int64, copy=False)
+            out = np.where(empty_mask, 0, out)
+            return out
+        
+        if function == TRIANGULAR:
 
-        return math.ceil(sum_)
+            counts = counts.astype(np.int64, copy=False)
+            avg    = avg_.astype(np.float64, copy=False)
 
+            tri    = cls._triangular_weight_sum_counts(counts, z)
+
+            out = np.where(
+                counts > z,
+                ((z + 1.0) / 2.0) * avg,
+                avg * tri
+            )
+
+            # Ensure empty groups yield 0 exactly
+            out = np.where(counts == 0, 0.0, out)
+
+            return np.rint(out).astype(np.int64)
+        
     @classmethod 
     def instance_to_matrix_vectorized(cls,
                                     flights: np.ndarray,

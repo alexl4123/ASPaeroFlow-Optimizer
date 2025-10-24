@@ -35,7 +35,7 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import shortest_path
     
 from concurrent.futures import ProcessPoolExecutor
-from optimize_flights import OptimizeFlights
+from optimize_flights import OptimizeFlights, MAX, TRIANGULAR, LINEAR
 from concurrent.futures import ProcessPoolExecutor
 
 
@@ -112,7 +112,8 @@ class Main:
         verbosity: Optional[int],
         sector_capacity_factor: Optional[int],
         number_capacity_management_configs: Optional[int],
-        capacity_management_enabled: Optional[bool]) -> None:
+        capacity_management_enabled: Optional[bool],
+        composite_sector_function: Optional[str]) -> None:
 
         self._graph_path: Optional[Path] = graph_path
         self._sectors_path: Optional[Path] = sectors_path
@@ -130,6 +131,9 @@ class Main:
             self.capacity_management_enabled = False
         else:
             raise Exception("Invalid input for capacity_management_enabled")
+        
+        
+        self.composite_sector_function  = composite_sector_function
 
         self._encoding_path: Optional[Path] = encoding_path
 
@@ -258,9 +262,14 @@ class Main:
 
         # 3.) Create capacity matrix (|R|x|T|)
         #capacity_time_matrix = self.capacity_time_matrix_reference(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = z)
-        capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor)
-        
-        #np.testing.assert_array_equal(capacity_time_matrix, capacity_time_matrix_tmp)
+        #capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor)
+        capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor,
+                                                                    composite_sector_function=self.composite_sector_function)
+        #np.testing.assert_array_equal(capacity_time_matrix, capacity_time_matrix_test_2)
+
+        #capacity_time_matrix_test = OptimizeFlights.capacity_time_matrix_test(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor)
+        #np.testing.assert_array_equal(capacity_time_matrix, capacity_time_matrix_test)
+
         #np.savetxt("20251003_navaid_sector_time_assignment.csv", navaid_sector_time_assignment, delimiter=",",fmt="%i")
         #np.savetxt("20251003_instance_to_matrix.csv", converted_instance_matrix, delimiter=",",fmt="%i")
         #quit()
@@ -334,7 +343,7 @@ class Main:
                 system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
                 # 3.) Create capacity matrix (|R|x|T|):
                 #capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, z = self.sector_capacity_factor)
-                capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor)
+                capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor, composite_sector_function=self.composite_sector_function)
 
                 # 3.) Create capacity matrix (|R|x|T|)
                 #capacity_time_matrix = self.capacity_time_matrix_reference(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = z)
@@ -478,7 +487,7 @@ class Main:
                     system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
                     # 3.) Create capacity matrix (|R|x|T|)
                     #capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, z = self.sector_capacity_factor)
-                    capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor)
+                    capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor, composite_sector_function=self.composite_sector_function)
                     # 4.) Subtract demand from capacity (|R|x|T|)
                     capacity_demand_diff_matrix = capacity_time_matrix - system_loads
                     # 5.) Create capacity overload matrix
@@ -528,7 +537,7 @@ class Main:
             """
 
             system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
-            capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor)
+            capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor, composite_sector_function=self.composite_sector_function)
             capacity_demand_diff_matrix = capacity_time_matrix - system_loads
 
 
@@ -576,7 +585,7 @@ class Main:
 
                     system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
 
-                    capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor)
+                    capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor, composite_sector_function=self.composite_sector_function)
                     #capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, z = self.sector_capacity_factor)
                     capacity_demand_diff_matrix = capacity_time_matrix - system_loads
                     capacity_overload_mask = capacity_demand_diff_matrix < 0
@@ -809,7 +818,8 @@ class Main:
                                     self._max_explored_vertices, self._max_delay_per_iteration, 
                                     original_max_time, iteration, self.verbosity,
                                     self.number_capacity_management_configs,
-                                    self.capacity_management_enabled
+                                    self.capacity_management_enabled,
+                                    self.composite_sector_function,
                                     )
 
         return job, rows_pool
@@ -1109,6 +1119,14 @@ class Main:
 
         # --- output matrix shape (airplane_id rows, time columns)
         max_time_dim = int(max(t.max() + 1, (max_time + 1) * time_granularity))
+
+        if max_time_dim % time_granularity != 0:
+            remainder = max_time_dim % time_granularity
+            max_time_dim += time_granularity - remainder
+
+            if max_time_dim % time_granularity != 0:
+                print("[ERROR] - Should never occur - failure in maths")
+                raise Exception("[ERROR IN COMPUTATION]")
 
         sectors = navaid_sector[:, 1]                      # shape (N,)
         return np.repeat(sectors[:, None], max_time_dim, axis=1)  # shape (N, T)
@@ -1612,6 +1630,9 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
     parser.add_argument("--sector-capacity-factor", type=int, default=int(C("sector-capacity-factor", 6)),
                         help="Defines capacity of composite sectors.")
 
+    parser.add_argument("--composite-sector-function", type=str, default=str(C("composite-sector-function", "max")),
+                        help="Defines the function of the composite sector - available: max, triangular, linear")
+
 
     parser.add_argument("--number-capacity-management-configs", type=int, default=int(C("number-capacity-management-configs", 7)), help="How many compisitions/partitions to consider (only works when cap-mgmt. is enabled.")
     parser.add_argument("--capacity-management-enabled",
@@ -1804,6 +1825,11 @@ def main(argv: Optional[List[str]] = None) -> None:
         if args.config:
             print(f"    config:          {args.config}")
 
+
+    composite_sector_function = args.composite_sector_function.lower()
+    if composite_sector_function not in [MAX,LINEAR,TRIANGULAR]:
+        raise Exception(f"Specified composite sector function {composite_sector_function} not in {[MAX,LINEAR,TRIANGULAR]}")
+
     app = Main(args.graph_path, args.sectors_path, args.flights_path,
                args.airports_path, args.airplanes_path,
                args.airplane_flight_path, args.navaid_sector_path,
@@ -1813,7 +1839,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                args.max_time, args.verbosity,
                args.sector_capacity_factor,
                args.number_capacity_management_configs,
-               args.capacity_management_enabled)
+               args.capacity_management_enabled,
+               composite_sector_function)
     app.run()
 
     # Save results if requested
