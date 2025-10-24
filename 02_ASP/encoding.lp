@@ -24,28 +24,22 @@ navaid_sector(SEC,SEC,T) :- navaid(SEC), time(T), airport(SEC).
 %:- navaid_sector(NAV1,SEC,T), navaid_sector(NAV2,SEC,T), NAV1 != NAV2.
 :- navaid_sector(NAV,SEC,T), not airport(NAV), airport(SEC).
 
-navaid_sector(2,2,5).
-
-output_len(2,5,CAP_LEN) :- sector_len(2,5,CAP_LEN).
-output_avg(2,5,AVG) :- sector_avg_cap(2,5,AVG).
-output_var(2,5,CAP_LEN,Z,CAP_AVG) :- sector_variables(2,5,CAP_LEN,Z,CAP_AVG).
-output_sector(2,5,C) :- sector(2,5,C).
-%sector(SEC,T,C) :- sector_variables(SEC,T,CAP_LEN,Z,CAP_AVG), CAP_LEN < Z, C = ((CAP_AVG * 2 * Z * (CAP_LEN+1)) - CAP_LEN * CAP_LEN - CAP_LEN) / (Z*2). 
-
 % MINIMIZE NAVAID-SECTOR ASSIGNMENT CHANGES:
 navaid_changed(NAV,T,1) :- navaid_sector(NAV,SEC0,T), navaid_sector(NAV,SEC1,T+1), SEC0 != SEC1.
 navaid_changed(NAV,T,0) :- navaid_sector(NAV,SEC0,T), navaid_sector(NAV,SEC0,T+1).
 sector_diff(SEC,T,DIFF) :- sector_len(SEC,T,_), DIFF = #sum{V,NAV: navaid_changed(NAV,T,V)}.
 
 % SECTOR CAP FUNCTION:
+%sector_avg_cap(SEC,T,CAP_SUM / CAP_LEN) :- time(T), navaid(SEC), CAP_SUM = #sum{C,NAV:navaid_sector(NAV,SEC,T), atomic_sector(NAV,T,C)}, sector_len(SEC,T,CAP_LEN), CAP_LEN > 0.
+%sector_avg_cap(SEC,T,0) :- time(T), navaid(SEC), sector_len(SEC,T,CAP_LEN), CAP_LEN = 0.
+%sector_variables(SEC,T,CAP_LEN,Z,CAP_AVG) :- sectorCapacityFactor(Z), navaid_sector(_,SEC,T), sector_len(SEC,T,CAP_LEN), sector_avg_cap(SEC,T,CAP_AVG).
+%sector(SEC,T,C) :- sector_variables(SEC,T,CAP_LEN,Z,CAP_AVG), CAP_LEN >= Z, C = (CAP_AVG * (Z+1)) / 2, CAP_LEN >= 1. 
+%sector(SEC,T,C) :- sector_variables(SEC,T,CAP_LEN,Z,CAP_AVG), CAP_LEN < Z, C = (CAP_AVG * (2 * Z * CAP_LEN - CAP_LEN * CAP_LEN + CAP_LEN)) / (Z*2), CAP_LEN >= 1. 
+
 sector_len(SEC,T,CAP_LEN) :- time(T), navaid(SEC), CAP_LEN = #count{NAV:navaid_sector(NAV,SEC,T)}.
-sector_avg_cap(SEC,T,CAP_SUM / CAP_LEN) :- time(T), navaid(SEC), CAP_SUM = #sum{C,NAV:navaid_sector(NAV,SEC,T), atomic_sector(NAV,T,C)}, sector_len(SEC,T,CAP_LEN), CAP_LEN > 0.
-sector_avg_cap(SEC,T,0) :- time(T), navaid(SEC), sector_len(SEC,T,CAP_LEN), CAP_LEN = 0.
-sector_variables(SEC,T,CAP_LEN,Z,CAP_AVG) :- sectorCapacityFactor(Z), navaid_sector(_,SEC,T), sector_len(SEC,T,CAP_LEN), sector_avg_cap(SEC,T,CAP_AVG).
-sector(SEC,T,C) :- sector_variables(SEC,T,CAP_LEN,Z,CAP_AVG), CAP_LEN >= Z, C = (CAP_AVG * (Z+1)) / 2, CAP_LEN >= 1. 
-sector(SEC,T,C) :- sector_variables(SEC,T,CAP_LEN,Z,CAP_AVG), CAP_LEN < Z, C = (CAP_AVG * (2 * Z * CAP_LEN - CAP_LEN * CAP_LEN + CAP_LEN)) / (Z*2), CAP_LEN >= 1. 
-%sector(SEC,T,CAP_AVG) :- sector_variables(SEC,T,CAP_LEN,Z,CAP_AVG), CAP_LEN = 1. 
-sector(SEC,T,0) :- sector_variables(SEC,T,CAP_LEN,Z,CAP_AVG), CAP_LEN = 0. 
+sector(SEC,T,0) :- sector_len(SEC,T,CAP_LEN), CAP_LEN = 0. 
+sector(SEC,T,C) :- time(T), navaid(SEC), C = #max{C',NAV:navaid_sector(NAV,SEC,T),atomic_sector(NAV,T,C')}, sector_len(SEC,T,CAP_LEN), CAP_LEN > 0.
+sector_number(T,NUM) :- time(T), NUM = #count{SEC:sector(SEC,T,C), C > 0}.
 
 % GET ALL AIRPLANE SPEEDS
 airplane_speed(S) :- airplane(_,S).
@@ -143,10 +137,12 @@ flight(ID,T',S') :- navpointFlight(ID,T,X), navpointFlight(ID,T+D,X'), navpointS
 :~ overload(X,T,OVER). [OVER@10,X,T]
 % SECONDARY WEAK CONSTRAINT:
 :~ arrivalDelay(ID,DIFF). [DIFF@9,ID]
-% OPTIMIZE FOR MINIMUM TRAVEL TIME:
-:~ actualFlightTime(ID,TA), plannedFlightTime(ID,TP), DIFF = TA - TP. [DIFF@8,ID]
+% TERTIARY WEAK CONSTRAINT:
+:~ sector_number(T,NUM). [NUM@8,T]
+% QUARTINARY OPTIMIZE FOR MINIMUM TRAVEL TIME:
+:~ actualFlightTime(ID,TA), plannedFlightTime(ID,TP), DIFF = TA - TP. [DIFF@7,ID]
 % OPTIMIZE FOR LEAST SECTOR CHANGES:
-:~ sector_diff(SEC,T,DIFF). [DIFF@7,SEC,T]
+:~ sector_diff(SEC,T,DIFF). [DIFF@6,SEC,T]
 
 %output_sec_len(X,Y,Z) :- sector_len(X,Y,Z), Y = 12.
 %output_sec_avg(X,Y,Z) :- sector_avg_cap(X,Y,Z), Y = 12.

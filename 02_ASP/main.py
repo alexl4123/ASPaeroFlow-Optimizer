@@ -334,6 +334,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     instance_asp_atoms = "\n".join(asp_instance)
 
     #open("20250827_instance.lp","w").write(instance_asp_atoms)
+    #quit()
 
     encoding = open(encoding_path, "r").read()
 
