@@ -219,7 +219,8 @@ class MIPModel:
         if len(filed_path) > 0:
             E = {ekey(u, v) for u, v in zip(filed_path, filed_path[1:])}
             paths.append(filed_path)
-            edge_sets.append(E)
+            if len(E) > 0:
+                edge_sets.append(E)
 
         while len(paths) < k and tries < max_tries:
             tries += 1
@@ -335,7 +336,7 @@ class MIPModel:
 
 
             paths = self.k_diverse_near_shortest_paths(unit_graph, origin, destination, self.nearest_neighbors_lookup[airplane_speed],
-                                                k=k, eps=0.5, jaccard_max=0.6, penalty_scale=0.2, max_tries=200, weight_key="weight",
+                                                k=k, eps=0.1, jaccard_max=0.6, penalty_scale=0.1, max_tries=50, weight_key="weight",
                                                 filed_path=list(filed_flight_path[:,1]))
 
             graph_instance = []
