@@ -94,7 +94,7 @@ def kill_descendants(pid: int):
 # System configuration (edit paths here if your layout differs)
 # ---------------------------------------------
 
-def build_system_config(base_dir: Path, output_path:Path) -> List[Dict]:
+def build_system_config(base_dir: Path, output_path:Path, experiment_name:str) -> List[Dict]:
     """Return the list with per‑solver metadata."""
     return [
         {
@@ -104,17 +104,32 @@ def build_system_config(base_dir: Path, output_path:Path) -> List[Dict]:
             "verbosity": None,
             "cmd": [
                 "--max-explored-vertices=6",
-                "--max-delay-per-iteration=-1",
+                "--max-delay-per-iteration=10",
+                "--capacity-management-enabled=True",
+                "--number-capacity-management-configs=7",
+                "--sector-capacity-factor=6",
                 f"--results-root={output_path}/solver_outputs/01_ASPaeroFlow",
+                "--wandb-enabled=True",
+                "--wandb-experiment-name-suffix=_01_ASPaeroFlow",
+                f"--wandb-experiment-name-prefix={experiment_name}_",
+                "--wandb-entity=thinklex",
                 ]
         },
         {
-            "key": "02_ASP",
-            "script": base_dir / "../02_ASP/main.py",
-            "encoding": base_dir / "../02_ASP/encoding.lp",
+            "key": "02_RerouteDelay",
+            "script": base_dir / "../01_ASPaeroFlow/main.py",
+            "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
             "verbosity": None,
             "cmd": [
-                f"--results-root={output_path}/solver_outputs/02_ASP",
+                "--max-explored-vertices=6",
+                "--max-delay-per-iteration=10",
+                "--capacity-management-enabled=False",
+                "--number-capacity-management-configs=1",
+                f"--results-root={output_path}/solver_outputs/02_RerouteDelay",
+                "--wandb-enabled=True",
+                "--wandb-experiment-name-suffix=_02_RerouteDelay",
+                f"--wandb-experiment-name-prefix={experiment_name}_",
+                "--wandb-entity=thinklex",
                 ]
         },
         {
@@ -123,18 +138,41 @@ def build_system_config(base_dir: Path, output_path:Path) -> List[Dict]:
             "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
             "verbosity": None,
             "cmd": [
-                "--max-explored-vertices=6",
-                "--max-delay-per-iteration=-1",
+                "--max-explored-vertices=1",
+                "--max-delay-per-iteration=10",
+                "--capacity-management-enabled=False",
+                "--number-capacity-management-configs=1",
                 f"--results-root={output_path}/solver_outputs/03_DELAY",
+                "--wandb-enabled=True",
+                "--wandb-experiment-name-suffix=_03_Delay",
+                f"--wandb-experiment-name-prefix={experiment_name}_",
+                "--wandb-entity=thinklex",
                 ]
         },
         {
-            "key": "04_MIP",
+            "key": "04_ASP",
+            "script": base_dir / "../02_ASP/main.py",
+            "encoding": base_dir / "../02_ASP/encoding.lp",
+            "verbosity": None,
+            "cmd": [
+                f"--results-root={output_path}/solver_outputs/02_ASP",
+                "--wandb-enabled=True",
+                "--wandb-experiment-name-suffix=_04_ASP",
+                f"--wandb-experiment-name-prefix={experiment_name}_",
+                "--wandb-entity=thinklex",
+                ]
+        },
+        {
+            "key": "05_MIP",
             "script": base_dir / "../04_MIP/main.py",
             "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
             "verbosity": None,
             "cmd": [
                 f"--results-root={output_path}/solver_outputs/04_MIP",
+                "--wandb-enabled=True",
+                "--wandb-experiment-name-suffix=_05_MIP",
+                f"--wandb-experiment-name-prefix={experiment_name}_",
+                "--wandb-entity=thinklex",
                 ]
         },
     ]
@@ -251,22 +289,25 @@ def write_csv(path: Path, header: List[str], rows: List[List]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="ATFCM benchmark driver")
     parser.add_argument("instance_dir", type=Path, help="Folder containing instance sub‑directories")
-    parser.add_argument("--time-limit", type=int, default=18000, help="Wall‑clock limit (s)")
+    parser.add_argument("--time-limit", type=int, default=1800, help="Wall‑clock limit (s)")
     parser.add_argument("--memory-limit", type=int, default=20, help="Memory limit (GiB)")
     parser.add_argument("--python-bin", default="/home/guests/abeiser/miniconda3/envs/potassco/bin/python", help="Python interpreter for the solvers")
     parser.add_argument("--output-dir", type=Path, default=Path("."), help="Where to place CSVs")
     parser.add_argument("--output-root", type=Path, default=Path("."), help="Where to place CSVs")
     parser.add_argument("--timestep-granularity", type=int, default=1, help="Timestep granularity")
+    parser.add_argument("--experiment-name", type=str, default="", help="Specify an experiment name for various settings (such as wandb).")
 
     args = parser.parse_args()
-    mem_limit_bytes = args.memory_limit * 1024 ** 3
+    mem_limit_bytes = args.memory_limit * (1024 ** 3)
+
+    experiment_name = args.experiment_name
 
     output_root = args.output_root
     output_dir = args.output_dir
     output_path = Path(output_root, output_dir)
 
     base_dir = Path(__file__).resolve().parent
-    systems = build_system_config(base_dir, output_path)
+    systems = build_system_config(base_dir, output_path, experiment_name)
 
     # Collect & sort instances
     instances = sorted(p for p in args.instance_dir.iterdir() if p.is_dir())
