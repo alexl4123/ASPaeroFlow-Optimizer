@@ -113,7 +113,8 @@ class Main:
         sector_capacity_factor: Optional[int],
         number_capacity_management_configs: Optional[int],
         capacity_management_enabled: Optional[bool],
-        composite_sector_function: Optional[str]) -> None:
+        composite_sector_function: Optional[str],
+        experiment_name: Optional[str]) -> None:
 
         self._graph_path: Optional[Path] = graph_path
         self._sectors_path: Optional[Path] = sectors_path
@@ -1268,6 +1269,7 @@ DEFAULT_FILENAMES = {
     "airplane_flight_path":    "airplane_flight_assignment.csv",
     "navaid_sector_path":      "navaid_sector_assignment.csv",
     "encoding_path":           "encoding.lp",
+    "wandb_api_key":               "wandb.key",
 }
 
 def _cfg_get(cfg: Dict, key: str, default=None):
@@ -1367,12 +1369,21 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
                         help="Defines the function of the composite sector - available: max, triangular, linear")
 
 
+    # DYNAMIC SECTORIZATION:
     parser.add_argument("--number-capacity-management-configs", type=int, default=int(C("number-capacity-management-configs", 7)), help="How many compisitions/partitions to consider (only works when cap-mgmt. is enabled.")
     parser.add_argument("--capacity-management-enabled",
         type=str,
         default=str(C("capacity-management-enabled", "true")),
         help="true/false: true when cap-mgmt. is enabled.",
     )
+
+    # WANDB:
+    parser.add_argument("--wandb-enabled", type=str, default=str(C("wandb-enabled", "false")),
+                        help="true/false: If enabled, trace run on wandb.")
+    parser.add_argument("--wandb-experiment-name-suffix", type=str, default=str(C("wandb-experiment-name-suffix","")),
+                        help="Defines the wandb suffix name for tracing experiments (only used when wandb is enabled).")
+    parser.add_argument("--wandb-api-key-path", type=Path, default=Path(C("wandb-api-key-path", DEFAULT_FILENAMES["wandb_api_key"])),
+                        metavar="FILE", help="Location of the wandb API key file (only searched when wandb is enabled).")
 
     return parser
 
@@ -1447,7 +1458,9 @@ def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
         if isinstance(v, bool): return v
         s = str(v).strip().lower()
         return s in ("1","true","t","yes","y","on")
+
     args.save_results = _str2bool(args.save_results)
+    args.wandb_enabled = _str2bool(args.wandb_enabled)
 
     return args
 
@@ -1563,6 +1576,13 @@ def main(argv: Optional[List[str]] = None) -> None:
     if composite_sector_function not in [MAX,LINEAR,TRIANGULAR]:
         raise Exception(f"Specified composite sector function {composite_sector_function} not in {[MAX,LINEAR,TRIANGULAR]}")
 
+    experiment_name = _derive_output_name(args)
+    
+    # TODO:
+    # LOAD WANDB API KEY
+    # 
+
+
     app = Main(args.graph_path, args.sectors_path, args.flights_path,
                args.airports_path, args.airplanes_path,
                args.airplane_flight_path, args.navaid_sector_path,
@@ -1573,7 +1593,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                args.sector_capacity_factor,
                args.number_capacity_management_configs,
                args.capacity_management_enabled,
-               composite_sector_function)
+               composite_sector_function,
+               experiment_name)
     app.run()
 
     # Save results if requested
