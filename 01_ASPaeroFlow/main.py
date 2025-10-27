@@ -16,6 +16,7 @@ import sys
 import time
 import math
 import networkx as nx
+import os
 
 import numpy as np
 import warnings
@@ -25,7 +26,7 @@ import pickle
 import multiprocessing as mp
 
 from pathlib import Path
-from typing import Any, Final, List, Optional
+from typing import Any, Final, List, Optional, Callable
 from datetime import datetime, timezone
 
 from solver import Solver, Model
@@ -114,7 +115,8 @@ class Main:
         number_capacity_management_configs: Optional[int],
         capacity_management_enabled: Optional[bool],
         composite_sector_function: Optional[str],
-        experiment_name: Optional[str]) -> None:
+        experiment_name: Optional[str],
+        wandb_log: Optional[Callable[[dict],None]] = None) -> None:
 
         self._graph_path: Optional[Path] = graph_path
         self._sectors_path: Optional[Path] = sectors_path
@@ -123,6 +125,8 @@ class Main:
         self._airplanes_path: Optional[Path] = airplanes_path
         self._airplane_flight_path: Optional[Path] = airplane_flight_path
         self._navaid_sector_path: Optional[Path] = navaid_sector_path
+
+        self._wandb_log = wandb_log
 
 
         self.number_capacity_management_configs = number_capacity_management_configs
@@ -618,7 +622,7 @@ class Main:
 
             # -----------------------------------------------------------------------------
 
-            if self.verbosity > 1:
+            if self.verbosity > 1 or self._wandb_log is not None:
                 t_init  = self.last_valid_pos(original_converted_instance_matrix)      # last non--1 in the *initial* schedule
                 t_final = self.last_valid_pos(converted_instance_matrix)     # last non--1 in the *final* schedule
 
@@ -629,9 +633,17 @@ class Main:
                 # --- 4. aggregate in whichever way you need -----------------------------------
                 total_delay  = delay.sum()
 
+            if self.verbosity > 1:
                 print(f">>> Current total delay: {total_delay}")
 
-
+            # Track to Weights & Biases when enabled
+            if self._wandb_log is not None:
+                self._wandb_log({
+                    "iteration": int(iteration),
+                    "number_of_conflicts": int(number_of_conflicts),
+                    "total_delay": int(total_delay),
+                })
+            
             iteration += 1
 
             #if iteration == 372:
@@ -1380,10 +1392,16 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
     # WANDB:
     parser.add_argument("--wandb-enabled", type=str, default=str(C("wandb-enabled", "false")),
                         help="true/false: If enabled, trace run on wandb.")
+    parser.add_argument("--wandb-experiment-name-prefix", type=str, default=str(C("wandb-experiment-name-prefix","")),
+                        help="Defines the wandb prefix name for tracing experiments (only used when wandb is enabled).")
     parser.add_argument("--wandb-experiment-name-suffix", type=str, default=str(C("wandb-experiment-name-suffix","")),
                         help="Defines the wandb suffix name for tracing experiments (only used when wandb is enabled).")
     parser.add_argument("--wandb-api-key-path", type=Path, default=Path(C("wandb-api-key-path", DEFAULT_FILENAMES["wandb_api_key"])),
                         metavar="FILE", help="Location of the wandb API key file (only searched when wandb is enabled).")
+    parser.add_argument("--wandb-project", type=str, default=str(C("wandb-project", "ASPaeroFlow")),
+                        help="Weights & Biases project name (default: ASPaeroFlow).")
+    parser.add_argument("--wandb-entity", type=str, default=C("wandb-entity", None),
+                        help="Weights & Biases entity (username or team/organization). Leave empty to use your default entity.")
 
     return parser
 
@@ -1570,6 +1588,9 @@ def main(argv: Optional[List[str]] = None) -> None:
             print(f"    data-dir:        {args.data_dir}")
         if args.config:
             print(f"    config:          {args.config}")
+        if args.wandb_enabled:
+            print(f"    wandb:           entity={args.wandb_entity or '(default)'} project={args.wandb_project} "
+                  f"name={args.wandb_experiment_name_prefix}{_derive_output_name(args)}{args.wandb_experiment_name_suffix}")
 
 
     composite_sector_function = args.composite_sector_function.lower()
@@ -1581,6 +1602,39 @@ def main(argv: Optional[List[str]] = None) -> None:
     # TODO:
     # LOAD WANDB API KEY
     # 
+    # W&B setup (optional)
+    run = None
+    wandb_log = None
+    if args.wandb_enabled:
+        try:
+            import wandb  # installed by user
+        except ImportError as e:
+            raise ImportError("wandb is not installed, but --wandb-enabled was set to true.") from e
+        api_key_path: Path = args.wandb_api_key_path
+        if not api_key_path.exists():
+            raise FileNotFoundError(f"W&B API key file not found: {api_key_path}")
+        key = api_key_path.read_text(encoding="utf-8").strip()
+        if not key:
+            raise RuntimeError(f"W&B API key file is empty: {api_key_path}")
+        os.environ["WANDB_API_KEY"] = key
+        wandb.login(key=key, relogin=True)
+        run = wandb.init(
+            project=args.wandb_project,
+            entity=(args.wandb_entity if args.wandb_entity else None),
+            name=f"{args.wandb_experiment_name_prefix}{experiment_name}{args.wandb_experiment_name_suffix}",
+            config={
+                "timestep_granularity": args.timestep_granularity,
+                "max_explored_vertices": args.max_explored_vertices,
+                "number_threads": args.number_threads,
+                "max_delay_per_iteration": args.max_delay_per_iteration,
+                "number_capacity_management_configs": args.number_capacity_management_configs,
+                "capacity_management_enabled": args.capacity_management_enabled,
+                "composite_sector_function": composite_sector_function,
+                "seed": args.seed,
+                "max_time": args.max_time,
+            },
+        )
+        wandb_log = run.log
 
 
     app = Main(args.graph_path, args.sectors_path, args.flights_path,
@@ -1594,12 +1648,16 @@ def main(argv: Optional[List[str]] = None) -> None:
                args.number_capacity_management_configs,
                args.capacity_management_enabled,
                composite_sector_function,
-               experiment_name)
+               experiment_name,
+               wandb_log)
     app.run()
 
     # Save results if requested
     if args.save_results:
         _save_results(args, app)
+
+    if run is not None:
+        run.finish()
 
     print(app.get_total_atfm_delay())
 
