@@ -315,6 +315,8 @@ class Main:
             old_converted_instance = converted_instance_matrix.copy()
             old_converted_navpoint_matrix = converted_navpoint_matrix.copy()
             old_navaid_sector_time_assignment = navaid_sector_time_assignment.copy()
+            
+            default_number_capacity_management_configs = self.number_capacity_management_configs
 
             _, _, flight_durations = self.flight_spans_contiguous(converted_instance_matrix, fill_value=-1)
 
@@ -567,6 +569,11 @@ class Main:
                     additional_time_increase += 1
                     if self.verbosity > 1:
                         print(f">>> INCREASED TIME TO:{additional_time_increase}")
+
+                    if counter_equal_solutions >= 5:
+                        self.number_capacity_management_configs = 1
+                        if self.verbosity > 1:
+                            print(f">>> SET NUMBER DYNAMIC SECTOR ALLOCATION TO:{self.number_capacity_management_configs}")
                     
                     if counter_equal_solutions >= 10:
                         # Otherwise it can be that the considered planes hinder a solution through MUTEX
@@ -612,6 +619,7 @@ class Main:
                     max_number_airplanes_considered_in_ASP = 2
                     additional_time_increase = 0
                     self._max_explored_vertices = original_max_explored_vertices
+                    self.number_capacity_management_configs = default_number_capacity_management_configs
 
                     for flight_id in new_flight_durations.keys():
                         flight_durations[flight_id] = new_flight_durations[flight_id]["duration"]
@@ -771,10 +779,7 @@ class Main:
 
         for airplane_index in airplane_indices:
 
-
             flights_per_airplane = self.airplane_flight[self.airplane_flight[:,0] == airplane_index, 1]
-
-
             flight_start_time_list = []
 
             for flight in flights_per_airplane:
@@ -809,6 +814,7 @@ class Main:
         #capacity_demand_diff_matrix_tmp = self.system_loads_computation_v0(converted_instance_matrix, rows, capacity_time_matrix, de_facto_max_time)
         #capacity_demand_diff_matrix_cpy = self.system_loads_computation_v1(time_index, converted_instance_matrix, capacity_time_matrix, system_loads, fill_value, rows)
 
+        # REMOVE PROBLEMATIC FLIGHTS FROM CAPACITY DEMAND MATRIX:
         # Create capacity demand diff matrix where only the values for the candidates have changed:
         capacity_demand_diff_matrix_cpy_2 = capacity_demand_diff_matrix.copy()
         capacity_demand_diff_matrix_cpy_2 = self.system_loads_computation_v2(converted_instance_matrix, fill_value, all_potentially_problematic_flight_indices, capacity_demand_diff_matrix_cpy_2)

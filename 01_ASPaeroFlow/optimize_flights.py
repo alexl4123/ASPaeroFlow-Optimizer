@@ -21,6 +21,11 @@ LINEAR = "linear"
 TRIANGULAR = "triangular"
 MAX = "max"
 
+from itertools import product
+from typing import Dict, Iterable, List, Tuple, Union, Iterator
+
+PathDict = Dict[Union[int, str], Union[Dict[Union[int, str], object], List[object], Tuple[object, ...]]]
+Config = List[Tuple[Union[int, str], Union[int, str]]]
 
 
 class OptimizeFlights:
@@ -126,6 +131,8 @@ class OptimizeFlights:
         
         needed_capacities_for_navpoint = {}
 
+        flight_path_dict = {}
+
         sector_instance = {}
         path_fact_instances = []
 
@@ -139,7 +146,8 @@ class OptimizeFlights:
 
         for flight_affected_index in range(flights_affected.shape[0]):
 
-            flight_index = problematic_flights[flight_affected_index]
+
+            flight_index = int(problematic_flights[flight_affected_index])
 
             airplane_id = (self.airplane_flight[self.airplane_flight[:,1] == flight_index])[0,0]
             airplane_speed_kts = self.airplanes[airplane_id,1]
@@ -152,9 +160,9 @@ class OptimizeFlights:
             potentially_affected_flights = self.problematic_airplane_flight_map[airplane_id]
 
             potentially_affected_flights_tmp = []
-            for flight_affected_index in potentially_affected_flights:
-                if flight_index != flight_affected_index:
-                    potentially_affected_flights_tmp.append(flight_affected_index)
+            for flight_affected_index_ in potentially_affected_flights:
+                if flight_index != flight_affected_index_:
+                    potentially_affected_flights_tmp.append(flight_affected_index_)
 
             potentially_affected_flights = potentially_affected_flights_tmp
 
@@ -191,11 +199,20 @@ class OptimizeFlights:
             #actual_departure_time_instance.append(f"actualDepartureTime({airplane_id},{start_time}).")
             planned_arrival_time_instance.append(f"plannedArrivalTime({flight_index},{planned_arrival_time}).")
 
+            flight_path_dict[flight_index] = {}
+
             for path in paths:
 
                 navpoint_trajectory = self.get_flight_navpoint_trajectory(flights_affected, networkx_graph, flight_index, actual_flight_departure_time, airplane_speed_kts, path, timestep_granularity)
 
                 for delay in range(additional_time_increase * time_window,time_window * (additional_time_increase + 1)):
+                    
+                    flight_path_dict[flight_index][path_number] = {
+                        "navpoint_flight" : [],
+                        "planned_arrival_time": planned_arrival_time,
+                        "actual_arrival_time": planned_arrival_time,
+                        "potential_flights_affected": {}
+                    }
 
                     flight_time = actual_flight_departure_time - actual_flight_operations_start_time
                     current_time = actual_flight_operations_start_time
@@ -225,6 +242,8 @@ class OptimizeFlights:
                             #flight_time += delay                            
                             
                             planned_departure_time_instance.append(f"actualFlightOperationsStartTime({flight_index},{current_time},{path_number}).")
+
+                            flight_path_dict[flight_index][path_number]["navpoint_flight"].append((navaid,current_time))
 
                         else:
 
@@ -257,7 +276,11 @@ class OptimizeFlights:
                             current_time += time_delta
                             flight_time += time_delta
 
+                            flight_path_dict[flight_index][path_number]["navpoint_flight"].append((navaid,current_time))
+
                     actual_arrival_time_instance.append(f"actualArrivalTime({flight_index},{current_time},{path_number}).")
+
+                    flight_path_dict[flight_index][path_number]["actual_arrival_time"] = current_time
 
 
                     landing_time_previous_lag = current_time
@@ -289,6 +312,12 @@ class OptimizeFlights:
 
                         planned_arrival_time_instance.append(f"plannedArrivalTime({potentially_affected_flight},{potentially_planned_arrival_time}).")
 
+                        flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight] = {
+                            "navpoint_flight" : [],
+                            "planned_arrival_time" : potentially_planned_arrival_time,
+                            "actual_arrival_time" : potentially_planned_arrival_time
+                        }
+
 
                         potentially_affected_flight_path_indices = np.flatnonzero(self.converted_navpoint_matrix[potentially_affected_flight,:] != fill_value)
 
@@ -304,6 +333,8 @@ class OptimizeFlights:
                             hop_index = 0
 
                             cur_navpoint = self.converted_navpoint_matrix[potentially_affected_flight,potentially_affected_flight_path_indices[hop_index]]
+
+                            flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight]["navpoint_flight"].append((cur_navpoint,current_time))
 
 
                             flight_navpoint_instance.append(f"single_pos({potentially_affected_flight},{path_number},{cur_navpoint},{flight_time}).")
@@ -324,8 +355,13 @@ class OptimizeFlights:
                             prev_navpoint = self.converted_navpoint_matrix[potentially_affected_flight,potentially_affected_flight_path_indices[hop_index - 1]]
                             cur_navpoint = self.converted_navpoint_matrix[potentially_affected_flight,potentially_affected_flight_path_indices[hop_index]]
 
+                            if hop_index == 1:
+                                flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight]["navpoint_flight"].append((prev_navpoint,current_time))
+
                             time_delta = potentially_affected_flight_path_indices[hop_index] - potentially_affected_flight_path_indices[hop_index - 1]
                             current_time += time_delta
+
+                            flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight]["navpoint_flight"].append((cur_navpoint,current_time))
 
                             flight_navpoint_instance.append(f"next_pos({potentially_affected_flight},{path_number},{prev_navpoint},{flight_time},{cur_navpoint},{flight_time+time_delta}).")
                             
@@ -352,6 +388,7 @@ class OptimizeFlights:
                         current_time = potentially_actual_flight_operations_start_time + flight_time
                         landing_time_previous_lag = current_time
 
+                        flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight]["actual_arrival_time"] = current_time
                         actual_arrival_time_instance.append(f"actualArrivalTime({potentially_affected_flight},{current_time},{path_number}).")
                         path_fact_instances.append(f"chosen_path({potentially_affected_flight},{path_number}) :- chosen_path({flight_index},{path_number}).")
 
@@ -365,7 +402,7 @@ class OptimizeFlights:
         #   a.) Check out what we can do with this sector
         #   b.) Create alternatives!
 
-        number_configs = 7
+        #number_configs = 7
         config_restore_dict = {}
 
         sector_config_instance = []
@@ -388,7 +425,89 @@ class OptimizeFlights:
 
                 current_capacity = self.capacity_demand_diff_matrix[current_sector, current_time]
                 sector_capacity_instance.append(f"possible_sector_capacity({current_sector},{current_capacity},{current_time},{current_config}).")
+
         # END CONFIG = 0
+
+        # TODO:
+        # 1.) INtegrate potentially affected flights
+        # 2.) Integrate for all sector configs
+        # 3.) Sort & get best local ones
+        # 4.) Write best local one to output
+
+        flight_path_config_list = []
+
+        for flight_config in self.iter_flight_path_dict_configurations(flight_path_dict):
+            
+            # SPARSE SECTOR DICT:
+            overload_sector_dict = {}
+
+            delay = 0
+
+            for flight_index, path_number in flight_config:
+                
+                if "sector_flight" not in flight_path_dict[flight_index][path_number]:
+                    flight_path_dict[flight_index][path_number]["sector_flight"] = {}
+
+                if current_config not in flight_path_dict[flight_index][path_number]["sector_flight"]:
+                    flight_path_dict[flight_index][path_number]["sector_flight"][current_config] = []
+                
+                for step_index in range(1, len(flight_path_dict[flight_index][path_number]["navpoint_flight"])):
+
+                    prev_navpoint, prev_time = flight_path_dict[flight_index][path_number]["navpoint_flight"][step_index - 1]
+                    cur_navpoint, cur_time = flight_path_dict[flight_index][path_number]["navpoint_flight"][step_index]
+
+                    for time_index in range(prev_time, cur_time):
+
+                        if time_index <= math.floor((cur_time - prev_time)/2 + prev_time):
+                            current_sector = self.navaid_sector_time_assignment[prev_navpoint, time_index]
+                        else:
+                            current_sector = self.navaid_sector_time_assignment[cur_navpoint, time_index]
+
+                        flight_path_dict[flight_index][path_number]["sector_flight"][current_config].append((current_sector, time_index))
+
+
+                        if current_sector not in overload_sector_dict:
+                            overload_sector_dict[current_sector] = {}
+
+                        if time_index not in overload_sector_dict[current_sector]:
+                            overload_sector_dict[current_sector][time_index] = self.capacity_demand_diff_matrix[current_sector, time_index]
+
+                        # DECREASE BY 1:
+                        overload_sector_dict[current_sector][time_index] -= 1
+
+                    if step_index == len(flight_path_dict[flight_index][path_number]["navpoint_flight"]) - 1:
+
+                        time_index = cur_time
+                        current_sector = self.navaid_sector_time_assignment[cur_navpoint, time_index]
+
+                        if current_sector not in overload_sector_dict:
+                            overload_sector_dict[current_sector] = {}
+
+                        if time_index not in overload_sector_dict[current_sector]:
+                            overload_sector_dict[current_sector][time_index] = self.capacity_demand_diff_matrix[current_sector, time_index]
+
+                        # DECREASE BY 1:
+                        overload_sector_dict[current_sector][time_index] -= 1
+
+                    
+                planned_arrival_time = flight_path_dict[flight_index][path_number]["planned_arrival_time"]
+                actual_arrival_time = flight_path_dict[flight_index][path_number]["actual_arrival_time"]
+
+                delay += (actual_arrival_time - planned_arrival_time)
+                
+            capacity_sum = 0
+            for overload_sector_key in overload_sector_dict.keys():
+                for overload_time_key in overload_sector_dict[overload_sector_key].keys():
+                    if overload_sector_dict[overload_sector_key][overload_time_key] < 0:
+                        capacity_sum += overload_sector_dict[overload_sector_key][overload_time_key]
+
+            flight_path_config_list.append((capacity_sum,delay,current_config,flight_config))
+
+
+        print(flight_path_config_list)
+        quit()
+
+
         current_config += 1
         number_configs -= 1
 
@@ -674,6 +793,34 @@ class OptimizeFlights:
 
         return model, config_restore_dict
     
+
+    def iter_flight_path_dict_configurations(self, flight_path_dict: PathDict, order: str = "sorted") -> Iterator[Config]:
+        """
+        Yields configurations as [(f0, p0), (f1, p1), ...], one per combination.
+        - flight_path_dict[f] can be:
+            * a dict {path_id: path_data}, or
+            * a list/tuple of paths (selected by index 0..len-1).
+        - order: "sorted" (default) or "insertion" for flight ordering.
+        """
+        # Choose flight order (stable configs)
+        flights = sorted(flight_path_dict) if order == "sorted" else list(flight_path_dict)
+
+        # Collect selectable keys for each flight
+        path_key_lists: List[List[Union[int, str]]] = []
+        for f in flights:
+            paths = flight_path_dict[f]
+            if isinstance(paths, dict):
+                keys = list(paths.keys())
+            else:  # sequence: use indices as path identifiers
+                keys = list(range(len(paths)))
+            if not keys:   # if any flight has 0 paths, there are no configs
+                return
+            path_key_lists.append(keys)
+
+        # Yield all combinations lazily
+        for combo in product(*path_key_lists):
+            yield list(zip(flights, combo))
+    
     def first_l_nontrivial_partitions(self, items, l):
         l = int(l)
         xs = list(items)
@@ -710,6 +857,9 @@ class OptimizeFlights:
                 duration_in_seconds = distance/airplane_speed_ms
                 factor_to_unit_standard = 3600.00 / float(timestep_granularity)
                 duration_in_unit_standards = math.ceil(duration_in_seconds / factor_to_unit_standard)
+
+                if duration_in_unit_standards == 0:
+                    duration_in_unit_standards = 1
 
                 current_time = current_time + duration_in_unit_standards
 
