@@ -320,6 +320,13 @@ class Main:
 
             _, _, flight_durations = self.flight_spans_contiguous(converted_instance_matrix, fill_value=-1)
 
+        # Track to Weights & Biases when enabled
+        if self._wandb_log is not None:
+            self._wandb_log({
+                "iteration": int(iteration), # FIRST ONE:
+                "number_of_conflicts": int(number_of_conflicts),
+                "total_delay": int(0), # FIRST ONE
+            })
 
         while np.any(capacity_overload_mask, where=True):
             if self.verbosity > 0:
@@ -644,6 +651,8 @@ class Main:
             if self.verbosity > 1:
                 print(f">>> Current total delay: {total_delay}")
 
+            
+            iteration += 1
             # Track to Weights & Biases when enabled
             if self._wandb_log is not None:
                 self._wandb_log({
@@ -651,8 +660,6 @@ class Main:
                     "number_of_conflicts": int(number_of_conflicts),
                     "total_delay": int(total_delay),
                 })
-            
-            iteration += 1
 
             #if iteration == 372:
             #    print("DEBUG EXIT AT ITERATION 372!")
@@ -673,6 +680,14 @@ class Main:
         mean_delay   = delay.mean()
         max_delay    = delay.max()
         #per_flight   = delay.tolist()
+
+        # Track to Weights & Biases when enabled
+        if self._wandb_log is not None:
+            self._wandb_log({
+                "iteration": int(iteration+1), # FINAL ONE:
+                "number_of_conflicts": int(number_of_conflicts),
+                "total_delay": int(total_delay),
+            })
 
         if self.verbosity > 0:
 
@@ -1605,9 +1620,6 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     experiment_name = _derive_output_name(args)
     
-    # TODO:
-    # LOAD WANDB API KEY
-    # 
     # W&B setup (optional)
     run = None
     wandb_log = None

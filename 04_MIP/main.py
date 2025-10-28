@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+import os
 
 import networkx as nx
 import numpy as np
@@ -711,6 +712,7 @@ DEFAULT_FILENAMES = {
     "airplane_flight_path":    "airplane_flight_assignment.csv",
     "navaid_sector_path":      "navaid_sector_assignment.csv",
     "encoding_path":           "encoding.lp",
+    "wandb_api_key":               "wandb.key",
 }
 
 def _cfg_get(cfg: Dict, key: str, default=None):
@@ -805,6 +807,23 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
                         help="Verbosity levels (0,1,2).")
     parser.add_argument("--sector-capacity-factor", type=int, default=int(C("sector-capacity-factor", 6)),
                         help="NOT SUPPORTED IN MIP MODEL.")
+
+    # WANDB:
+    parser.add_argument("--wandb-enabled", type=str, default=str(C("wandb-enabled", "false")),
+                        help="true/false: If enabled, trace run on wandb.")
+    parser.add_argument("--wandb-experiment-name-prefix", type=str, default=str(C("wandb-experiment-name-prefix","")),
+                        help="Defines the wandb prefix name for tracing experiments (only used when wandb is enabled).")
+    parser.add_argument("--wandb-experiment-name-suffix", type=str, default=str(C("wandb-experiment-name-suffix","")),
+                        help="Defines the wandb suffix name for tracing experiments (only used when wandb is enabled).")
+    parser.add_argument("--wandb-api-key-path", type=Path, default=Path(C("wandb-api-key-path", DEFAULT_FILENAMES["wandb_api_key"])),
+                        metavar="FILE", help="Location of the wandb API key file (only searched when wandb is enabled).")
+    parser.add_argument("--wandb-project", type=str, default=str(C("wandb-project", "ASPaeroFlow")),
+                        help="Weights & Biases project name (default: ASPaeroFlow).")
+    parser.add_argument("--wandb-entity", type=str, default=C("wandb-entity", None),
+                        help="Weights & Biases entity (username or team/organization). Leave empty to use your default entity.")
+
+
+
     return parser
 
 def _apply_data_dir_defaults(args: argparse.Namespace) -> argparse.Namespace:
@@ -879,6 +898,7 @@ def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
         s = str(v).strip().lower()
         return s in ("1","true","t","yes","y","on")
     args.save_results = _str2bool(args.save_results)
+    args.wandb_enabled = _str2bool(args.wandb_enabled)
 
     return args
 
@@ -971,6 +991,39 @@ def _save_results(args: argparse.Namespace, app) -> None:
 def main(argv: Optional[List[str]] = None) -> None:
     """Script entry‑point compatible with both `python -m` and `poetry run`."""
     args = parse_cli(argv)
+ 
+    experiment_name = _derive_output_name(args)
+    # W&B setup (optional)
+    run = None
+    wandb_log = None
+    if args.wandb_enabled:
+        try:
+            import wandb  # installed by user
+        except ImportError as e:
+            raise ImportError("wandb is not installed, but --wandb-enabled was set to true.") from e
+        api_key_path: Path = args.wandb_api_key_path
+        if not api_key_path.exists():
+            raise FileNotFoundError(f"W&B API key file not found: {api_key_path}")
+        key = api_key_path.read_text(encoding="utf-8").strip()
+        if not key:
+            raise RuntimeError(f"W&B API key file is empty: {api_key_path}")
+        os.environ["WANDB_API_KEY"] = key
+        wandb.login(key=key, relogin=True)
+        run = wandb.init(
+            project=args.wandb_project,
+            entity=(args.wandb_entity if args.wandb_entity else None),
+            name=f"{args.wandb_experiment_name_prefix}{experiment_name}{args.wandb_experiment_name_suffix}",
+            config={
+                "timestep_granularity": args.timestep_granularity,
+                "max_explored_vertices": args.max_explored_vertices,
+                "number_threads": args.number_threads,
+                "max_delay_per_iteration": args.max_delay_per_iteration,
+                "seed": args.seed,
+                "max_time": args.max_time,
+            },
+        )
+        wandb_log = run.log
+
 
     app = Main(args.graph_path, args.sectors_path, args.flights_path,
                args.airports_path, args.airplanes_path,
@@ -981,7 +1034,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                args.max_time, args.verbosity)
     app.run()
 
-
+    if run is not None:
+        run.finish()
 
     # Save results if requested
     if args.save_results:
