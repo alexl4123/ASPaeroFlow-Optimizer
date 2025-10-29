@@ -116,7 +116,8 @@ class Main:
         capacity_management_enabled: Optional[bool],
         composite_sector_function: Optional[str],
         experiment_name: Optional[str],
-        wandb_log: Optional[Callable[[dict],None]] = None) -> None:
+        wandb_log: Optional[Callable[[dict],None]] = None,
+        optimizer = "ASP") -> None:
 
         self._graph_path: Optional[Path] = graph_path
         self._sectors_path: Optional[Path] = sectors_path
@@ -125,6 +126,8 @@ class Main:
         self._airplanes_path: Optional[Path] = airplanes_path
         self._airplane_flight_path: Optional[Path] = airplane_flight_path
         self._navaid_sector_path: Optional[Path] = navaid_sector_path
+
+        self._optimizer = optimizer
 
         self._wandb_log = wandb_log
 
@@ -417,28 +420,91 @@ class Main:
             sector_configs = []
 
             for model, sector_config_restore_dict in solutions:
-                if int(str(model.get_sector_config().arguments[0])) > 0:
-                    sector_configs.append((int(str(model.get_sector_config().arguments[0])), sector_config_restore_dict))
+                if self._optimizer == "ASP":
+                    if int(str(model.get_sector_config().arguments[0])) > 0:
+                        sector_configs.append((int(str(model.get_sector_config().arguments[0])), sector_config_restore_dict))
 
-                #for reroute in model.get_reroutes():
-                #    flight_id = int(str(reroute.arguments[0]))
-                #    flight_ids.append(flight_id)
+                    #for reroute in model.get_reroutes():
+                    #    flight_id = int(str(reroute.arguments[0]))
+                    #    flight_ids.append(flight_id)
 
-                for flight in model.get_sector_flights():
+                    for flight in model.get_sector_flights():
 
-                    flight_id = int(str(flight.arguments[0]))
-                    flight_ids[flight_id] = True
+                        flight_id = int(str(flight.arguments[0]))
+                        flight_ids[flight_id] = True
 
-                    all_sector_flights.append(flight)
+                        all_sector_flights.append(flight)
 
-                for flight in model.get_navpoint_flights():
+                    for flight in model.get_navpoint_flights():
 
-                    flight_id = int(str(flight.arguments[0]))
-                    flight_ids[flight_id] = True
+                        flight_id = int(str(flight.arguments[0]))
+                        flight_ids[flight_id] = True
 
 
-                    all_navpoint_flights.append(flight)
+                        all_navpoint_flights.append(flight)
 
+                else:
+                    new_flight_durations = {}
+                    current_config = model[0][2]
+                    sector_configs.append((current_config, sector_config_restore_dict))
+                    flight_paths = model[0][3]
+                    flight_path_dict = model[1]
+
+                    for flight_index, path_number in flight_paths:
+
+                        converted_instance_matrix[flight_index, :] = -1
+                        converted_navpoint_matrix[flight_index, :] = -1
+
+                        for navpoint, cur_time in flight_path_dict[flight_index][path_number]["navpoint_flight"]:
+                            #navpoint, cur_time = flight_path_dict[flight_index][path_number]["navpoint_flight"][step_index]
+                            converted_navpoint_matrix[flight_index, cur_time] = navpoint
+
+                        for sector, cur_time in flight_path_dict[flight_index][path_number]["sector_flight"][current_config]:
+                            #sector, cur_time = flight_path_dict[flight_index][path_number]["sector_flight"][step_index]
+                            converted_instance_matrix[flight_index, cur_time] = sector
+
+                            if flight_index not in new_flight_durations:
+                                new_flight_durations[flight_index] = {}
+                                new_flight_durations[flight_index]["min"] = cur_time
+                                new_flight_durations[flight_index]["max"] = cur_time
+                                new_flight_durations[flight_index]["duration"] = new_flight_durations[flight_index]["max"] - new_flight_durations[flight_index]["min"]
+
+                            if cur_time < new_flight_durations[flight_index]["min"]:
+                                new_flight_durations[flight_index]["min"] = cur_time
+
+                            if cur_time > new_flight_durations[flight_index]["max"]:
+                                new_flight_durations[flight_index]["max"] = cur_time
+
+                            new_flight_durations[flight_index]["duration"] = new_flight_durations[flight_index]["max"] - new_flight_durations[flight_index]["min"]
+
+
+
+                        for potentially_affected_flight_index in flight_path_dict[flight_index][path_number]["potential_flights_affected"].keys():
+ 
+                            converted_instance_matrix[potentially_affected_flight_index, :] = -1
+                            converted_navpoint_matrix[potentially_affected_flight_index, :] = -1
+
+                            for navpoint, cur_time in flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight_index]["navpoint_flight"]:
+                                #navpoint, cur_time = flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight_index]["navpoint_flight"][step_index]
+                                converted_navpoint_matrix[flight_index, cur_time] = navpoint
+
+                            for sector, cur_time in flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight_index]["sector_flight"][current_config]:
+                                #sector, cur_time = flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight_index]["sector_flight"][step_index]
+                                converted_instance_matrix[flight_index, cur_time] = sector
+
+                                if potentially_affected_flight_index not in new_flight_durations:
+                                    new_flight_durations[potentially_affected_flight_index] = {}
+                                    new_flight_durations[potentially_affected_flight_index]["min"] = cur_time
+                                    new_flight_durations[potentially_affected_flight_index]["max"] = cur_time
+                                    new_flight_durations[potentially_affected_flight_index]["duration"] = new_flight_durations[potentially_affected_flight_index]["max"] - new_flight_durations[potentially_affected_flight_index]["min"]
+
+                                if cur_time < new_flight_durations[potentially_affected_flight_index]["min"]:
+                                    new_flight_durations[potentially_affected_flight_index]["min"] = cur_time
+
+                                if cur_time > new_flight_durations[potentially_affected_flight_index]["max"]:
+                                    new_flight_durations[potentially_affected_flight_index]["max"] = cur_time
+
+                                new_flight_durations[potentially_affected_flight_index]["duration"] = new_flight_durations[potentially_affected_flight_index]["max"] - new_flight_durations[potentially_affected_flight_index]["min"]
 
             flight_ids = np.array(list(flight_ids.keys()), dtype=int)
 
@@ -469,69 +535,71 @@ class Main:
 
                     capacity_demand_diff_matrix = capacity_time_matrix - system_loads
 
-            flight_ids = np.array(flight_ids)
-            capacity_demand_diff_matrix = self.system_loads_computation_v2(converted_instance_matrix, fill_value, flight_ids, capacity_demand_diff_matrix)
+            if self._optimizer == "ASP":
 
-            converted_instance_matrix[flight_ids, :] = -1
-            converted_navpoint_matrix[flight_ids, :] = -1
+                flight_ids = np.array(flight_ids)
+                capacity_demand_diff_matrix = self.system_loads_computation_v2(converted_instance_matrix, fill_value, flight_ids, capacity_demand_diff_matrix)
 
-            new_flight_durations = {}
-            for flight in all_sector_flights:
-                flight_id = int(str(flight.arguments[0]))
-                position_id = int(str(flight.arguments[1]))
-                time_id = int(str(flight.arguments[2]))
+                converted_instance_matrix[flight_ids, :] = -1
+                converted_navpoint_matrix[flight_ids, :] = -1
 
-                if time_id >= converted_instance_matrix.shape[1]:
-                    #extra_col = -1 * np.ones((converted_instance_matrix.shape[0], 1), dtype=int)
-                    #converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+                new_flight_durations = {}
+                for flight in all_sector_flights:
+                    flight_id = int(str(flight.arguments[0]))
+                    position_id = int(str(flight.arguments[1]))
+                    time_id = int(str(flight.arguments[2]))
 
-                    number_new_cols = 1 * self._timestep_granularity
+                    if time_id >= converted_instance_matrix.shape[1]:
+                        #extra_col = -1 * np.ones((converted_instance_matrix.shape[0], 1), dtype=int)
+                        #converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
 
-                    # 0.) Handle Sector Assignments:
-                    new_cols = np.repeat(navaid_sector_time_assignment[:,[-1]], number_new_cols, axis=1)  # shape (N,k)
-                    navaid_sector_time_assignment = np.concatenate([navaid_sector_time_assignment, new_cols], axis=1)
-                    # 1.) Converted instance matrix
-                    extra_col = -1 * np.ones((converted_instance_matrix.shape[0], number_new_cols), dtype=int)
-                    converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+                        number_new_cols = 1 * self._timestep_granularity
 
-                    extra_col = -1 * np.ones((converted_navpoint_matrix.shape[0], number_new_cols), dtype=int)
-                    converted_navpoint_matrix = np.hstack((converted_navpoint_matrix, extra_col)) 
-                    
-                    # 2.) Create demand matrix (|R|x|T|)
-                    system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
-                    # 3.) Create capacity matrix (|R|x|T|)
-                    #capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, z = self.sector_capacity_factor)
-                    capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor, composite_sector_function=self.composite_sector_function)
-                    # 4.) Subtract demand from capacity (|R|x|T|)
-                    capacity_demand_diff_matrix = capacity_time_matrix - system_loads
-                    # 5.) Create capacity overload matrix
-                    capacity_overload_mask = capacity_demand_diff_matrix < 0
+                        # 0.) Handle Sector Assignments:
+                        new_cols = np.repeat(navaid_sector_time_assignment[:,[-1]], number_new_cols, axis=1)  # shape (N,k)
+                        navaid_sector_time_assignment = np.concatenate([navaid_sector_time_assignment, new_cols], axis=1)
+                        # 1.) Converted instance matrix
+                        extra_col = -1 * np.ones((converted_instance_matrix.shape[0], number_new_cols), dtype=int)
+                        converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
 
-                #print(f"converted_instance_matrix[{flight_id},{time_id}] = {position_id}")
-                converted_instance_matrix[flight_id, time_id] = position_id
+                        extra_col = -1 * np.ones((converted_navpoint_matrix.shape[0], number_new_cols), dtype=int)
+                        converted_navpoint_matrix = np.hstack((converted_navpoint_matrix, extra_col)) 
+                        
+                        # 2.) Create demand matrix (|R|x|T|)
+                        system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+                        # 3.) Create capacity matrix (|R|x|T|)
+                        #capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, z = self.sector_capacity_factor)
+                        capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor, composite_sector_function=self.composite_sector_function)
+                        # 4.) Subtract demand from capacity (|R|x|T|)
+                        capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+                        # 5.) Create capacity overload matrix
+                        capacity_overload_mask = capacity_demand_diff_matrix < 0
 
-                if flight_id not in new_flight_durations:
-                    new_flight_durations[flight_id] = {}
-                    new_flight_durations[flight_id]["min"] = time_id
-                    new_flight_durations[flight_id]["max"] = time_id
+                    #print(f"converted_instance_matrix[{flight_id},{time_id}] = {position_id}")
+                    converted_instance_matrix[flight_id, time_id] = position_id
+
+                    if flight_id not in new_flight_durations:
+                        new_flight_durations[flight_id] = {}
+                        new_flight_durations[flight_id]["min"] = time_id
+                        new_flight_durations[flight_id]["max"] = time_id
+                        new_flight_durations[flight_id]["duration"] = new_flight_durations[flight_id]["max"] - new_flight_durations[flight_id]["min"]
+
+                    if time_id < new_flight_durations[flight_id]["min"]:
+                        new_flight_durations[flight_id]["min"] = time_id
+
+                    if time_id > new_flight_durations[flight_id]["max"]:
+                        new_flight_durations[flight_id]["max"] = time_id
+
                     new_flight_durations[flight_id]["duration"] = new_flight_durations[flight_id]["max"] - new_flight_durations[flight_id]["min"]
 
-                if time_id < new_flight_durations[flight_id]["min"]:
-                    new_flight_durations[flight_id]["min"] = time_id
+                for navpoint_flight in all_navpoint_flights:
 
-                if time_id > new_flight_durations[flight_id]["max"]:
-                    new_flight_durations[flight_id]["max"] = time_id
-
-                new_flight_durations[flight_id]["duration"] = new_flight_durations[flight_id]["max"] - new_flight_durations[flight_id]["min"]
-
-            for navpoint_flight in all_navpoint_flights:
-
-                flight_id = int(str(navpoint_flight.arguments[0]))
-                navpoint_id = int(str(navpoint_flight.arguments[1]))
-                time_id = int(str(navpoint_flight.arguments[2]))
-                
-                #print(f"converted_navpoint_matrix[{flight_id},{time_id}] = {navpoint_id}")
-                converted_navpoint_matrix[flight_id, time_id] = navpoint_id
+                    flight_id = int(str(navpoint_flight.arguments[0]))
+                    navpoint_id = int(str(navpoint_flight.arguments[1]))
+                    time_id = int(str(navpoint_flight.arguments[2]))
+                    
+                    #print(f"converted_navpoint_matrix[{flight_id},{time_id}] = {navpoint_id}")
+                    converted_navpoint_matrix[flight_id, time_id] = navpoint_id
 
 
             # Rerun check if there are still things to solve:
@@ -854,6 +922,7 @@ class Main:
                                     self.number_capacity_management_configs,
                                     self.capacity_management_enabled,
                                     self.composite_sector_function,
+                                    self._optimizer
                                     )
 
         return job, rows_pool
@@ -1423,6 +1492,8 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
                         help="Weights & Biases project name (default: ASPaeroFlow).")
     parser.add_argument("--wandb-entity", type=str, default=C("wandb-entity", None),
                         help="Weights & Biases entity (username or team/organization). Leave empty to use your default entity.")
+    
+    parser.add_argument("--optimizer", type=str, default=C("optimizer","ASP"), help="Either ASP or Enumerate")
 
     return parser
 
@@ -1667,7 +1738,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                args.capacity_management_enabled,
                composite_sector_function,
                experiment_name,
-               wandb_log)
+               wandb_log,
+               args.optimizer)
     app.run()
 
     # Save results if requested
