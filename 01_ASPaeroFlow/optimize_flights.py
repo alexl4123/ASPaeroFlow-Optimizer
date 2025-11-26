@@ -23,6 +23,8 @@ import multiprocessing
 from more_itertools import set_partitions
 from itertools import islice
 from functools import partial
+from collections import deque
+
 
 LINEAR = "linear"
 TRIANGULAR = "triangular"
@@ -33,6 +35,7 @@ class OptimizeFlights:
     def __init__(self,
                  encoding, capacity, graph, airport_vertices,
                  problematic_flight_indices, 
+                 all_potentially_problematic_flight_indices,
                  converted_instance_matrix, converted_navpoint_matrix,
                  time_index, sector_index,
                  capacity_time_matrix, capacity_demand_diff_matrix,
@@ -76,6 +79,7 @@ class OptimizeFlights:
         self.planned_arrival_times = planned_arrival_times
         self.airplane_flight = airplane_flight
         self.problematic_flights = problematic_flights
+        self.all_potentially_problematic_flights = all_potentially_problematic_flight_indices
         self.navaid_sector_time_assignment = navaid_sector_time_assignment
         self.airplanes = airplanes
         self.nearest_neighbors_lookup = nearest_neighbors_lookup
@@ -425,7 +429,10 @@ class OptimizeFlights:
 
         # CONFIG = 0
         current_config = 0
-        sector_config_instance.append(f"config({current_config}).")
+
+        capacity_overload_mask = capacity_demand_diff_matrix < 0
+        number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
+
         sector_config_instance.append(f"config_number_sectors({current_config},{np.unique(self.navaid_sector_time_assignment[:,time_index]).size}).")
 
         for navpoint in needed_capacities_for_navpoint.keys():
@@ -440,15 +447,15 @@ class OptimizeFlights:
                 current_capacity = self.capacity_demand_diff_matrix[current_sector, current_time]
                 sector_capacity_instance.append(f"possible_sector_capacity({current_sector},{current_capacity},{current_time},{current_config}).")
 
+                if current_capacity < 0:
+                    number_of_conflicts -= abs(current_capacity)
+
+        sector_config_instance.append(f"config({current_config},{number_of_conflicts}).")
+
         # END CONFIG = 0
 
-        # TODO:
-        # 1.) INtegrate potentially affected flights
-        # 2.) Integrate for all sector configs
-        # 3.) Sort & get best local ones
-        # 4.) Write best local one to output
-
         if self._optimizer == "Enumerate":
+            # Brute-force enumeration (preliminary results: do not use)
             flight_path_config_list = []
             flight_path_config_list += self.evaluate_flights_for_sector_configuration(flight_path_dict, current_config, self.navaid_sector_time_assignment, self.capacity_demand_diff_matrix)
         #flight_path_config_list_tmp += self.evaluate_flights_for_sector_configuration_parallel(flight_path_dict, current_config, self.navaid_sector_time_assignment, self.capacity_demand_diff_matrix)
@@ -491,13 +498,21 @@ class OptimizeFlights:
                 original_capacity = capacity_time_matrix[composition_sectors,:].copy()
                 original_composition = self.navaid_sector_time_assignment[composition_navpoints,:].copy()
 
-                number_partitions = (number_configs) / 2
+                #number_partitions = (number_configs) / 2
+                number_partitions = number_configs
                 number_partitions = min(number_partitions, nontrivial_count)
 
-                number_compositions = (number_configs) - number_partitions
+                #number_compositions = (number_configs) - number_partitions
+                number_compositions = 0
 
-
-                parts = self.first_l_nontrivial_partitions(navpoints_in_sector, number_partitions)
+                #parts = self.first_l_nontrivial_partitions(navpoints_in_sector, number_partitions)
+                #parts = self.first_l_nontrivial_partitions(navpoints_in_sector, number_partitions)
+                #print(parts)
+                if self.verbosity > 1:
+                    print(f"----> NAVPOINTS IN SECTOR ({nontrivial_count}, {number_partitions}): {navpoints_in_sector}")
+                parts = self.partition_navpoints_connected(navpoints_in_sector, number_partitions)
+                if self.verbosity > 2:
+                    print(parts)
 
                 for partition in parts:
 
@@ -532,6 +547,16 @@ class OptimizeFlights:
 
                     # All flights that pass through any navpoint in the composite sector after time_index
                     tmp_flights = np.nonzero(np.isin(self.converted_navpoint_matrix[:,time_index:], navpoints_in_sector))[0]
+                    tmp_flights = np.array(list(set(tmp_flights)))
+
+                    # FILTER OUT PROBLEMATIC FLIGHTS (NOT CONSIDERED DUE TO POTENTIALLY ROUTED)
+                    tmp_tmp_flights = []
+                    for flight_index in tmp_flights:
+                        if flight_index not in self.all_potentially_problematic_flights:
+                            tmp_tmp_flights.append(flight_index)
+
+                    tmp_flights = np.array(tmp_tmp_flights)
+                    
                     triplets = self.time_matrix_to_triplets(self.converted_navpoint_matrix[tmp_flights,time_index:])
 
                     # FIX INDICES
@@ -571,6 +596,98 @@ class OptimizeFlights:
 
                     capacity_demand_diff_matrix = capacity_time_matrix - demand_matrix
 
+                    capacity_overload_mask = capacity_demand_diff_matrix < 0
+                    number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
+
+
+                    # COMPOSITION CONFIG 
+                    sector_config_instance.append(f"config_number_sectors({current_config},{np.unique(self.navaid_sector_time_assignment[:,time_index]).size}).")
+
+                    for navpoint in needed_capacities_for_navpoint.keys():
+                        from_time = needed_capacities_for_navpoint[navpoint][0]
+                        until_time = needed_capacities_for_navpoint[navpoint][1]
+
+                        for current_time in range(from_time, until_time + 1):
+                            #
+                            current_sector = self.navaid_sector_time_assignment[navpoint, current_time]
+                            navpoint_sector_assignment_instance.append(f"possible_assignment({navpoint},{current_sector},{current_time},{current_config}).")
+
+                            current_capacity = capacity_demand_diff_matrix[current_sector, current_time]
+                            sector_capacity_instance.append(f"possible_sector_capacity({current_sector},{current_capacity},{current_time},{current_config}).")
+                            
+                            if current_capacity < 0:
+                                number_of_conflicts -= abs(current_capacity)
+
+                    sector_config_instance.append(f"config({current_config},{number_of_conflicts}).")
+
+                    # ---------------------------------------------------
+                    if self._optimizer == "Enumerate":
+                        flight_path_config_list += self.evaluate_flights_for_sector_configuration(flight_path_dict, current_config, self.navaid_sector_time_assignment, capacity_demand_diff_matrix)
+                    # ---------------------------------------------------
+                    # COMPOSITION CONFIG
+
+                    config_restore_dict[current_config] = {}
+                    config_restore_dict[current_config]["composition_navpoints"] = composition_navpoints.copy()
+                    config_restore_dict[current_config]["composition_sectors"] = composition_sectors.copy()
+                    config_restore_dict[current_config]["demand"] = demand_matrix[composition_sectors,:].copy()
+                    config_restore_dict[current_config]["capacity"] = capacity_time_matrix[composition_sectors,:].copy()
+                    config_restore_dict[current_config]["composition"] = self.navaid_sector_time_assignment[composition_navpoints,:].copy()
+                    config_restore_dict[current_config]["time_index"] = time_index
+                    config_restore_dict[current_config]["sector_index"] = sector_index
+
+                    # RESTORE ORIGINAL CONFIG:
+                    demand_matrix[composition_sectors,:] = original_demand.copy()
+                    capacity_time_matrix[composition_sectors,:] = original_capacity.copy()
+                    self.navaid_sector_time_assignment[composition_navpoints, :] = original_composition.copy()
+
+                    current_config += 1
+
+
+            else:
+                #number_compositions = number_configs
+                number_compositions = 0
+
+
+            composition_number = 0
+
+            if number_compositions > 0:
+                for neighbor in neighbors:
+
+                    if neighbor in self.airport_vertices:
+                        # No Composition with Airports
+                        continue
+
+                    composition_navpoints = [neighbor] + navpoints_in_sector
+                    composition_sectors = self.navaid_sector_time_assignment[composition_navpoints, time_index]
+
+                    original_demand = demand_matrix[composition_sectors,:].copy()
+                    original_capacity = capacity_time_matrix[composition_sectors,:].copy()
+                    original_composition = self.navaid_sector_time_assignment[composition_navpoints,:].copy()
+                    #original_sector_navpoints = navpoints_in_sector
+
+
+                    self.navaid_sector_time_assignment[composition_navpoints, time_index :] = sector_index
+                    tmp_navaid_sector_time_assignment = np.zeros((len(composition_navpoints),self.navaid_sector_time_assignment.shape[1]))
+
+                    tmp_atomic_capacities = []
+                    index = 0
+                    for navaid in composition_navpoints:
+                        tmp_atomic_capacities.append([index,int(self.capacity[navaid,1])])
+                        index += 1
+
+                    tmp_atomic_capacities = np.array(tmp_atomic_capacities)
+
+                    composite_capacity_time_matrix = OptimizeFlights.capacity_time_matrix(tmp_atomic_capacities, self.navaid_sector_time_assignment.shape[1], self.timestep_granularity, tmp_navaid_sector_time_assignment, z = self.sector_capacity_factor, composite_sector_function=self.composite_sector_function)
+
+                    capacity_time_matrix[composition_sectors,time_index:] = 0
+                    capacity_time_matrix[sector_index,time_index:] = composite_capacity_time_matrix[0,time_index:]
+
+                    aggregated_demand = demand_matrix[composition_sectors, time_index:].sum(axis=0)
+                    demand_matrix[composition_sectors, time_index:] = 0
+                    demand_matrix[sector_index, time_index:] = aggregated_demand
+
+                    capacity_demand_diff_matrix = capacity_time_matrix - demand_matrix
+
                     # COMPOSITION CONFIG 
                     sector_config_instance.append(f"config({current_config}).")
                     sector_config_instance.append(f"config_number_sectors({current_config},{np.unique(self.navaid_sector_time_assignment[:,time_index]).size}).")
@@ -591,6 +708,7 @@ class OptimizeFlights:
                     if self._optimizer == "Enumerate":
                         flight_path_config_list += self.evaluate_flights_for_sector_configuration(flight_path_dict, current_config, self.navaid_sector_time_assignment, capacity_demand_diff_matrix)
                     # ---------------------------------------------------
+
                     # COMPOSITION CONFIG
 
                     config_restore_dict[current_config] = {}
@@ -607,94 +725,11 @@ class OptimizeFlights:
                     capacity_time_matrix[composition_sectors,:] = original_capacity
                     self.navaid_sector_time_assignment[composition_navpoints, :] = original_composition
 
+                    composition_number += 1
                     current_config += 1
-
-
-            else:
-                number_compositions = number_configs
-
-
-            composition_number = 0
-
-            for neighbor in neighbors:
-
-                if neighbor in self.airport_vertices:
-                    # No Composition with Airports
-                    continue
-
-                composition_navpoints = [neighbor] + navpoints_in_sector
-                composition_sectors = self.navaid_sector_time_assignment[composition_navpoints, time_index]
-
-                original_demand = demand_matrix[composition_sectors,:].copy()
-                original_capacity = capacity_time_matrix[composition_sectors,:].copy()
-                original_composition = self.navaid_sector_time_assignment[composition_navpoints,:].copy()
-                #original_sector_navpoints = navpoints_in_sector
-
-
-                self.navaid_sector_time_assignment[composition_navpoints, time_index :] = sector_index
-                tmp_navaid_sector_time_assignment = np.zeros((len(composition_navpoints),self.navaid_sector_time_assignment.shape[1]))
-
-                tmp_atomic_capacities = []
-                index = 0
-                for navaid in composition_navpoints:
-                    tmp_atomic_capacities.append([index,int(self.capacity[navaid,1])])
-                    index += 1
-
-                tmp_atomic_capacities = np.array(tmp_atomic_capacities)
-
-                composite_capacity_time_matrix = OptimizeFlights.capacity_time_matrix(tmp_atomic_capacities, self.navaid_sector_time_assignment.shape[1], self.timestep_granularity, tmp_navaid_sector_time_assignment, z = self.sector_capacity_factor, composite_sector_function=self.composite_sector_function)
-
-                capacity_time_matrix[composition_sectors,time_index:] = 0
-                capacity_time_matrix[sector_index,time_index:] = composite_capacity_time_matrix[0,time_index:]
-
-                aggregated_demand = demand_matrix[composition_sectors, time_index:].sum(axis=0)
-                demand_matrix[composition_sectors, time_index:] = 0
-                demand_matrix[sector_index, time_index:] = aggregated_demand
-
-                capacity_demand_diff_matrix = capacity_time_matrix - demand_matrix
-
-                # COMPOSITION CONFIG 
-                sector_config_instance.append(f"config({current_config}).")
-                sector_config_instance.append(f"config_number_sectors({current_config},{np.unique(self.navaid_sector_time_assignment[:,time_index]).size}).")
-
-                for navpoint in needed_capacities_for_navpoint.keys():
-                    from_time = needed_capacities_for_navpoint[navpoint][0]
-                    until_time = needed_capacities_for_navpoint[navpoint][1]
-
-                    for current_time in range(from_time, until_time + 1):
-                        #
-                        current_sector = self.navaid_sector_time_assignment[navpoint, current_time]
-                        navpoint_sector_assignment_instance.append(f"possible_assignment({navpoint},{current_sector},{current_time},{current_config}).")
-
-                        current_capacity = capacity_demand_diff_matrix[current_sector, current_time]
-                        sector_capacity_instance.append(f"possible_sector_capacity({current_sector},{current_capacity},{current_time},{current_config}).")
-
-                # ---------------------------------------------------
-                if self._optimizer == "Enumerate":
-                    flight_path_config_list += self.evaluate_flights_for_sector_configuration(flight_path_dict, current_config, self.navaid_sector_time_assignment, capacity_demand_diff_matrix)
-                # ---------------------------------------------------
-
-                # COMPOSITION CONFIG
-
-                config_restore_dict[current_config] = {}
-                config_restore_dict[current_config]["composition_navpoints"] = composition_navpoints.copy()
-                config_restore_dict[current_config]["composition_sectors"] = composition_sectors.copy()
-                config_restore_dict[current_config]["demand"] = demand_matrix[composition_sectors,:].copy()
-                config_restore_dict[current_config]["capacity"] = capacity_time_matrix[composition_sectors,:].copy()
-                config_restore_dict[current_config]["composition"] = self.navaid_sector_time_assignment[composition_navpoints,:].copy()
-                config_restore_dict[current_config]["time_index"] = time_index
-                config_restore_dict[current_config]["sector_index"] = sector_index
-
-                # RESTORE ORIGINAL CONFIG:
-                demand_matrix[composition_sectors,:] = original_demand
-                capacity_time_matrix[composition_sectors,:] = original_capacity
-                self.navaid_sector_time_assignment[composition_navpoints, :] = original_composition
-
-                composition_number += 1
-                current_config += 1
-                if composition_number >= number_compositions:
-                    # MORE THAN MAX COMPOSITIONS!
-                    break
+                    if composition_number >= number_compositions:
+                        # MORE THAN MAX COMPOSITIONS!
+                        break
 
         # -----------------------------------------------------------
 
@@ -746,6 +781,9 @@ class OptimizeFlights:
         #    quit()
 
         encoding = self.encoding
+
+        if self.verbosity == 3:
+            open(f"20251126_test_instance_{additional_time_increase}.lp","w").write(instance)
         
         if self.verbosity > 3:
             open(f"20251021_test_instance_{additional_time_increase}.lp","w").write(instance)
@@ -907,6 +945,122 @@ class OptimizeFlights:
              configurations.append(list(zip(flights, combo)))
 
         return configurations
+    
+    def partition_navpoints_connected(self, navpoints, number_partitions):
+        # Partition navpoints in approximately equally sized connected subgraphs
+        # Induced subgraph on the given navpoints
+        G_sub = self.networkx_graph.subgraph(navpoints).copy()
+
+        # Connected components of induced subgraph
+        components = [set(c) for c in nx.connected_components(G_sub)]
+
+
+        def split_component_into_k(G_comp, nodes, k):
+            """
+            Split a (connected) component G_comp induced by 'nodes' into k
+            connected parts via seeded multi-source BFS.
+
+            Returns a list of sets of nodes; each set is connected in G_comp.
+            """
+            nodes = list(nodes)
+            n = len(nodes)
+            if k <= 1 or n <= 1:
+                return [set(nodes)]
+
+            # Never ask for more parts than nodes
+            k = min(k, n)
+
+            # --- choose seeds using a greedy "farthest-point" heuristic ---
+            seeds = []
+            # first seed: arbitrary
+            seeds.append(nodes[0])
+
+            # distance-to-nearest-seed map
+            dist_to_nearest = {u: float("inf") for u in nodes}
+            lengths = nx.single_source_shortest_path_length(G_comp, seeds[0])
+            for u in nodes:
+                dist_to_nearest[u] = min(dist_to_nearest[u], lengths.get(u, float("inf")))
+
+            while len(seeds) < k:
+                # pick node farthest from any already chosen seed
+                candidate = max(nodes, key=lambda u: dist_to_nearest[u])
+                if candidate in seeds:
+                    # pathological case: all distances 0 -> just pick any unused node
+                    for u in nodes:
+                        if u not in seeds:
+                            candidate = u
+                            break
+                seeds.append(candidate)
+                lengths = nx.single_source_shortest_path_length(G_comp, candidate)
+                for u in nodes:
+                    d = lengths.get(u, float("inf"))
+                    if d < dist_to_nearest[u]:
+                        dist_to_nearest[u] = d
+
+            # --- multi-source BFS growth from all seeds at once ---
+            owner = {}
+            q = deque()
+            for cid, seed in enumerate(seeds):
+                owner[seed] = cid
+                q.append(seed)
+
+            while q:
+                v = q.popleft()
+                cid = owner[v]
+                for nbr in G_comp.neighbors(v):
+                    if nbr in owner:
+                        continue
+                    owner[nbr] = cid
+                    q.append(nbr)
+
+            # Build clusters from ownership
+            clusters = [set() for _ in range(k)]
+            for u, cid in owner.items():
+                clusters[cid].add(u)
+
+            # In a connected component every node should have an owner; be defensive though.
+            unassigned = set(nodes) - set(owner.keys())
+            if unassigned:
+                # If something slipped through, assign to nearest seed
+                seed_dists = {
+                    seed: nx.single_source_shortest_path_length(G_comp, seed)
+                    for seed in seeds
+                }
+                for u in unassigned:
+                    best_cid = None
+                    best_dist = float("inf")
+                    for cid, seed in enumerate(seeds):
+                        d = seed_dists[seed].get(u, float("inf"))
+                        if d < best_dist:
+                            best_dist = d
+                            best_cid = cid
+                    if best_cid is None:
+                        # totally isolated node (should not happen); put into smallest cluster
+                        best_cid = min(range(k), key=lambda i: len(clusters[i]))
+                    clusters[best_cid].add(u)
+
+            # Remove any empty clusters (only possible if k > |nodes|, which we prevented)
+            clusters = [c for c in clusters if c]
+
+            return clusters
+        
+        partition_sizes = [i+2 for i in range(number_partitions)]
+
+        # --- actually partition each component and collect all parts ---
+        partitions = []
+        component = components[0]
+        for k in partition_sizes:
+
+            if k > len(navpoints):
+                break
+            
+            G_comp = G_sub.subgraph(component).copy()
+            comp_parts = split_component_into_k(G_comp, component, k)
+
+            tmp_parts = [tuple(part) for part in comp_parts]
+            partitions.append(tuple(tmp_parts))
+        
+        return partitions
     
     def first_l_nontrivial_partitions(self, items, l):
         l = int(l)

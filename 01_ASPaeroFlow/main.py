@@ -331,6 +331,8 @@ class Main:
                 "total_delay": int(0), # FIRST ONE
             })
 
+        last_time_bucket_updated = 0
+
         while np.any(capacity_overload_mask, where=True):
             if self.verbosity > 0:
                 print(f"<ITER:{iteration}><REMAINING ISSUES:{str(number_of_conflicts)}>")
@@ -379,6 +381,8 @@ class Main:
             all_jobs = []
             all_candidates = {}
             for time_index, sector_index in time_bucket_tuples:
+            
+                time_bucket_updated = time_index
 
                 #print(capacity_demand_diff_matrix[sector_index, time_index])
                 
@@ -514,6 +518,11 @@ class Main:
 
                 sector_config_number, sector_config_restore_dict = sector_configs[0]
 
+                if self.verbosity > 2:
+                    print("")
+                    print(sector_config_number)
+                    print("")
+
                 if sector_config_number != 0:
 
                     tmp_composition_navpoints = sector_config_restore_dict[sector_config_number]["composition_navpoints"]
@@ -600,6 +609,14 @@ class Main:
                     
                     #print(f"converted_navpoint_matrix[{flight_id},{time_id}] = {navpoint_id}")
                     converted_navpoint_matrix[flight_id, time_id] = navpoint_id
+
+
+
+            if time_bucket_updated > last_time_bucket_updated + self._timestep_granularity and False:
+                # TODO MERGE SECTORS:
+
+                print("TODO: MERGE SECTORS")
+                last_time_bucket_updated = time_bucket_updated
 
 
             # Rerun check if there are still things to solve:
@@ -906,7 +923,9 @@ class Main:
         #np.testing.assert_array_equal(capacity_demand_diff_matrix_tmp, capacity_demand_diff_matrix_cpy_2)
 
         job = (self.encoding, self.sectors, self.graph, self.airports,
-                                    problematic_flight_indices, converted_instance_matrix, converted_navpoint_matrix,
+                                    problematic_flight_indices, 
+                                    all_potentially_problematic_flight_indices,
+                                    converted_instance_matrix, converted_navpoint_matrix,
                                     time_index,
                                     sector_index, capacity_time_matrix, capacity_demand_diff_matrix_cpy_2,
                                     additional_time_increase,

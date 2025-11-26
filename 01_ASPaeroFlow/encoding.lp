@@ -10,7 +10,7 @@ all_flightID(ID) :- sector_flight(ID,_,_).
 all_flightID(ID) :- navpoint_flight(ID,_,_).
 
 % GUESSES:
-1{chosen_config(CONFIG):config(CONFIG)}1.
+1{chosen_config(CONFIG):config(CONFIG,_)}1.
 1{chosen_path(ID,P):paths(ID,P)}1 :- flightID(ID).
 
 reroute(ID) :- flightID(ID), not chosen_path(ID,0).
@@ -63,6 +63,7 @@ arrivalDelay(ID,Y-T) :- chosen_path(ID,P), plannedArrivalTime(ID,T), actualArriv
 % ------------------------------------------------------------------------------
 % PRIMARY WEAK CONSTRAINT:
 :~ overload(X,T,OVER). [OVER@10,X,T]
+:~ chosen_config(CONFIG), config(CONFIG,TOTAL_OVER). [TOTAL_OVER@10,CONFIG,CONFIG,CONFIG]
 % SECONDARY WEAK CONSTRAINT:
 :~ arrivalDelay(ID,DIFF). [DIFF@9,ID]
 % TERTIARY WEAK CONSTRAINT:
@@ -86,7 +87,7 @@ arrivalDelay(ID,Y-T) :- chosen_path(ID,P), plannedArrivalTime(ID,T), actualArriv
 %#show arrivalDelay/2.
 %#show time/1.
 %#show path/2.
-%#show chosen_config/1.
+#show chosen_config/1.
 #show chosen_path/2.
 %#show sector_flight/3.
 %#show tmp_output/3.
