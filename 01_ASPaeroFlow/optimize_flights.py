@@ -511,14 +511,15 @@ class OptimizeFlights:
                 if self.verbosity > 1:
                     print(f"----> NAVPOINTS IN SECTOR ({nontrivial_count}, {number_partitions}): {navpoints_in_sector}")
                 parts = self.partition_navpoints_connected(navpoints_in_sector, number_partitions)
-                if self.verbosity > 2:
-                    print(parts)
+                #if self.verbosity > 2:
+                #    print(parts)
 
                 for partition in parts:
 
                     
                     capacity_time_matrix[composition_sectors,time_index:] = 0
                     partition_sectors = []
+                    all_partition_navpoints = []
 
                     for partition_navpoints in partition:
 
@@ -529,7 +530,9 @@ class OptimizeFlights:
 
                         partition_sectors.append(cur_sector_index)
 
+                        all_partition_navpoints += partition_navpoints
                         partition_navpoints = np.array(partition_navpoints)
+
 
                         self.navaid_sector_time_assignment[partition_navpoints, time_index :] = cur_sector_index
                         tmp_navaid_sector_time_assignment = np.zeros((len(partition_navpoints),self.navaid_sector_time_assignment.shape[1]))
@@ -587,7 +590,7 @@ class OptimizeFlights:
 
                     airplane_flight_mockup = np.array(airplane_flight_mockup)
 
-                    converted_instance_matrix, _ = OptimizeFlights.instance_to_matrix_vectorized(triplets, airplane_flight_mockup, self.navaid_sector_time_assignment.shape[1], self.timestep_granularity, self.navaid_sector_time_assignment)
+                    converted_instance_matrix, _ = OptimizeFlights.instance_to_matrix(triplets, airplane_flight_mockup, self.navaid_sector_time_assignment.shape[1], self.timestep_granularity, self.navaid_sector_time_assignment)
                     system_loads_tmp = OptimizeFlights.bucket_histogram(converted_instance_matrix, None, self.capacity_time_matrix.shape[0], converted_instance_matrix.shape[1], self.timestep_granularity)
 
                     partition_sectors = np.array(partition_sectors)
@@ -626,18 +629,26 @@ class OptimizeFlights:
                     # ---------------------------------------------------
                     # COMPOSITION CONFIG
 
+                    #print(f"COMP:{composition_sectors}::PART:{partition_sectors}")
+
                     config_restore_dict[current_config] = {}
-                    config_restore_dict[current_config]["composition_navpoints"] = composition_navpoints.copy()
-                    config_restore_dict[current_config]["composition_sectors"] = composition_sectors.copy()
-                    config_restore_dict[current_config]["demand"] = demand_matrix[composition_sectors,:].copy()
-                    config_restore_dict[current_config]["capacity"] = capacity_time_matrix[composition_sectors,:].copy()
-                    config_restore_dict[current_config]["composition"] = self.navaid_sector_time_assignment[composition_navpoints,:].copy()
+                    config_restore_dict[current_config]["composition_navpoints"] = all_partition_navpoints.copy()
+                    config_restore_dict[current_config]["composition_sectors"] = partition_sectors.copy()
+                    config_restore_dict[current_config]["affected_flights"] = tmp_flights.copy()
+                    config_restore_dict[current_config]["composition"] = self.navaid_sector_time_assignment[all_partition_navpoints,:].copy()
+
+                    config_restore_dict[current_config]["demand"] = demand_matrix[partition_sectors,:].copy()
+                    config_restore_dict[current_config]["capacity"] = capacity_time_matrix[partition_sectors,:].copy()
                     config_restore_dict[current_config]["time_index"] = time_index
                     config_restore_dict[current_config]["sector_index"] = sector_index
 
                     # RESTORE ORIGINAL CONFIG:
+                    demand_matrix[partition_sectors,:] = 0
                     demand_matrix[composition_sectors,:] = original_demand.copy()
+
+                    capacity_time_matrix[partition_sectors,:] = 0
                     capacity_time_matrix[composition_sectors,:] = original_capacity.copy()
+
                     self.navaid_sector_time_assignment[composition_navpoints, :] = original_composition.copy()
 
                     current_config += 1
@@ -721,8 +732,12 @@ class OptimizeFlights:
                     config_restore_dict[current_config]["sector_index"] = sector_index
 
                     # RESTORE ORIGINAL CONFIG:
+                    demand_matrix[partition_sectors,:] = 0
                     demand_matrix[composition_sectors,:] = original_demand
+
+                    capacity_time_matrix[partition_sectors,:] = 0
                     capacity_time_matrix[composition_sectors,:] = original_capacity
+
                     self.navaid_sector_time_assignment[composition_navpoints, :] = original_composition
 
                     composition_number += 1
@@ -946,6 +961,97 @@ class OptimizeFlights:
 
         return configurations
     
+
+    def split_component_into_k(self, G_comp, nodes, k):
+        """
+        Split a (connected) component G_comp induced by 'nodes' into k
+        connected parts via seeded multi-source BFS.
+
+        Returns a list of sets of nodes; each set is connected in G_comp.
+        """
+        nodes = list(nodes)
+        n = len(nodes)
+        if k <= 1 or n <= 1:
+            return [set(nodes)]
+
+        # Never ask for more parts than nodes
+        k = min(k, n)
+
+        # --- choose seeds using a greedy "farthest-point" heuristic ---
+        seeds = []
+        # first seed: arbitrary
+        seeds.append(nodes[0])
+
+        # distance-to-nearest-seed map
+        dist_to_nearest = {u: float("inf") for u in nodes}
+        lengths = nx.single_source_shortest_path_length(G_comp, seeds[0])
+        for u in nodes:
+            dist_to_nearest[u] = min(dist_to_nearest[u], lengths.get(u, float("inf")))
+
+        while len(seeds) < k:
+            # pick node farthest from any already chosen seed
+            candidate = max(nodes, key=lambda u: dist_to_nearest[u])
+            if candidate in seeds:
+                # pathological case: all distances 0 -> just pick any unused node
+                for u in nodes:
+                    if u not in seeds:
+                        candidate = u
+                        break
+            seeds.append(candidate)
+            lengths = nx.single_source_shortest_path_length(G_comp, candidate)
+            for u in nodes:
+                d = lengths.get(u, float("inf"))
+                if d < dist_to_nearest[u]:
+                    dist_to_nearest[u] = d
+
+        # --- multi-source BFS growth from all seeds at once ---
+        owner = {}
+        q = deque()
+        for cid, seed in enumerate(seeds):
+            owner[seed] = cid
+            q.append(seed)
+
+        while q:
+            v = q.popleft()
+            cid = owner[v]
+            for nbr in G_comp.neighbors(v):
+                if nbr in owner:
+                    continue
+                owner[nbr] = cid
+                q.append(nbr)
+
+        # Build clusters from ownership
+        clusters = [set() for _ in range(k)]
+        for u, cid in owner.items():
+            clusters[cid].add(u)
+
+        # In a connected component every node should have an owner; be defensive though.
+        unassigned = set(nodes) - set(owner.keys())
+        if unassigned:
+            # If something slipped through, assign to nearest seed
+            seed_dists = {
+                seed: nx.single_source_shortest_path_length(G_comp, seed)
+                for seed in seeds
+            }
+            for u in unassigned:
+                best_cid = None
+                best_dist = float("inf")
+                for cid, seed in enumerate(seeds):
+                    d = seed_dists[seed].get(u, float("inf"))
+                    if d < best_dist:
+                        best_dist = d
+                        best_cid = cid
+                if best_cid is None:
+                    # totally isolated node (should not happen); put into smallest cluster
+                    best_cid = min(range(k), key=lambda i: len(clusters[i]))
+                clusters[best_cid].add(u)
+
+        # Remove any empty clusters (only possible if k > |nodes|, which we prevented)
+        clusters = [c for c in clusters if c]
+
+        return clusters
+
+    
     def partition_navpoints_connected(self, navpoints, number_partitions):
         # Partition navpoints in approximately equally sized connected subgraphs
         # Induced subgraph on the given navpoints
@@ -954,111 +1060,58 @@ class OptimizeFlights:
         # Connected components of induced subgraph
         components = [set(c) for c in nx.connected_components(G_sub)]
 
-
-        def split_component_into_k(G_comp, nodes, k):
-            """
-            Split a (connected) component G_comp induced by 'nodes' into k
-            connected parts via seeded multi-source BFS.
-
-            Returns a list of sets of nodes; each set is connected in G_comp.
-            """
-            nodes = list(nodes)
-            n = len(nodes)
-            if k <= 1 or n <= 1:
-                return [set(nodes)]
-
-            # Never ask for more parts than nodes
-            k = min(k, n)
-
-            # --- choose seeds using a greedy "farthest-point" heuristic ---
-            seeds = []
-            # first seed: arbitrary
-            seeds.append(nodes[0])
-
-            # distance-to-nearest-seed map
-            dist_to_nearest = {u: float("inf") for u in nodes}
-            lengths = nx.single_source_shortest_path_length(G_comp, seeds[0])
-            for u in nodes:
-                dist_to_nearest[u] = min(dist_to_nearest[u], lengths.get(u, float("inf")))
-
-            while len(seeds) < k:
-                # pick node farthest from any already chosen seed
-                candidate = max(nodes, key=lambda u: dist_to_nearest[u])
-                if candidate in seeds:
-                    # pathological case: all distances 0 -> just pick any unused node
-                    for u in nodes:
-                        if u not in seeds:
-                            candidate = u
-                            break
-                seeds.append(candidate)
-                lengths = nx.single_source_shortest_path_length(G_comp, candidate)
-                for u in nodes:
-                    d = lengths.get(u, float("inf"))
-                    if d < dist_to_nearest[u]:
-                        dist_to_nearest[u] = d
-
-            # --- multi-source BFS growth from all seeds at once ---
-            owner = {}
-            q = deque()
-            for cid, seed in enumerate(seeds):
-                owner[seed] = cid
-                q.append(seed)
-
-            while q:
-                v = q.popleft()
-                cid = owner[v]
-                for nbr in G_comp.neighbors(v):
-                    if nbr in owner:
-                        continue
-                    owner[nbr] = cid
-                    q.append(nbr)
-
-            # Build clusters from ownership
-            clusters = [set() for _ in range(k)]
-            for u, cid in owner.items():
-                clusters[cid].add(u)
-
-            # In a connected component every node should have an owner; be defensive though.
-            unassigned = set(nodes) - set(owner.keys())
-            if unassigned:
-                # If something slipped through, assign to nearest seed
-                seed_dists = {
-                    seed: nx.single_source_shortest_path_length(G_comp, seed)
-                    for seed in seeds
-                }
-                for u in unassigned:
-                    best_cid = None
-                    best_dist = float("inf")
-                    for cid, seed in enumerate(seeds):
-                        d = seed_dists[seed].get(u, float("inf"))
-                        if d < best_dist:
-                            best_dist = d
-                            best_cid = cid
-                    if best_cid is None:
-                        # totally isolated node (should not happen); put into smallest cluster
-                        best_cid = min(range(k), key=lambda i: len(clusters[i]))
-                    clusters[best_cid].add(u)
-
-            # Remove any empty clusters (only possible if k > |nodes|, which we prevented)
-            clusters = [c for c in clusters if c]
-
-            return clusters
-        
         partition_sizes = [i+2 for i in range(number_partitions)]
 
         # --- actually partition each component and collect all parts ---
         partitions = []
-        component = components[0]
         for k in partition_sizes:
 
             if k > len(navpoints):
                 break
-            
-            G_comp = G_sub.subgraph(component).copy()
-            comp_parts = split_component_into_k(G_comp, component, k)
 
-            tmp_parts = [tuple(part) for part in comp_parts]
-            partitions.append(tuple(tmp_parts))
+
+            if k <= len(components):
+                total_len = 0 
+                for comp in components:
+                    total_len += len(comp)
+
+
+                new_size = math.ceil(total_len / k)
+
+                comp_parts = []
+
+                component_index = 0
+
+                for i0 in range(k):
+                    
+                    sector = []
+                    while len(sector) < new_size:
+
+                        if component_index >= len(components):
+                            break
+
+                        for vertex in components[component_index]:
+                            sector.append(vertex)
+
+                        component_index += 1
+
+                    comp_parts.append(sector)
+
+                tmp_parts = [tuple(comp_part) for comp_part in comp_parts]
+                partitions.append(tuple(tmp_parts))
+
+            else: # k > len(components)
+
+                all_comps = []
+                for component in components:
+                    for vertex in component:
+                        all_comps.append(vertex)
+                
+                G_comp = G_sub.subgraph(all_comps).copy()
+                comp_parts = self.split_component_into_k(G_comp, all_comps, k)
+
+                tmp_parts = [tuple(part) for part in comp_parts]
+                partitions.append(tuple(tmp_parts))
         
         return partitions
     
@@ -1891,6 +1944,19 @@ class OptimizeFlights:
 
             times = t[start:end]
             secs  = sec[start:end]
+
+            if flight_index == 235:
+                print("FLIGHT 235:")
+                print(times)
+                print(secs)
+                print("")
+
+            if flight_index == 331:
+                print("FLIGHT 331:")
+                print(times)
+                print(secs)
+                print("")
+
             if times.size == 0:
                 continue
 
@@ -1924,12 +1990,108 @@ class OptimizeFlights:
             used_cols = np.any(out != fill_value, axis=0)
             if used_cols.any():
                 last_used = np.flatnonzero(used_cols)[-1] + 1
-                out = out[:, :last_used]
-            else:
-                out = out[:, :1]  # keep at least one column
-
+                out = outconverted_navpoint_matrix
         return out, planned_arrival_times
 
+    @classmethod
+    def instance_to_matrix(cls,
+                            flights: np.ndarray,
+                            airplane_flight: np.ndarray,
+                            max_time: int,
+                            time_granularity: int,
+                            navaid_sector_time_assignment: np.ndarray,
+                            *,
+                            fill_value: int = -1,
+                            compress: bool = False):
+
+        vals = flights[:, 1]
+        cols = flights[:, 2].astype(int)
 
 
+        # --- output matrix shape (airplane_id rows, time columns)
+        n_rows = int(airplane_flight[:, 1].max()) + 1
+        out = np.full((n_rows, int(max_time)), fill_value, dtype=np.int64)
+       
+        flight_ids = flights[:,0]
+        flight_ids = np.unique(flight_ids)
 
+        planned_arrival_times = {}
+
+        for flight_id in flight_ids:
+
+            #airplane_id = (airplane_flight[airplane_flight[:,1] == flight_id])[0,0]
+
+            current_flight = flights[flights[:,0] == flight_id]
+
+            for flight_hop_index in range(current_flight.shape[0]):
+
+                navaid = current_flight[flight_hop_index,1]
+                time = current_flight[flight_hop_index,2]
+                #sector = (navaid_sector[navaid_sector[:,0] == navaid])[0,1]
+
+                if flight_hop_index == 0:
+                    sector = navaid_sector_time_assignment[navaid,time]
+                    out[flight_id,time] = sector
+                else:
+
+                    prev_navaid = current_flight[flight_hop_index - 1,1]
+                    prev_time = current_flight[flight_hop_index - 1,2]
+
+                    for time_index in range(1, time-prev_time + 1):
+
+                        if time_index <= math.floor((time - prev_time)/2):
+                            prev_sector = navaid_sector_time_assignment[prev_navaid,prev_time + time_index]
+                            out[flight_id,prev_time + time_index] = prev_sector
+
+                        else:
+                            sector = navaid_sector_time_assignment[navaid,prev_time + time_index]
+                            out[flight_id,prev_time + time_index] = sector
+
+                if flight_id not in planned_arrival_times:
+                    planned_arrival_times[flight_id] = time
+                elif planned_arrival_times[flight_id] < time:
+                    planned_arrival_times[flight_id] = time
+
+        #np.savetxt("20250826_converted_instance.csv", out, delimiter=",",fmt="%i")
+
+        return out, planned_arrival_times
+ 
+
+    @classmethod
+    def instance_computation_after_sector_change(cls,
+                            affected_flights_indices,
+                            converted_navpoint_matrix,
+                            converted_instance_matrix,
+                            navaid_sector_time_assignment: np.ndarray):
+        
+
+        converted_instance_matrix[affected_flights_indices,:] = -1
+
+        for flight_id in affected_flights_indices: 
+
+            time_indices = list(np.nonzero(converted_navpoint_matrix[flight_id,:] != -1)[0])
+
+            for flight_hop_index in range(len(time_indices)):
+
+                time = time_indices[flight_hop_index]                
+                navaid = converted_navpoint_matrix[flight_id, time]
+
+                if flight_hop_index == 0:
+                    sector = navaid_sector_time_assignment[navaid,time]
+                    converted_instance_matrix[flight_id,time] = sector
+                else:
+
+                    prev_time = time_indices[flight_hop_index - 1]                
+                    prev_navaid = converted_navpoint_matrix[flight_id, prev_time]
+
+                    for time_index in range(1, time-prev_time + 1):
+
+                        if time_index <= math.floor((time - prev_time)/2):
+                            prev_sector = navaid_sector_time_assignment[prev_navaid,prev_time + time_index]
+                            converted_instance_matrix[flight_id,prev_time + time_index] = prev_sector
+
+                        else:
+                            sector = navaid_sector_time_assignment[navaid,prev_time + time_index]
+                            converted_instance_matrix[flight_id,prev_time + time_index] = sector
+        
+        return converted_instance_matrix

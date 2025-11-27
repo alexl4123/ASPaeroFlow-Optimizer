@@ -259,7 +259,8 @@ class Main:
 
         # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
         converted_navpoint_matrix, _ = self.instance_navpoint_matrix(self.flights, navaid_sector_time_assignment.shape[1], fill_value=-1)
-        converted_instance_matrix, planned_arrival_times = OptimizeFlights.instance_to_matrix_vectorized(self.flights, self.airplane_flight, navaid_sector_time_assignment.shape[1], self._timestep_granularity, navaid_sector_time_assignment)
+        #converted_instance_matrix, planned_arrival_times = OptimizeFlights.instance_to_matrix_vectorized(self.flights, self.airplane_flight, navaid_sector_time_assignment.shape[1], self._timestep_granularity, navaid_sector_time_assignment)
+        converted_instance_matrix, planned_arrival_times = OptimizeFlights.instance_to_matrix(self.flights, self.airplane_flight, navaid_sector_time_assignment.shape[1], self._timestep_granularity, navaid_sector_time_assignment)
 
         #converted_instance_matrix, planned_arrival_times = self.instance_to_matrix(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity, navaid_sector_lookup)
         #
@@ -530,23 +531,36 @@ class Main:
                     tmp_loads_matrix = sector_config_restore_dict[sector_config_number]["demand"]
                     tmp_capacity_time_matrix = sector_config_restore_dict[sector_config_number]["capacity"]
                     tmp_navaid_sector_time_assignment = sector_config_restore_dict[sector_config_number]["composition"]
+                    tmp_flights = sector_config_restore_dict[sector_config_number]["affected_flights"]
                     tmp_time_index = sector_config_restore_dict[sector_config_number]["time_index"]
                     tmp_sector_index = sector_config_restore_dict[sector_config_number]["sector_index"]
 
 
-                    capacity_time_matrix[tmp_composition_sectors,:] = tmp_capacity_time_matrix
+                    #capacity_time_matrix[tmp_composition_sectors,:] = tmp_capacity_time_matrix
                     navaid_sector_time_assignment[tmp_composition_navpoints,:] = tmp_navaid_sector_time_assignment
 
-                    converted_instance_matrix[:,tmp_time_index:][np.isin(converted_instance_matrix[:,tmp_time_index:], tmp_composition_sectors)] = tmp_sector_index
-                    aggregated_demand = system_loads[tmp_composition_sectors, tmp_time_index:].sum(axis=0)
-                    system_loads[tmp_composition_sectors, tmp_time_index:] = 0
-                    system_loads[tmp_sector_index, tmp_time_index:] = aggregated_demand
+                    converted_instance_matrix = OptimizeFlights.instance_computation_after_sector_change(tmp_flights, converted_navpoint_matrix, converted_instance_matrix, navaid_sector_time_assignment)
 
-                    capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+                    capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor,
+                                                                                composite_sector_function=self.composite_sector_function)
+                    
+
+                    system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+
+                    #capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+                    #capacity_overload_mask = capacity_demand_diff_matrix < 0
+
+                    #converted_instance_matrix[:,tmp_time_index:][np.isin(converted_instance_matrix[:,tmp_time_index:], tmp_composition_sectors)] = tmp_sector_index
+                    #aggregated_demand = system_loads[tmp_composition_sectors, tmp_time_index:].sum(axis=0)
+                    #system_loads[tmp_composition_sectors, tmp_time_index:] = 0
+                    #system_loads[tmp_sector_index, tmp_time_index:] = aggregated_demand
+
+                    #capacity_demand_diff_matrix = capacity_time_matrix - system_loads
 
             if self._optimizer == "ASP":
 
                 flight_ids = np.array(flight_ids)
+                # RMV CAPACITY FROM THIS
                 capacity_demand_diff_matrix = self.system_loads_computation_v2(converted_instance_matrix, fill_value, flight_ids, capacity_demand_diff_matrix)
 
                 converted_instance_matrix[flight_ids, :] = -1
@@ -559,6 +573,7 @@ class Main:
                     time_id = int(str(flight.arguments[2]))
 
                     if time_id >= converted_instance_matrix.shape[1]:
+                        print("[WARN] --> ADDED EXTRA TIME DUE TO NEW FLIGHT ASSIGNMENT")
                         #extra_col = -1 * np.ones((converted_instance_matrix.shape[0], 1), dtype=int)
                         #converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
 
@@ -610,8 +625,6 @@ class Main:
                     #print(f"converted_navpoint_matrix[{flight_id},{time_id}] = {navpoint_id}")
                     converted_navpoint_matrix[flight_id, time_id] = navpoint_id
 
-
-
             if time_bucket_updated > last_time_bucket_updated + self._timestep_granularity and False:
                 # TODO MERGE SECTORS:
 
@@ -650,6 +663,9 @@ class Main:
             number_of_conflicts_prev = number_of_conflicts
             capacity_overload_mask = capacity_demand_diff_matrix < 0
             number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
+
+            #print(number_of_conflicts)
+            #quit()
 
             # HEURISTIC SELECTION OF COMPLEXITY OF TASK
             # -----------------------------------------------------------------------------
@@ -1144,71 +1160,7 @@ class Main:
             dist = np.where(np.isinf(dist), -1, dist.astype(np.int32))
 
         return dist
-
-    def instance_to_matrix(self,
-                            flights: np.ndarray,
-                            airplane_flight: np.ndarray,
-                            navaid_sector_time_assignment: np.ndarray,
-                            max_time: int,
-                            time_granularity: int,
-                            *,
-                            fill_value: int = -1,
-                            compress: bool = False) -> np.ndarray:
-
-        rows = airplane_flight[:,0].astype(int)
-
-        vals = flights[:, 1]
-        cols = flights[:, 2].astype(int)
-
-        max_time = max(cols.max(), (max_time + 1) * time_granularity)
-
-        out = np.full((rows.max() + 1, max_time),
-                        fill_value,
-                        dtype=vals.dtype)
-        
-        flight_ids = flights[:,0]
-        flight_ids = np.unique(flight_ids)
-
-        planned_arrival_times = {}
-
-        for flight_id in flight_ids:
-
-            airplane_id = (airplane_flight[airplane_flight[:,1] == flight_id])[0,0]
-
-            current_flight = flights[flights[:,0] == flight_id]
-
-            for flight_hop_index in range(current_flight.shape[0]):
-
-                navaid = current_flight[flight_hop_index,1]
-                time = current_flight[flight_hop_index,2]
-                #sector = (navaid_sector[navaid_sector[:,0] == navaid])[0,1]
-                sector = navaid_sector_lookup[navaid]
-
-                if flight_hop_index == 0:
-                    out[airplane_id,time] = sector
-                else:
-
-                    prev_navaid = current_flight[flight_hop_index - 1,1]
-                    prev_time = current_flight[flight_hop_index - 1,2]
-                    prev_sector = (navaid_sector[navaid_sector[:,0] == prev_navaid])[0,1]
-
-                    for time_index in range(1, time-prev_time + 1):
-
-                        if time_index <= math.floor((time - prev_time)/2):
-                            out[airplane_id,prev_time + time_index] = prev_sector
-
-                        else:
-                            out[airplane_id,prev_time + time_index] = sector
-
-                if flight_id not in planned_arrival_times:
-                    planned_arrival_times[flight_id] = time
-                elif planned_arrival_times[flight_id] < time:
-                    planned_arrival_times[flight_id] = time
-
-        #np.savetxt("20250826_converted_instance.csv", out, delimiter=",",fmt="%i")
-
-        return out, planned_arrival_times
-    
+   
 
     def create_initial_navpoint_sector_assignment(self,
                                     flights: np.ndarray,
@@ -1251,7 +1203,22 @@ class Main:
                 raise Exception("[ERROR IN COMPUTATION]")
 
         sectors = navaid_sector[:, 1]                      # shape (N,)
-        return np.repeat(sectors[:, None], max_time_dim, axis=1)  # shape (N, T)
+
+        largest_navaid = navaid_sector[navaid_sector.shape[0]-1,0]
+
+        output = np.ones((largest_navaid+1, max_time_dim), dtype=int)  * (-1)
+
+        for index in range(navaid_sector.shape[0]):
+            output_index = navaid_sector[index,0]
+            output[output_index,:] = navaid_sector[index,1]
+
+        for index in range(output.shape[0]):
+
+            if output[index,0] == -1:
+                output[index,:] = index
+
+        return output
+        #np.repeat(sectors[:, None], max_time_dim, axis=1)  # shape (N, T)
      
     def first_overload(self, mask: np.ndarray):
         """
