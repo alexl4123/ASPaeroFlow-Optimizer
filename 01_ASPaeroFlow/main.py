@@ -806,6 +806,7 @@ class Main:
         self.navaid_sector_time_assignment = navaid_sector_time_assignment
         self.converted_instance_matrix = converted_instance_matrix
         self.converted_navpoint_matrix = converted_navpoint_matrix
+        self.capacity_time_matrix = capacity_time_matrix
 
         if self.verbosity > 1:
             np.savetxt("20250826_final_matrix.csv", converted_instance_matrix, delimiter=",", fmt="%i") 
@@ -1329,7 +1330,7 @@ class Main:
         # Map possibly non-contiguous flight IDs to row indices
         flights, f_idx = np.unique(f, return_inverse=True)
         F = flights.size
-        T = max_time - t0 + 1  # inclusive of max_time
+        T = max_time - t0  # inclusive of max_time
 
         out = np.full((F, T), fill_value, dtype=int)
 
@@ -1608,6 +1609,7 @@ def _save_results(args: argparse.Namespace, app) -> None:
         "navaid_sector_time_assignment": getattr(app, "navaid_sector_time_assignment", None),
         "converted_instance_matrix":     getattr(app, "converted_instance_matrix", None),
         "converted_navpoint_matrix":     getattr(app, "converted_navpoint_matrix", None),
+        "capacity_time_matrix":     getattr(app, "capacity_time_matrix", None),
     }
 
     saved = {}

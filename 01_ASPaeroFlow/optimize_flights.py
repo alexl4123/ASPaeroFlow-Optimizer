@@ -508,8 +508,8 @@ class OptimizeFlights:
                 #parts = self.first_l_nontrivial_partitions(navpoints_in_sector, number_partitions)
                 #parts = self.first_l_nontrivial_partitions(navpoints_in_sector, number_partitions)
                 #print(parts)
-                if self.verbosity > 1:
-                    print(f"----> NAVPOINTS IN SECTOR ({nontrivial_count}, {number_partitions}): {navpoints_in_sector}")
+                #if self.verbosity > 1:
+                #    print(f"----> NAVPOINTS IN SECTOR ({nontrivial_count}, {number_partitions}): {navpoints_in_sector}")
                 parts = self.partition_navpoints_connected(navpoints_in_sector, number_partitions)
                 #if self.verbosity > 2:
                 #    print(parts)
@@ -548,8 +548,8 @@ class OptimizeFlights:
                         composite_capacity_time_matrix = OptimizeFlights.capacity_time_matrix(tmp_atomic_capacities, self.navaid_sector_time_assignment.shape[1], self.timestep_granularity, tmp_navaid_sector_time_assignment, z = self.sector_capacity_factor, composite_sector_function=self.composite_sector_function)
                         capacity_time_matrix[cur_sector_index,time_index:] = composite_capacity_time_matrix[0,time_index:]
 
-                    # All flights that pass through any navpoint in the composite sector after time_index
-                    tmp_flights = np.nonzero(np.isin(self.converted_navpoint_matrix[:,time_index:], navpoints_in_sector))[0]
+                    # All flights that pass through any navpoint in the composite sector
+                    tmp_flights = np.nonzero(np.isin(self.converted_navpoint_matrix[:,:], navpoints_in_sector))[0]
                     tmp_flights = np.array(list(set(tmp_flights)))
 
                     # FILTER OUT PROBLEMATIC FLIGHTS (NOT CONSIDERED DUE TO POTENTIALLY ROUTED)
@@ -557,6 +557,8 @@ class OptimizeFlights:
                     for flight_index in tmp_flights:
                         if flight_index not in self.all_potentially_problematic_flights:
                             tmp_tmp_flights.append(flight_index)
+
+                    all_affected_flights = tmp_flights.copy()
 
                     tmp_flights = np.array(tmp_tmp_flights)
                     
@@ -634,7 +636,7 @@ class OptimizeFlights:
                     config_restore_dict[current_config] = {}
                     config_restore_dict[current_config]["composition_navpoints"] = all_partition_navpoints.copy()
                     config_restore_dict[current_config]["composition_sectors"] = partition_sectors.copy()
-                    config_restore_dict[current_config]["affected_flights"] = tmp_flights.copy()
+                    config_restore_dict[current_config]["affected_flights"] = all_affected_flights.copy()
                     config_restore_dict[current_config]["composition"] = self.navaid_sector_time_assignment[all_partition_navpoints,:].copy()
 
                     config_restore_dict[current_config]["demand"] = demand_matrix[partition_sectors,:].copy()
