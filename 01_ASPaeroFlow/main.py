@@ -389,6 +389,7 @@ class Main:
 
 
         global_t_start = 1
+        time_bucket_updated = 0
 
         while np.any(capacity_overload_mask, where=True):
             if self.verbosity > 0:
@@ -681,13 +682,6 @@ class Main:
                     #print(f"converted_navpoint_matrix[{flight_id},{time_id}] = {navpoint_id}")
                     converted_navpoint_matrix[flight_id, time_id] = navpoint_id
 
-            if time_bucket_updated > last_time_bucket_updated + self._timestep_granularity and False:
-                # TODO MERGE SECTORS:
-
-                print("TODO: MERGE SECTORS")
-                last_time_bucket_updated = time_bucket_updated
-
-
             # Rerun check if there are still things to solve:
 
             # TODO -> TIME DELTA EVALUTAION!
@@ -835,7 +829,9 @@ class Main:
             #    quit()
 
         if self.minimize_number_sectors is True:
-            while global_t_start + self._timestep_granularity - 1 < time_bucket_updated:
+            time_bucket_updated = converted_navpoint_matrix.shape[1]
+
+            while global_t_start + self._timestep_granularity - 1 <= time_bucket_updated:
                 global_t_end = global_t_start + self._timestep_granularity - 1
                 converted_instance_matrix, converted_navpoint_matrix, navaid_sector_time_assignment, capacity_time_matrix, system_loads = self.minimize_number_of_sectors(navaid_sector_time_assignment,converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix, system_loads, self.max_number_navpoints_per_sector, self.max_number_sectors, global_t_start, global_t_end, self.networkx_navpoint_graph, self.airports)
                 global_t_start =  global_t_start + self._timestep_granularity
