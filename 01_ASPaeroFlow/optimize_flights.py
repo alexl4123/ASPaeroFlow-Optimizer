@@ -63,11 +63,13 @@ class OptimizeFlights:
                  capacity_management_enabled = False,
                  composite_sector_function  = MAX,
                  optimizer = "ASP",
+                 max_number_sectors = -1
                  ):
 
         self.capacity_management_enabled = capacity_management_enabled
         self.number_configs = number_configs
 
+        self.max_number_sectors = max_number_sectors
         self._optimizer = optimizer
 
         self.encoding = encoding
@@ -510,11 +512,19 @@ class OptimizeFlights:
                 #print(parts)
                 #if self.verbosity > 1:
                 #    print(f"----> NAVPOINTS IN SECTOR ({nontrivial_count}, {number_partitions}): {navpoints_in_sector}")
+
+                current_number_sectors = len(np.unique_counts(self.navaid_sector_time_assignment[:,time_index]).values)
+
                 parts = self.partition_navpoints_connected(navpoints_in_sector, number_partitions)
+                self.max_number_sectors 
+
                 #if self.verbosity > 2:
                 #    print(parts)
 
                 for partition in parts:
+
+                    if current_number_sectors + len(partition) - 1 > self.max_number_sectors:
+                        continue
 
                     
                     capacity_time_matrix[composition_sectors,time_index:] = 0

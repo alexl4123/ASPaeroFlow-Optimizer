@@ -117,7 +117,11 @@ class Main:
         composite_sector_function: Optional[str],
         experiment_name: Optional[str],
         wandb_log: Optional[Callable[[dict],None]] = None,
-        optimizer = "ASP") -> None:
+        optimizer = "ASP",
+        max_number_navpoints_per_sector = -1,
+        max_number_sectors = -1,
+        minimize_number_sectors = False,        
+        ) -> None:
 
         self._graph_path: Optional[Path] = graph_path
         self._sectors_path: Optional[Path] = sectors_path
@@ -126,6 +130,10 @@ class Main:
         self._airplanes_path: Optional[Path] = airplanes_path
         self._airplane_flight_path: Optional[Path] = airplane_flight_path
         self._navaid_sector_path: Optional[Path] = navaid_sector_path
+
+        self.max_number_navpoints_per_sector = max_number_navpoints_per_sector
+        self.max_number_sectors = max_number_sectors
+        self.minimize_number_sectors = minimize_number_sectors
 
         self._optimizer = optimizer
 
@@ -283,6 +291,17 @@ class Main:
         #np.savetxt("20251003_instance_to_matrix.csv", converted_instance_matrix, delimiter=",",fmt="%i")
         #quit()
 
+        if self.verbosity > 0:
+            # --- Demonstration output ---------
+            print("  converted-instance:   ", converted_instance_matrix.shape)
+            print("  converted-navpoint:   ", converted_navpoint_matrix.shape)
+            print("  navpoint-time-sector:   ", navaid_sector_time_assignment.shape)
+            print("  system-loads-matrix:   ", system_loads.shape)
+            print("  capacity-matrix:   ", capacity_time_matrix.shape)
+            # -----------------------------------------------------------------
+
+
+
         # 4.) Subtract demand from capacity (|R|x|T|)
         capacity_demand_diff_matrix = capacity_time_matrix - system_loads
         # 5.) Create capacity overload matrix
@@ -333,6 +352,43 @@ class Main:
             })
 
         last_time_bucket_updated = 0
+
+        if self.max_number_navpoints_per_sector == -1 or self.max_number_sectors == -1:
+            if self.max_number_navpoints_per_sector == -1:
+                max_number_navpoints_per_sector_update = True
+            else:
+                max_number_navpoints_per_sector_update = False
+
+            if self.max_number_sectors == -1:
+                max_number_sectors_update = True
+            else:
+                max_number_sectors_update = False
+
+            for time_index in range(navaid_sector_time_assignment.shape[1]):
+
+                uniq = np.unique_counts(navaid_sector_time_assignment[:,time_index])
+
+                if max_number_navpoints_per_sector_update is True:
+                    if max(uniq.counts) > self.max_number_navpoints_per_sector:
+                        self.max_number_navpoints_per_sector = max(uniq.counts)
+
+                if max_number_sectors_update is True:
+                    if len(uniq.values) > self.max_number_sectors:
+                        self.max_number_sectors = len(uniq.values)
+
+
+        if self.minimize_number_sectors is True:
+
+            t_start = 1
+            t_end = 60
+
+            for t_start in range(1,converted_instance_matrix.shape[1] + 1, self._timestep_granularity):
+                t_end = t_start + self._timestep_granularity - 1
+
+                converted_instance_matrix, converted_navpoint_matrix, navaid_sector_time_assignment, capacity_time_matrix, system_loads = self.minimize_number_of_sectors(navaid_sector_time_assignment,converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix, system_loads, self.max_number_navpoints_per_sector, self.max_number_sectors, t_start, t_end, self.networkx_navpoint_graph, self.airports)
+
+
+        global_t_start = 1
 
         while np.any(capacity_overload_mask, where=True):
             if self.verbosity > 0:
@@ -394,7 +450,7 @@ class Main:
                                 max_number_airplanes_considered_in_ASP, max_number_processors, original_max_time,
                                 self.networkx_navpoint_graph, self.unit_graphs, planned_arrival_times, self.airplane_flight,
                                 self.airplanes, navaid_sector_time_assignment, flight_durations,
-                                iteration, self.sector_capacity_factor, self.flights,
+                                iteration, self.sector_capacity_factor, self.flights
                                 )
 
                 
@@ -650,6 +706,18 @@ class Main:
 
             system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
             capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor, composite_sector_function=self.composite_sector_function)
+
+            if self.minimize_number_sectors is True:
+
+                while global_t_start + self._timestep_granularity - 1 < time_bucket_updated:
+
+                    global_t_end = global_t_start + self._timestep_granularity - 1
+
+                    converted_instance_matrix, converted_navpoint_matrix, navaid_sector_time_assignment, capacity_time_matrix, system_loads = self.minimize_number_of_sectors(navaid_sector_time_assignment,converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix, system_loads, self.max_number_navpoints_per_sector, self.max_number_sectors, global_t_start, global_t_end, self.networkx_navpoint_graph, self.airports)
+
+                    global_t_start =  global_t_start + self._timestep_granularity
+
+
             capacity_demand_diff_matrix = capacity_time_matrix - system_loads
 
 
@@ -765,6 +833,14 @@ class Main:
             #if iteration == 372:
             #    print("DEBUG EXIT AT ITERATION 372!")
             #    quit()
+
+        if self.minimize_number_sectors is True:
+            while global_t_start + self._timestep_granularity - 1 < time_bucket_updated:
+                global_t_end = global_t_start + self._timestep_granularity - 1
+                converted_instance_matrix, converted_navpoint_matrix, navaid_sector_time_assignment, capacity_time_matrix, system_loads = self.minimize_number_of_sectors(navaid_sector_time_assignment,converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix, system_loads, self.max_number_navpoints_per_sector, self.max_number_sectors, global_t_start, global_t_end, self.networkx_navpoint_graph, self.airports)
+                global_t_start =  global_t_start + self._timestep_granularity
+
+
 
 
         #np.savetxt("01_final_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
@@ -958,7 +1034,8 @@ class Main:
                                     self.number_capacity_management_configs,
                                     self.capacity_management_enabled,
                                     self.composite_sector_function,
-                                    self._optimizer
+                                    self._optimizer,
+                                    self.max_number_sectors
                                     )
 
         return job, rows_pool
@@ -1340,6 +1417,215 @@ class Main:
 
         return out, flights  # 'flights' tells you which row corresponds to which flight_id
 
+    def minimize_number_of_sectors(self, navaid_sector_time_assignment,converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix, system_loads, max_number_navpoints_per_sector, max_number_sectors, t_start, t_end, navpoint_networkx_graph, airport_vertices):
+        # --- Basic setup ----------------------------------------------------
+        # Work on inclusive time window [t_start, t_end]
+        time_slice = slice(t_start, t_end + 1)
+        window_length = t_end - t_start + 1
+
+        # We treat sector IDs as integers in [0, max_sector_id]
+        # (this is consistent with capacity_time_matrix / system_loads rows).
+        if navaid_sector_time_assignment.size == 0:
+            return 0
+
+        n_sectors = navaid_sector_time_assignment.shape[0]
+
+        # Boolean mask of "active" sectors (can be merged / still exist)
+        active = np.ones(n_sectors, dtype=bool)
+
+        # --- Precompute navpoint counts per sector and time -----------------
+        # navaid_sector_time_assignment: shape (n_navaids, n_times)
+        navpoint_counts = np.zeros((n_sectors, window_length), dtype=np.int32)
+
+        # For each time in the window, count how many navaids are assigned
+        # to each sector. Using bincount is usually quite efficient.
+        for local_t, global_t in enumerate(range(t_start, t_end + 1)):
+            col = navaid_sector_time_assignment[:, global_t]
+
+            # If you use -1 or similar as "no sector", ignore those.
+            valid_mask = col >= 0
+            if not np.any(valid_mask):
+                continue
+
+            counts = np.bincount(col[valid_mask], minlength=n_sectors)
+            navpoint_counts[:, local_t] = counts
+
+        # A sector "exists" in the interval iff it has at least one navpoint
+        # assigned in that window.
+        sector_has_navpoints = navpoint_counts.sum(axis=1) > 0
+
+        # --- Demand / capacity aggregates over the window -------------------
+        demand_window = system_loads[:, time_slice]
+        capacity_window = capacity_time_matrix[:, time_slice]
+
+        agg_demand = demand_window.sum(axis=1)          # shape (n_sectors,)
+        agg_capacity = capacity_window.sum(axis=1)      # shape (n_sectors,)
+
+        # Light sectors: exist, have capacity, and demand <= 50% of capacity
+        has_capacity = agg_capacity > 0
+        below_threshold = agg_demand <= 0.2 * agg_capacity
+
+        light_sector_mask = sector_has_navpoints & has_capacity & below_threshold
+        light_sectors = np.nonzero(light_sector_mask)[0]
+
+        # Sort by aggregated demand ascending (lowest demand first)
+        light_sectors = list(light_sectors)
+        light_sectors.sort(key=lambda s: agg_demand[s])
+
+
+        # If there are no light sectors, nothing to do.
+        if not light_sectors:
+            print("NO LIGHT SECTORS")
+            print(np.any(sector_has_navpoints))
+            print(np.any(has_capacity))
+            print(np.any(below_threshold))
+            return int((demand_window.sum(axis=1) > 0).sum())
+
+        # --- Helper to count current active sectors in the window ----------
+        def active_sector_count() -> int:
+            # A sector is active if it's still marked active AND has some
+            # positive demand in the considered window.
+            # (You can adapt this condition if your notion of "active"
+            #  differs, e.g., also check capacities / navpoints.)
+            return int(
+                np.logical_and(
+                    active,
+                    (system_loads[:, time_slice].sum(axis=1) > 0),
+                ).sum()
+            )
+
+        tmp_sectors = []
+        for sec in light_sectors:
+            if sec not in airport_vertices:
+                tmp_sectors.append(sec)
+        light_sectors = tmp_sectors
+
+
+        # --- Main fixed-point loop -----------------------------------------
+        changed = True
+        while changed:
+            changed = False
+
+            # Scan through sectors in ascending demand order.
+            for sec in light_sectors:
+                if not active[sec]:
+                    continue
+
+                all_navaids = list(set(np.nonzero(navaid_sector_time_assignment[:,t_start:t_end+1] == sec)[0]))
+
+                if np.any(navaid_sector_time_assignment[all_navaids,t_start:t_end+1] != sec):
+                    active[sec] = False
+
+                    continue
+
+
+                # It may happen that sec lost all navpoints / demand due to
+                # earlier merges; then it's no longer meaningful.
+                if navpoint_counts[sec].sum() == 0:
+                    continue
+
+                # If the graph does not contain this node, we cannot merge it.
+                if not navpoint_networkx_graph.has_node(sec):
+                    continue
+
+                # Try to merge 'sec' with one of its neighbours.
+                all_navaids_set = set(all_navaids)
+                neighbors = {
+                    nb
+                    for v in all_navaids if v in navpoint_networkx_graph
+                    for nb in navpoint_networkx_graph.neighbors(v)
+                } - all_navaids_set
+
+                if not neighbors:
+                    continue
+
+                for nbr_navaid in neighbors:
+                    nbr_navaid = int(nbr_navaid)
+
+                    nbr = navaid_sector_time_assignment[nbr_navaid,t_start]
+
+                    if nbr == sec or not active[nbr]:
+                        continue
+
+                    if nbr in airport_vertices:
+                        active[nbr] = False
+                        continue
+
+                    # Check combined capacity and demand constraints over
+                    # the time window.
+                    sec_load = system_loads[sec, time_slice]
+                    nbr_load = system_loads[nbr, time_slice]
+                    combined_demand = sec_load + nbr_load
+
+                    sec_cap = capacity_time_matrix[sec, time_slice]
+                    nbr_cap = capacity_time_matrix[nbr, time_slice]
+                    combined_capacity = np.maximum(sec_cap, nbr_cap)
+
+                    # Capacity constraint: for every timestep, demand <= capacity
+                    if np.any(combined_demand > combined_capacity):
+                        continue
+
+                    # Navpoint constraint: per timestep, number of navpoints
+                    # must not exceed max_number_navpoints_per_sector.
+                    combined_navpoints = navpoint_counts[sec, :] + navpoint_counts[nbr, :]
+                    if (
+                        max_number_navpoints_per_sector is not None
+                        and max_number_navpoints_per_sector > 0
+                        and np.any(combined_navpoints > max_number_navpoints_per_sector)
+                    ):
+                        continue
+
+                    # If we reach here, merging sec and nbr is allowed.
+                    # We "merge nbr into sec":
+                    #   - update demand and capacity rows,
+                    #   - reassign navpoints from nbr to sec,
+                    #   - update navpoint counts,
+                    #   - deactivate nbr and remove from graph.
+
+                    # Update loads and capacity
+                    system_loads[sec, time_slice] = combined_demand
+                    system_loads[nbr, time_slice] = 0
+
+                    capacity_time_matrix[sec, time_slice] = combined_capacity
+                    capacity_time_matrix[nbr, time_slice] = 0
+
+                    # Update navpoint assignments in the window
+                    sector_slice = navaid_sector_time_assignment[:, time_slice]
+                    sector_slice[sector_slice == nbr] = sec
+
+                    # Update navpoint counts
+                    navpoint_counts[sec, :] = combined_navpoints
+                    navpoint_counts[nbr, :] = 0
+
+                    # Mark neighbour as inactive and remove from graph
+                    active[nbr] = False
+
+                    changed = True
+
+                    # The ordering of sectors could be recomputed here if
+                    # desired, but for a simple heuristic we keep it fixed.
+                    # Break to restart scanning from the lightest sector.
+                    break
+
+                if changed:
+                    # Restart outer loop after any successful merge
+
+                    index_sec = light_sectors.index(sec)
+
+                    for _ in range(index_sec):
+                        active[light_sectors[0]] = False
+                        del light_sectors[0]
+
+                    break
+
+        converted_instance_matrix = OptimizeFlights.instance_computation_after_sector_change(list(range(converted_instance_matrix.shape[0])),
+                            converted_navpoint_matrix, converted_instance_matrix, navaid_sector_time_assignment)
+        
+
+        return converted_instance_matrix, converted_navpoint_matrix, navaid_sector_time_assignment, capacity_time_matrix, system_loads
+
+
+
 
 # ---------------------------------------------------------------------------
 # CLI utilities (with config + bundle directory support)
@@ -1453,10 +1739,17 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
                         help="Verbosity levels (0,1,2).")
     parser.add_argument("--sector-capacity-factor", type=int, default=int(C("sector-capacity-factor", 6)),
                         help="Defines capacity of composite sectors.")
+    parser.add_argument("--max-number-navpoints-per-sector", type=int, default=int(C("max-number-navpoints-per-sector", -1)),
+                        help="Defines the maximum number of navpoints per composite sectors (-1=initial max number).")
+    parser.add_argument("--max-number-sectors", type=int, default=int(C("max-number-sectors", -1)),
+                        help="Defines the maximum number of sectors that can exist at one timepoint (-1=initial number).")
+    parser.add_argument("--minimize-number-sectors-enabled", type=str, default=str(C("minimize-number-sectors-enabled", "false")),
+                        help="true/false: If enabled, minimized every timestep-granularity the sectors.")
 
     parser.add_argument("--composite-sector-function", type=str, default=str(C("composite-sector-function", "max")),
                         help="Defines the function of the composite sector - available: max, triangular, linear")
 
+                        
 
     # DYNAMIC SECTORIZATION:
     parser.add_argument("--number-capacity-management-configs", type=int, default=int(C("number-capacity-management-configs", 7)), help="How many compisitions/partitions to consider (only works when cap-mgmt. is enabled.")
@@ -1558,6 +1851,7 @@ def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
     args.save_results = _str2bool(args.save_results)
     args.wandb_enabled = _str2bool(args.wandb_enabled)
+    args.minimize_number_sectors = _str2bool(args.minimize_number_sectors_enabled)
 
     return args
 
@@ -1713,7 +2007,6 @@ def main(argv: Optional[List[str]] = None) -> None:
         )
         wandb_log = run.log
 
-
     app = Main(args.graph_path, args.sectors_path, args.flights_path,
                args.airports_path, args.airplanes_path,
                args.airplane_flight_path, args.navaid_sector_path,
@@ -1727,7 +2020,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                composite_sector_function,
                experiment_name,
                wandb_log,
-               args.optimizer)
+               args.optimizer, args.max_number_navpoints_per_sector, args.max_number_sectors, args.minimize_number_sectors)
     app.run()
 
     # Save results if requested
