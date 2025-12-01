@@ -345,10 +345,14 @@ class Main:
 
         # Track to Weights & Biases when enabled
         if self._wandb_log is not None:
+            uniq = np.unique_counts(navaid_sector_time_assignment[:,0])
+
             self._wandb_log({
                 "iteration": int(iteration), # FIRST ONE:
                 "number_of_conflicts": int(number_of_conflicts),
-                "total_delay": int(0), # FIRST ONE
+                "total_delay": int(0),
+                "number_sectors": len(uniq.values),
+                "current_time": int(0),
             })
 
         last_time_bucket_updated = 0
@@ -384,6 +388,9 @@ class Main:
 
             for t_start in range(1,converted_instance_matrix.shape[1] + 1, self._timestep_granularity):
                 t_end = t_start + self._timestep_granularity - 1
+
+                if t_end >= converted_instance_matrix.shape[1]:
+                    t_end = converted_instance_matrix.shape[1] - 1
 
                 converted_instance_matrix, converted_navpoint_matrix, navaid_sector_time_assignment, capacity_time_matrix, system_loads = self.minimize_number_of_sectors(navaid_sector_time_assignment,converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix, system_loads, self.max_number_navpoints_per_sector, self.max_number_sectors, t_start, t_end, self.networkx_navpoint_graph, self.airports)
 
@@ -707,6 +714,9 @@ class Main:
 
                     global_t_end = global_t_start + self._timestep_granularity - 1
 
+                    if global_t_end >= converted_instance_matrix.shape[1]:
+                        global_t_end = converted_instance_matrix.shape[1] - 1
+
                     converted_instance_matrix, converted_navpoint_matrix, navaid_sector_time_assignment, capacity_time_matrix, system_loads = self.minimize_number_of_sectors(navaid_sector_time_assignment,converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix, system_loads, self.max_number_navpoints_per_sector, self.max_number_sectors, global_t_start, global_t_end, self.networkx_navpoint_graph, self.airports)
 
                     global_t_start =  global_t_start + self._timestep_granularity
@@ -817,22 +827,32 @@ class Main:
             
             iteration += 1
             # Track to Weights & Biases when enabled
+            #if iteration == 372:
+            #    print("DEBUG EXIT AT ITERATION 372!")
+            #    quit()
             if self._wandb_log is not None:
+                if time_bucket_updated >= navaid_sector_time_assignment.shape[1]:
+                    time_bucket_updated = navaid_sector_time_assignment.shape[1] - 1
+
+                uniq = np.unique_counts(navaid_sector_time_assignment[:,time_bucket_updated])
                 self._wandb_log({
                     "iteration": int(iteration),
                     "number_of_conflicts": int(number_of_conflicts),
                     "total_delay": int(total_delay),
+                    "number_sectors": len(uniq.values),
+                    "current_time": int(time_bucket_updated),
                 })
 
-            #if iteration == 372:
-            #    print("DEBUG EXIT AT ITERATION 372!")
-            #    quit()
 
         if self.minimize_number_sectors is True:
-            time_bucket_updated = converted_navpoint_matrix.shape[1]
+            time_bucket_updated = converted_navpoint_matrix.shape[1] - 1
 
             while global_t_start + self._timestep_granularity - 1 <= time_bucket_updated:
                 global_t_end = global_t_start + self._timestep_granularity - 1
+
+                if global_t_end >= converted_instance_matrix.shape[1]:
+                    global_t_end = converted_instance_matrix.shape[1] - 1
+
                 converted_instance_matrix, converted_navpoint_matrix, navaid_sector_time_assignment, capacity_time_matrix, system_loads = self.minimize_number_of_sectors(navaid_sector_time_assignment,converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix, system_loads, self.max_number_navpoints_per_sector, self.max_number_sectors, global_t_start, global_t_end, self.networkx_navpoint_graph, self.airports)
                 global_t_start =  global_t_start + self._timestep_granularity
 
@@ -856,10 +876,13 @@ class Main:
 
         # Track to Weights & Biases when enabled
         if self._wandb_log is not None:
+            uniq = np.unique_counts(navaid_sector_time_assignment[:,time_bucket_updated])
             self._wandb_log({
-                "iteration": int(iteration+1), # FINAL ONE:
+                "iteration": int(iteration+1),
                 "number_of_conflicts": int(number_of_conflicts),
                 "total_delay": int(total_delay),
+                "number_sectors": len(uniq.values),
+                "current_time": int(time_bucket_updated),
             })
 
         if self.verbosity > 0:
