@@ -70,17 +70,19 @@ class MIPModel:
 
         return optimization_variables
 
-    def create_model(self, converted_instance_matrix, capacity_time_matrix, unit_graphs, airplanes, max_delay, planned_arrival_times, airplane_flight, filed_flights):
-
+    def create_model(self, converted_instance_matrix, capacity_time_matrix, unit_graphs, airplanes, max_delay, planned_arrival_times, airplane_flight, filed_flights, navaid_sector_time_assignment, converted_navpoint_matrix):
+        
         solution = None
         self._max_time += max_delay
 
+        """
         if converted_instance_matrix.shape[1] < self._max_time:
             diff = self._max_time - converted_instance_matrix.shape[1]
             extra_col = -1 * np.ones((converted_instance_matrix.shape[0], diff), dtype=int)
             converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+        """
 
-        delay_time_window = 10
+        delay_time_window = 1
 
         while solution is None:
 
@@ -110,10 +112,10 @@ class MIPModel:
 
             self.optimize(model, optimization_variables)
 
-            converted_instance_matrix, converted_navpoint_matrix = self.reconstruct_solution(model, flight_variables_pd, sector_variables_pd,
+            converted_instance_matrix_tmp, converted_navpoint_matrix_tmp = self.reconstruct_solution(model, flight_variables_pd, sector_variables_pd,
                                                                                              converted_instance_matrix, max_delay, all_flights_navpoints)
 
-            mask = converted_instance_matrix != -1                                        # same shape as arr
+            mask = converted_instance_matrix_tmp != -1                                        # same shape as arr
 
             if not np.any(mask, where=True):
                 solution = None
@@ -141,11 +143,9 @@ class MIPModel:
 
                 # 4.) Subtract demand from capacity (|R|x|T|):
                 capacity_demand_diff_matrix = capacity_time_matrix - system_loads
-
-
-
-
             else:
+                converted_instance_matrix = converted_instance_matrix_tmp
+                converted_navpoint_matrix = converted_navpoint_matrix_tmp
                 solution = converted_instance_matrix
 
         return converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix
@@ -552,6 +552,7 @@ class MIPModel:
             considered_flight = converted_instance_matrix[flight,:]
 
             considered_flight_time_rows = flight_variables_pd.loc[((flight_variables_pd["F"]==flight))]
+
             min_flight_time = min(considered_flight_time_rows["T"])
             max_flight_time = max(considered_flight_time_rows["T"])
 

@@ -221,11 +221,13 @@ class Main:
 
         # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
         #converted_instance_matrix, planned_arrival_times = self.instance_to_matrix_vectorized(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity, navaid_sector_lookup)
+
+        converted_navpoint_matrix, _ = self.instance_navpoint_matrix(self.flights, navaid_sector_time_assignment.shape[1], fill_value=-1)
+
         converted_instance_matrix, planned_arrival_times = self.instance_to_matrix_vectorized(self.flights, self.airplane_flight, navaid_sector_time_assignment.shape[1], self._timestep_granularity, navaid_sector_time_assignment)
         #converted_instance_matrix, planned_arrival_times = self.instance_to_matrix(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity, navaid_sector_lookup)
 
         #np.testing.assert_array_equal(converted_instance_matrix, converted_instance_matrix_2)
-        #quit()
 
         # 2.) Create demand matrix (|R|x|T|)
         system_loads = MIPModel.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
@@ -243,7 +245,7 @@ class Main:
         original_converted_instance_matrix = converted_instance_matrix.copy()
 
 
-        converted_instance_matrix, converted_navpoint_matrix, navaid_sector_time_assignment = self.build_MIP_model(self.unit_graphs, converted_instance_matrix, capacity_time_matrix, planned_arrival_times, self.airplane_flight)
+        converted_instance_matrix, converted_navpoint_matrix, navaid_sector_time_assignment = self.build_MIP_model(self.unit_graphs, converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix, planned_arrival_times, self.airplane_flight, navaid_sector_time_assignment)
 
         end_time = time.time()
         if self.verbosity > 0:
@@ -291,9 +293,11 @@ class Main:
     def build_MIP_model(self,
                 unit_graphs,
                 converted_instance_matrix: np.ndarray,
+                converted_navpoint_matrix,
                 capacity_time_matrix: np.ndarray,
                 planned_arrival_times,
                 airplane_flight,
+                navaid_sector_time_assignment,
                 ):
         """
         Split the candidate rows into *n_proc* equally‑sized chunks
@@ -307,10 +311,10 @@ class Main:
         max_time = max(self._max_time, converted_instance_matrix.shape[1])
 
         max_delay = 24
-        
+
         mipModel = MIPModel(self.sectors, self.airports, max_time, self._max_explored_vertices, self._seed, self._timestep_granularity, self.verbosity, self._number_threads, navaid_sector_lookup, self._composite_sector_function, self._sector_capacity_factor)
 
-        converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix = mipModel.create_model(converted_instance_matrix, capacity_time_matrix, unit_graphs, self.airplanes, max_delay, planned_arrival_times, airplane_flight, self.flights)
+        converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix = mipModel.create_model(converted_instance_matrix, capacity_time_matrix, unit_graphs, self.airplanes, max_delay, planned_arrival_times, airplane_flight, self.flights, navaid_sector_time_assignment, converted_navpoint_matrix)
 
         return converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix
     
@@ -447,6 +451,31 @@ class Main:
             dist = np.where(np.isinf(dist), -1, dist.astype(np.int32))
 
         return dist
+ 
+    def instance_navpoint_matrix(self, triplets, max_time, *, t0=0, fill_value=-1):
+        """
+        triplets: (N x 3) array-like of [flight_id, navpoint_id, time_first_reached]
+        max_time: largest time index to include (inclusive)
+        t0:       optional time offset (use t0=min_time if your times don't start at 0)
+        """
+        a = np.asarray(triplets, dtype=int)
+        f = a[:, 0]
+        n = a[:, 1]
+        t = a[:, 2] - t0  # shift if needed so time starts at 0
+
+        # Map possibly non-contiguous flight IDs to row indices
+        flights, f_idx = np.unique(f, return_inverse=True)
+        F = flights.size
+        T = max_time - t0  # inclusive of max_time
+
+        out = np.full((F, T), fill_value, dtype=int)
+
+        # keep only times that land inside [0, T-1]
+        m = (t >= 0) & (t < T)
+        out[f_idx[m], t[m]] = n[m]  # last write wins if duplicates
+
+        return out, flights  # 'flights' tells you which row corresponds to which flight_id
+
 
     def instance_to_matrix_vectorized(self,
                                     flights: np.ndarray,
