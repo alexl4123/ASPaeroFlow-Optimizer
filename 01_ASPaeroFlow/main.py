@@ -602,19 +602,6 @@ class Main:
                     tmp_time_index = sector_config_restore_dict[sector_config_number]["time_index"]
                     tmp_sector_index = sector_config_restore_dict[sector_config_number]["sector_index"]
 
- 
-                    #capacity_time_matrix[tmp_composition_sectors,:] = tmp_capacity_time_matrix
-                    navaid_sector_time_assignment[tmp_composition_navpoints,:] = tmp_navaid_sector_time_assignment
-
-                    converted_instance_matrix = OptimizeFlights.instance_computation_after_sector_change(tmp_flights, converted_navpoint_matrix, converted_instance_matrix, navaid_sector_time_assignment)
-
-                    capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor,
-                                                                                composite_sector_function=self.composite_sector_function)
-                    
-
-                    system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
-
-
                     if tmp_navaid_sector_time_assignment.shape[1]  > navaid_sector_time_assignment.shape[1]:
                         # INCREASE MATRIX SIZE (TIME) AUTOMATICALLY
                         diff = tmp_navaid_sector_time_assignment.shape[1] - navaid_sector_time_assignment.shape[1]
@@ -639,7 +626,6 @@ class Main:
 
                         # 4.) Subtract demand from capacity (|R|x|T|):
                         capacity_demand_diff_matrix = capacity_time_matrix - system_loads
-
 
 
                     #capacity_time_matrix[tmp_composition_sectors,:] = tmp_capacity_time_matrix
