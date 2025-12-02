@@ -355,6 +355,15 @@ class Main:
                 "current_time": int(0),
             })
 
+            if self.verbosity > 1:
+                print(f"""
+    iteration -> {int(iteration)}
+    number_of_conflicts -> {int(number_of_conflicts)}
+    total_delay -> {int(0)}
+    number_sectors -> {len(uniq.values)}
+    current_time -> {int(0)}
+                      """)
+
         last_time_bucket_updated = 0
 
         if self.max_number_navpoints_per_sector == -1 or self.max_number_sectors == -1:
@@ -382,6 +391,9 @@ class Main:
 
 
         if self.minimize_number_sectors is True:
+
+            if self.verbosity > 1:
+                print("MINIMIZE NUMBER OF SECTORS INITIALIZED")
 
             t_start = 1
             t_end = 60
@@ -870,6 +882,15 @@ class Main:
                     "number_sectors": len(uniq.values),
                     "current_time": int(time_bucket_updated),
                 })
+
+                if self.verbosity > 1:
+                    print(f"""
+        iteration -> {int(iteration)}
+        number_of_conflicts -> {int(number_of_conflicts)}
+        total_delay -> {int(total_delay)}
+        number_sectors -> {len(uniq.values)}
+        current_time -> {int(time_bucket_updated)}
+                        """)
 
 
         if self.minimize_number_sectors is True:

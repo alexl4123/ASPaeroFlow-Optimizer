@@ -36,7 +36,7 @@ from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures import ProcessPoolExecutor
 
 
-from mip_model import MIPModel
+from mip_model import MIPModel, MAX, LINEAR, TRIANGULAR
 from datetime import datetime, timezone
 
 # ---------------------------------------------------------------------------
@@ -94,6 +94,8 @@ class Main:
         max_delay_per_iteration: Optional[int],
         max_time: Optional[int],
         verbosity: Optional[int],
+        composite_sector_function,
+        sector_capacity_factor,
     ) -> None:
 
         self._graph_path: Optional[Path] = graph_path
@@ -103,6 +105,9 @@ class Main:
         self._airplanes_path: Optional[Path] = airplanes_path
         self._airplane_flight_path: Optional[Path] = airplane_flight_path
         self._navaid_sector_path: Optional[Path] = navaid_sector_path
+
+        self._composite_sector_function = composite_sector_function
+        self._sector_capacity_factor = sector_capacity_factor
 
         self._encoding_path: Optional[Path] = encoding_path
 
@@ -211,22 +216,25 @@ class Main:
         for row_index in range(self.navaid_sector.shape[0]):
             navaid_sector_lookup[self.navaid_sector[row_index,0]] = self.navaid_sector[row_index, 1]
 
+        # 0.) Create navpaid sector time assignment (|R|XT):
+        navaid_sector_time_assignment = MIPModel.create_initial_navpoint_sector_assignment(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity)
 
         # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
         #converted_instance_matrix, planned_arrival_times = self.instance_to_matrix_vectorized(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity, navaid_sector_lookup)
 
-        navaid_sector_time_assignment = self.create_initial_navpoint_sector_assignment(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity)
+        converted_navpoint_matrix, _ = self.instance_navpoint_matrix(self.flights, navaid_sector_time_assignment.shape[1], fill_value=-1)
+
         converted_instance_matrix, planned_arrival_times = self.instance_to_matrix_vectorized(self.flights, self.airplane_flight, navaid_sector_time_assignment.shape[1], self._timestep_granularity, navaid_sector_time_assignment)
         #converted_instance_matrix, planned_arrival_times = self.instance_to_matrix(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity, navaid_sector_lookup)
 
         #np.testing.assert_array_equal(converted_instance_matrix, converted_instance_matrix_2)
-        #quit()
 
         # 2.) Create demand matrix (|R|x|T|)
-        system_loads = self.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+        system_loads = MIPModel.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
 
         # 3.) Create capacity matrix (|R|x|T|)
-        capacity_time_matrix = self.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity)
+        capacity_time_matrix = MIPModel.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self._sector_capacity_factor,
+                                                                    composite_sector_function=self._composite_sector_function)
 
         # 4.) Subtract demand from capacity (|R|x|T|)
         capacity_demand_diff_matrix = capacity_time_matrix - system_loads
@@ -237,7 +245,7 @@ class Main:
         original_converted_instance_matrix = converted_instance_matrix.copy()
 
 
-        converted_instance_matrix, converted_navpoint_matrix, navaid_sector_time_assignment = self.build_MIP_model(self.unit_graphs, converted_instance_matrix, capacity_time_matrix, planned_arrival_times, self.airplane_flight)
+        converted_instance_matrix, converted_navpoint_matrix, navaid_sector_time_assignment = self.build_MIP_model(self.unit_graphs, converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix, planned_arrival_times, self.airplane_flight, navaid_sector_time_assignment)
 
         end_time = time.time()
         if self.verbosity > 0:
@@ -285,9 +293,11 @@ class Main:
     def build_MIP_model(self,
                 unit_graphs,
                 converted_instance_matrix: np.ndarray,
+                converted_navpoint_matrix,
                 capacity_time_matrix: np.ndarray,
                 planned_arrival_times,
                 airplane_flight,
+                navaid_sector_time_assignment,
                 ):
         """
         Split the candidate rows into *n_proc* equally‑sized chunks
@@ -301,10 +311,10 @@ class Main:
         max_time = max(self._max_time, converted_instance_matrix.shape[1])
 
         max_delay = 24
-        
-        mipModel = MIPModel(self.airports, max_time, self._max_explored_vertices, self._seed, self._timestep_granularity, self.verbosity, self._number_threads, navaid_sector_lookup)
 
-        converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix = mipModel.create_model(converted_instance_matrix, capacity_time_matrix, unit_graphs, self.airplanes, max_delay, planned_arrival_times, airplane_flight, self.flights)
+        mipModel = MIPModel(self.sectors, self.airports, max_time, self._max_explored_vertices, self._seed, self._timestep_granularity, self.verbosity, self._number_threads, navaid_sector_lookup, self._composite_sector_function, self._sector_capacity_factor)
+
+        converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix = mipModel.create_model(converted_instance_matrix, capacity_time_matrix, unit_graphs, self.airplanes, max_delay, planned_arrival_times, airplane_flight, self.flights, navaid_sector_time_assignment, converted_navpoint_matrix)
 
         return converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix
     
@@ -441,6 +451,31 @@ class Main:
             dist = np.where(np.isinf(dist), -1, dist.astype(np.int32))
 
         return dist
+ 
+    def instance_navpoint_matrix(self, triplets, max_time, *, t0=0, fill_value=-1):
+        """
+        triplets: (N x 3) array-like of [flight_id, navpoint_id, time_first_reached]
+        max_time: largest time index to include (inclusive)
+        t0:       optional time offset (use t0=min_time if your times don't start at 0)
+        """
+        a = np.asarray(triplets, dtype=int)
+        f = a[:, 0]
+        n = a[:, 1]
+        t = a[:, 2] - t0  # shift if needed so time starts at 0
+
+        # Map possibly non-contiguous flight IDs to row indices
+        flights, f_idx = np.unique(f, return_inverse=True)
+        F = flights.size
+        T = max_time - t0  # inclusive of max_time
+
+        out = np.full((F, T), fill_value, dtype=int)
+
+        # keep only times that land inside [0, T-1]
+        m = (t >= 0) & (t < T)
+        out[f_idx[m], t[m]] = n[m]  # last write wins if duplicates
+
+        return out, flights  # 'flights' tells you which row corresponds to which flight_id
+
 
     def instance_to_matrix_vectorized(self,
                                     flights: np.ndarray,
@@ -592,108 +627,6 @@ class Main:
 
         sectors = navaid_sector[:, 1]                      # shape (N,)
         return np.repeat(sectors[:, None], max_time_dim, axis=1)  # shape (N, T)
-
-    def capacity_time_matrix(self,
-                            cap: np.ndarray,
-                            n_times: int,
-                            time_granularity: int) -> np.ndarray:
-        """
-        cap: shape (N, >=2), capacity in column 1
-        returns: (N, n_times)
-        """
-        N = cap.shape[0]
-        T = int(time_granularity)
-
-        # Integer math: base fill + remainder
-        capacity = np.asarray(cap[:, 1], dtype=np.int64)
-        base = capacity // T                 # per-slot baseline
-        rem  = capacity %  T                 # how many +1 to sprinkle
-
-        # Start with the baseline replicated across T columns
-        # (broadcast then copy to get a writeable array)
-        template = np.broadcast_to(base[:, None], (N, T)).astype(np.int32, copy=True)
-
-        # Fast remainder placement: for each row i, add +1 at
-        # columns: step[i] * np.arange(rem[i]), where step = floor(T/rem)
-        max_r = int(rem.max())
-        if max_r > 0:
-            # step is irrelevant where rem==0, but we still fill an array (won't be used)
-            step = np.empty_like(rem, dtype=np.int64)
-            # Avoid division-by-zero; values where rem==0 are ignored by mask below
-            np.floor_divide(T, rem, out=step, where=rem > 0)
-
-            J = np.arange(max_r, dtype=np.int64)                  # 0..max(rem)-1
-            mask = J[None, :] < rem[:, None]                      # N x max_r (True only for first rem[i])
-            rows2d = np.broadcast_to(np.arange(N)[:, None], (N, max_r))
-            cols2d = step[:, None] * J[None, :]
-
-            r_idx = rows2d[mask]
-            c_idx = cols2d[mask]
-
-            # Scatter-add the remainders
-            np.add.at(template, (r_idx, c_idx), 1)
-
-        # Repeat the base block to cover n_times
-        if n_times % T != 0:
-            raise ValueError("n_times must be a multiple of time_granularity")
-        reps = n_times // T
-
-        cap_mat = np.tile(template, (1, reps))   # (N, n_times)
-
-        #np.savetxt("20250819_cap_mat.csv", cap_mat, delimiter=",",fmt="%i")
-
-        return cap_mat
-
-
-   
-    def bucket_histogram(self, instance_matrix: np.ndarray,
-                         sectors: np.ndarray,                # unused, kept for signature compat
-                         num_buckets: int,
-                         n_times: int,
-                         timestep_granularity: int,          # unused, kept for signature compat
-                         *,
-                         fill_value: int = -1) -> np.ndarray:
-
-        inst = np.asarray(instance_matrix)
-        if inst.ndim != 2:
-            raise ValueError("instance_matrix must be 2D (flights x time)")
-        F, T = inst.shape
-        if T != n_times:
-            raise ValueError(f"n_times ({n_times}) != instance_matrix.shape[1] ({T})")
-
-        # Early exit if everything is fill_value
-        valid = inst != fill_value
-        if not valid.any():
-            return np.zeros((num_buckets, T), dtype=np.int32)
-
-        # Mark entries (new sector occurrences) at each time:
-        # - t = 0: any valid value
-        # - t > 0: valid and changed vs previous time
-        change = np.zeros_like(valid, dtype=bool)
-        change[:, 0] = valid[:, 0]
-        if T > 1:
-            change[:, 1:] = valid[:, 1:] & (inst[:, 1:] != inst[:, :-1])
-
-        # Gather (sector_id, time_idx) pairs where an entry happens
-        sectors_at_entries = inst[change]
-        time_idx = np.nonzero(change)[1]  # column indices where change==True
-
-        # Optional safety: ensure sector ids are in [0, num_buckets)
-        if sectors_at_entries.size:
-            mn = int(sectors_at_entries.min())
-            mx = int(sectors_at_entries.max())
-            if mn < 0 or mx >= num_buckets:
-                raise ValueError(
-                    f"sector id(s) out of range [0, {num_buckets}): found min={mn}, max={mx}"
-                )
-
-        # Scatter-add 1 for each (sector, time) event
-        hist = np.zeros((num_buckets, T), dtype=np.int32)
-        np.add.at(hist, (sectors_at_entries, time_idx), 1)
-
-        #np.savetxt("20250819_histogram.csv", hist, delimiter=",",fmt="%i")
-
-        return hist
     
 # ---------------------------------------------------------------------------
 # CLI utilities (with config + bundle directory support)
@@ -787,6 +720,9 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
         default=C("results-format", "csv"),
         help="File format for matrices: 'csv' (default, uncompressed), 'csv.gz', or 'npz'.",
     )
+
+    parser.add_argument("--composite-sector-function", type=str, default=str(C("composite-sector-function", "max")),
+                        help="Defines the function of the composite sector - available: max, triangular, linear")
 
     # Encoding + knobs
     parser.add_argument("--encoding-path", type=Path, default=Path(C("encoding-path", DEFAULT_FILENAMES["encoding_path"])),
@@ -1024,6 +960,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         )
         wandb_log = run.log
 
+    composite_sector_function = args.composite_sector_function.lower()
+    if composite_sector_function not in [MAX, LINEAR, TRIANGULAR]:
+        raise Exception(f"Specified composite sector function {composite_sector_function} not in {[MAX,LINEAR,TRIANGULAR]}")
 
     app = Main(args.graph_path, args.sectors_path, args.flights_path,
                args.airports_path, args.airplanes_path,
@@ -1031,7 +970,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                args.encoding_path,
                args.seed,args.number_threads, args.timestep_granularity,
                args.max_explored_vertices, args.max_delay_per_iteration,
-               args.max_time, args.verbosity)
+               args.max_time, args.verbosity,
+               composite_sector_function, args.sector_capacity_factor)
     app.run()
 
     if run is not None:
