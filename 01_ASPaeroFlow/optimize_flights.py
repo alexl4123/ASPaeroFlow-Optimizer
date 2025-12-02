@@ -154,6 +154,8 @@ class OptimizeFlights:
         time_window = max_delay_parameter
         k = max_vertices_cutoff_value
 
+        largest_considered_time = 0
+
         for flight_affected_index in range(flights_affected.shape[0]):
 
 
@@ -273,17 +275,33 @@ class OptimizeFlights:
                                 # Approximate time_delta/2 to be on the safe side:
                                 needed_capacities_for_navpoint[navaid] = [max(current_time-time_delta,0), current_time+time_delta]
 
+                                if current_time+time_delta > largest_considered_time:
+                                    largest_considered_time = current_time+time_delta
+
                             if current_time-time_delta < needed_capacities_for_navpoint[navaid][0]:
                                 needed_capacities_for_navpoint[navaid][0] = max(current_time-time_delta,0)
+
+                                if current_time-time_delta > largest_considered_time:
+                                    largest_considered_time = current_time-time_delta
 
                             if current_time + time_delta > needed_capacities_for_navpoint[navaid][1]:
                                 needed_capacities_for_navpoint[navaid][1] = current_time + time_delta
 
+                                if current_time+time_delta > largest_considered_time:
+                                    largest_considered_time = current_time+time_delta
+
                             if current_time-time_delta < needed_capacities_for_navpoint[prev_navaid][0]:
                                 # This should not happen, but if it does it is no problem:
                                 needed_capacities_for_navpoint[prev_navaid][0] = max(current_time-time_delta,0)
+
+                                if current_time+time_delta > largest_considered_time:
+                                    largest_considered_time = current_time-time_delta
+
                             if current_time + time_delta > needed_capacities_for_navpoint[prev_navaid][1]:
                                 needed_capacities_for_navpoint[prev_navaid][1] = current_time + time_delta
+
+                                if current_time+time_delta > largest_considered_time:
+                                    largest_considered_time = current_time+time_delta
                             
 
                             current_time += time_delta
@@ -303,6 +321,9 @@ class OptimizeFlights:
                     #print(f"LANDING_TIME:{landing_time_previous_lag}")
                     #print(potentially_affected_flights)
                     #print(flight_index)
+                    
+                    if current_time >= largest_considered_time:
+                        largest_considered_time = current_time
 
                     for potentially_affected_flight in potentially_affected_flights:
 
@@ -359,10 +380,21 @@ class OptimizeFlights:
                             if cur_navpoint not in needed_capacities_for_navpoint:
                                 # Approximate time_delta/2 to be on the safe side:
                                 needed_capacities_for_navpoint[cur_navpoint] = [max(current_time-1,0), current_time+1]
+
+                                if current_time+1 > largest_considered_time:
+                                    largest_considered_time = current_time+1
+
                             if current_time-1 < needed_capacities_for_navpoint[cur_navpoint][0]:
                                 needed_capacities_for_navpoint[cur_navpoint][0] = max(current_time-1,0)
+
+                                if current_time-1 > largest_considered_time:
+                                    largest_considered_time = current_time-1
+
                             if current_time + 1 > needed_capacities_for_navpoint[cur_navpoint][1]:
                                 needed_capacities_for_navpoint[cur_navpoint][1] = current_time + 1
+
+                                if current_time+1 > largest_considered_time:
+                                    largest_considered_time = current_time+1
 
                             flight_time = 1
 
@@ -389,18 +421,46 @@ class OptimizeFlights:
                             if cur_navpoint not in needed_capacities_for_navpoint:
                                 # Approximate time_delta/2 to be on the safe side:
                                 needed_capacities_for_navpoint[cur_navpoint] = [max(current_time-time_delta,0), current_time+time_delta]
+
+                                if current_time+time_delta > largest_considered_time:
+                                    largest_considered_time = current_time+time_delta
+
                             if current_time-time_delta < needed_capacities_for_navpoint[cur_navpoint][0]:
                                 needed_capacities_for_navpoint[cur_navpoint][0] = max(current_time-time_delta,0)
+
+                                if current_time-time_delta > largest_considered_time:
+                                    largest_considered_time = current_time-time_delta
+
                             if current_time + time_delta > needed_capacities_for_navpoint[cur_navpoint][1]:
                                 needed_capacities_for_navpoint[cur_navpoint][1] = current_time + time_delta
+
+                                if current_time+time_delta > largest_considered_time:
+                                    largest_considered_time = current_time+time_delta
+
+
 
                             if prev_navpoint not in needed_capacities_for_navpoint:
                                 # Approximate time_delta/2 to be on the safe side:
                                 needed_capacities_for_navpoint[prev_navpoint] = [max(current_time-time_delta,0), current_time+time_delta]
+
+                                if current_time+time_delta > largest_considered_time:
+                                    largest_considered_time = current_time+time_delta
+
+
+
                             if current_time-time_delta < needed_capacities_for_navpoint[prev_navpoint][0]:
                                 needed_capacities_for_navpoint[prev_navpoint][0] = max(current_time-time_delta,0)
+
+                                if current_time-time_delta > largest_considered_time:
+                                    largest_considered_time = current_time-time_delta
+
                             if current_time + time_delta > needed_capacities_for_navpoint[prev_navpoint][1]:
                                 needed_capacities_for_navpoint[prev_navpoint][1] = current_time + time_delta
+
+                                if current_time+time_delta > largest_considered_time:
+                                    largest_considered_time = current_time+time_delta
+
+
                             
 
 
@@ -421,6 +481,34 @@ class OptimizeFlights:
         # 1.) Get config for sector sector_index and time_index
         #   a.) Check out what we can do with this sector
         #   b.) Create alternatives!
+        
+        if largest_considered_time >= self.navaid_sector_time_assignment.shape[1]:
+            # INCREASE MATRIX SIZE (TIME) AUTOMATICALLY
+            diff = (largest_considered_time - self.navaid_sector_time_assignment.shape[1]) + 1
+
+            in_units = math.ceil(diff / timestep_granularity)
+            number_new_cols = in_units * timestep_granularity
+
+            # 0.) Handle Sector Assignments:
+            new_cols = np.repeat(self.navaid_sector_time_assignment[:,[-1]], number_new_cols, axis=1)  # shape (N,k)
+            self.navaid_sector_time_assignment = np.concatenate([self.navaid_sector_time_assignment, new_cols], axis=1)
+            # 1.) Handle Instance Matrix:
+            extra_col = -1 * np.ones((converted_instance_matrix.shape[0], number_new_cols), dtype=int)
+            converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+
+            extra_col = -1 * np.ones((self.converted_navpoint_matrix.shape[0], number_new_cols), dtype=int)
+            self.converted_navpoint_matrix = np.hstack((self.converted_navpoint_matrix, extra_col)) 
+
+            # 2.) Create demand matrix (|R|x|T|):
+            system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.capacity, self.capacity.shape[0], converted_instance_matrix.shape[1], timestep_granularity)
+            # 3.) Create capacity matrix (|R|x|T|):
+            capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.capacity, system_loads.shape[1], timestep_granularity, self.navaid_sector_time_assignment, z = self.sector_capacity_factor, composite_sector_function=self.composite_sector_function)
+
+            # 4.) Subtract demand from capacity (|R|x|T|):
+            capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+
+            self.capacity_time_matrix = capacity_time_matrix
+            self.capacity_demand_diff_matrix = capacity_demand_diff_matrix
 
         #number_configs = 7
         config_restore_dict = {}
@@ -443,6 +531,9 @@ class OptimizeFlights:
 
             for current_time in range(from_time, until_time + 1):
                 #
+                if current_time >= self.navaid_sector_time_assignment.shape[1]:
+                    raise Exception(f"Current time >= navaid-sector-time-shape: {current_time} >= {self.navaid_sector_time_assignment.shape[1]} for navpoint:{navpoint};{current_time}")
+
                 current_sector = self.navaid_sector_time_assignment[navpoint, current_time]
                 navpoint_sector_assignment_instance.append(f"possible_assignment({navpoint},{current_sector},{current_time},{current_config}).")
 
