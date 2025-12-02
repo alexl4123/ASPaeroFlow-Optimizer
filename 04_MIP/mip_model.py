@@ -7,16 +7,22 @@ import numpy as np
 import networkx as nx
 import math
 
+LINEAR = "linear"
+TRIANGULAR = "triangular"
+MAX = "max"
 
 class MIPModel:
 
-    def __init__(self, airport_vertices, max_time, max_explored_vertices, seed, timestep_granularity, verbosity, number_threads, navaid_sector_lookup):
-
+    def __init__(self, sectors, airport_vertices, max_time, max_explored_vertices, seed, timestep_granularity, verbosity, number_threads, navaid_sector_lookup, composite_sector_function, sector_capacity_factor):
+        
+        self.sectors = sectors
         self.airport_vertices = airport_vertices
         self._max_time = max_time
         self._max_explored_vertices = max_explored_vertices
         self._seed = seed
         self._timestep_granularity = timestep_granularity
+        self._composite_sector_function = composite_sector_function
+        self._sector_capacity_factor = sector_capacity_factor
 
         self._max_number_threads = number_threads
         self.navaid_sector_lookup = navaid_sector_lookup
@@ -74,12 +80,14 @@ class MIPModel:
             extra_col = -1 * np.ones((converted_instance_matrix.shape[0], diff), dtype=int)
             converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
 
+        delay_time_window = 10
+
         while solution is None:
 
             model = gp.Model(env=self.env, name="toy")
             model.Params.Threads = self._max_number_threads
 
-            flight_variables_pd, sector_variables_pd, next_sectors, previous_sectors, max_effective_delay, all_flights_navpoints = self.add_variables(model, converted_instance_matrix, unit_graphs, airplanes, max_delay, filed_flights, airplane_flight)
+            flight_variables_pd, sector_variables_pd, next_sectors, previous_sectors, max_effective_delay, all_flights_navpoints = self.add_variables(model, converted_instance_matrix, unit_graphs, airplanes, delay_time_window, filed_flights, airplane_flight)
 
             model.update()
 
@@ -111,14 +119,30 @@ class MIPModel:
                 solution = None
                 max_delay = max_delay + 1
                 self._max_time = + 1
+                delay_time_window += self._timestep_granularity
 
-                if converted_instance_matrix.shape[1] < self._max_time:
-                    diff = self._max_time - converted_instance_matrix.shape[1]
-                    extra_col = -1 * np.ones((converted_instance_matrix.shape[0], diff), dtype=int)
-                    converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+                in_units = 1
+                number_new_cols = in_units * self._timestep_granularity
 
-                system_loads = self.bucket_histogram(converted_instance_matrix, capacity_time_matrix.shape[0], self._timestep_granularity)
-                capacity_time_matrix = self.capacity_time_matrix(self.capacity,system_loads.shape[1])
+                # 0.) Handle Sector Assignments:
+                new_cols = np.repeat(navaid_sector_time_assignment[:,[-1]], number_new_cols, axis=1)  # shape (N,k)
+                navaid_sector_time_assignment = np.concatenate([navaid_sector_time_assignment, new_cols], axis=1)
+                # 1.) Handle Instance Matrix:
+                extra_col = -1 * np.ones((converted_instance_matrix.shape[0], number_new_cols), dtype=int)
+                converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+
+                extra_col = -1 * np.ones((converted_navpoint_matrix.shape[0], number_new_cols), dtype=int)
+                converted_navpoint_matrix = np.hstack((converted_navpoint_matrix, extra_col)) 
+
+                # 2.) Create demand matrix (|R|x|T|):
+                system_loads = MIPModel.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+                # 3.) Create capacity matrix (|R|x|T|):
+                capacity_time_matrix = MIPModel.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self._sector_capacity_factor, composite_sector_function=self._composite_sector_function)
+
+                # 4.) Subtract demand from capacity (|R|x|T|):
+                capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+
+
 
 
             else:
@@ -281,7 +305,7 @@ class MIPModel:
         return traj
  
 
-    def add_variables(self, model, converted_instance_matrix, unit_graphs, airplanes, max_delay, filed_flights, airplane_flight, fill_value = -1):
+    def add_variables(self, model, converted_instance_matrix, unit_graphs, airplanes, time_window, filed_flights, airplane_flight, fill_value = -1):
 
         # |F|x|D|x|T|x|V|
         # F=flights, D=possible-delays, T=time, V=vertices
@@ -344,8 +368,6 @@ class MIPModel:
             flight_times_instance = []
             sector_instance = [] 
             actual_arrival_time_instance = []
-            additional_time_increase = 0
-            time_window = 10
             actual_delay = 0
             path_number = 0
 
@@ -356,10 +378,10 @@ class MIPModel:
 
                 navpoint_trajectory = self.get_flight_navpoint_trajectory(flights_affected, unit_graph, flight_affected_index, start_time, airplane_speed, path, self._timestep_granularity)
 
-                for delay in range(additional_time_increase * time_window,time_window * (additional_time_increase + 1)):
+                for delay in range(time_window):
 
                     current_time = start_time
-                    max_delay_tmp = time_window * (additional_time_increase + 1) 
+                    max_delay_tmp = time_window 
                     delay_number = (delay) + path_number * max_delay_tmp 
 
                     if max_delay_tmp > max_effective_delay:
@@ -817,113 +839,295 @@ class MIPModel:
 
         return vertex_ids
         
+    @classmethod
+    def bucket_histogram(cls, instance_matrix: np.ndarray,
+                         sectors: np.ndarray,                # unused, kept for signature compat
+                         num_buckets: int,
+                         n_times: int,
+                         timestep_granularity: int,          # unused, kept for signature compat
+                         *,
+                         fill_value: int = -1) -> np.ndarray:
 
-    def bucket_histogram(self, instance_matrix: np.ndarray,
-                        num_buckets: int,
-                        timestep_granularity: int,
-                        *,
-                        fill_value: int = -1) -> np.ndarray:
+        inst = np.asarray(instance_matrix)
+        if inst.ndim != 2:
+            raise ValueError("instance_matrix must be 2D (flights x time)")
+        F, T = inst.shape
+        if T != n_times:
+            raise ValueError(f"n_times ({n_times}) != instance_matrix.shape[1] ({T})")
+
+        # Early exit if everything is fill_value
+        valid = inst != fill_value
+        if not valid.any():
+            return np.zeros((num_buckets, T), dtype=np.int32)
+
+        # Mark entries (new sector occurrences) at each time:
+        # - t = 0: any valid value
+        # - t > 0: valid and changed vs previous time
         """
-        Count how many elements occupy each *bucket* at each *time step*.
-
-        Parameters
-        ----------
-        instance_matrix
-            2-D array produced by `instance_to_matrix`  
-            shape = (num_elements, num_time_steps)
-        num_buckets
-            Equals `self.capacity.shape[0]`
-        fill_value
-            The placeholder used for “no assignment” (default −1)
-
-        Returns
-        -------
-        counts : np.ndarray
-            shape = (num_buckets, num_time_steps)  
-            `counts[bucket, t]` is the occupancy of *bucket* at time *t*.
+        # Code for entry/diff demand measure:
+        change = np.zeros_like(valid, dtype=bool)
+        change[:, 0] = valid[:, 0]
+        if T > 1:
+            change[:, 1:] = valid[:, 1:] & (inst[:, 1:] != inst[:, :-1])
         """
-        n_elems, n_times = instance_matrix.shape
+        change = valid
 
-        # ------------------------------------------------------------------
-        # 1.  Mask out empty cells (if any)
-        # ------------------------------------------------------------------
+        # Gather (sector_id, time_idx) pairs where an entry happens
+        sectors_at_entries = inst[change]
+        time_idx = np.nonzero(change)[1]  # column indices where change==True
 
-        # Generate mask of values that differ from fill_value = -1
-        valid_mask = instance_matrix != fill_value
-        if not np.any(valid_mask):                       
-            # Shortcut if all cells empty
-            return np.zeros((num_buckets, n_times), dtype=int)
+        # Optional safety: ensure sector ids are in [0, num_buckets)
+        if sectors_at_entries.size:
+            mn = int(sectors_at_entries.min())
+            mx = int(sectors_at_entries.max())
+            if mn < 0 or mx >= num_buckets:
+                raise ValueError(
+                    f"sector id(s) out of range [0, {num_buckets}): found min={mn}, max={mx}"
+                )
 
-        # ------------------------------------------------------------------
-        # 2.  Gather bucket IDs and their time indices
-        # ------------------------------------------------------------------
-        buckets = instance_matrix[valid_mask]                        # (K,) bucket id
-        # 
+        # Scatter-add 1 for each (sector, time) event
+        hist = np.zeros((num_buckets, T), dtype=np.int32)
+        np.add.at(hist, (sectors_at_entries, time_idx), 1)
 
-        # np.nonzero --> Get indices of non-zero elements of valid_mask (non false)
-        # --> with np.nonzero(valid_mask)[1] we take the time indices
+        #np.savetxt("20251003_histogram.csv", hist, delimiter=",",fmt="%i")
 
-        times   = np.nonzero(valid_mask)[1]              # (K,) time index
-
-        # ------------------------------------------------------------------
-        # 3.  Vectorised scatter using `np.add.at`
-        # ------------------------------------------------------------------
-        counts = np.zeros((num_buckets, n_times), dtype=int)
-
-        # Performs unbuffered in place operation on operand ‘a’ for elements specified by ‘indices’.
-        # ufunc.at(a, indices, b=None, /)
-        # --> Buckets and times specify the indices
-        np.add.at(counts, (buckets, times), 1)
-
-        # Performs a sliding window aggregation according to timestep-granularity
-        # To account for hour/minute/etc. computation
-        axis = 1
-
-        pad_width = [(0, 0)] * counts.ndim
-        pad_width[axis] = (0, timestep_granularity - 1)
-        padded = np.pad(counts, pad_width, mode="constant")
-
-        windows = np.lib.stride_tricks.sliding_window_view(padded,
-                                                    window_shape=timestep_granularity,
-                                                    axis=axis)
-        windows = windows.sum(axis=2)
-
-        return windows
-
-    def capacity_time_matrix(self, cap: np.ndarray,
-                            n_times: int,
-                            *,
-                            sort_by_bucket: bool = False) -> np.ndarray:
-        """
-        Expand the per-bucket capacity vector to shape (|B|, n_times).
-
-        Parameters
-        ----------
-        cap
-            2-column array ``[bucket_id, capacity_value]`` with shape (|B|, 2).
-        n_times
-            Number of time steps (usually ``counts.shape[1]``).
-        sort_by_bucket
-            If *True* (default) the rows are first sorted by *bucket_id*
-            so that row *i* corresponds to bucket *i* (0 … |B|–1).
-
-        Returns
-        -------
-        cap_mat : np.ndarray
-            Shape (|B|, n_times) where every row is the bucket’s capacity.
-        """
-        if sort_by_bucket:
-            cap = cap[np.argsort(cap[:, 0])]
-
-        # Extract the capacity column → shape (|B|,)
-        cap_vals = cap[:, 1]
-
-        # Broadcast to (|B|, n_times) without an explicit loop
-        cap_mat = np.broadcast_to(cap_vals[:, None], (cap_vals.size, n_times))
-        # cap_mat = cap_mat.copy()
-
-        return cap_mat
+        return hist
     
+
+
+
+    @classmethod 
+    def capacity_time_matrix(cls,
+                            cap: np.ndarray,
+                            n_times: int,
+                            time_granularity: int,
+                            navaid_sector_time_assignment: np.ndarray,
+                            z=1,
+                            composite_sector_function = MAX
+                            ) -> np.ndarray:
+        """
+        Same I/O and validations as before. Now we:
+        1) scatter-add to get per-(sector,time) SUM and COUNT,
+        2) call cls.compute_sector_capacity(avg, count, z)  <-- explicit rule, vectorized,
+        3) distribute remainder over T slots.
+        """
+        N = cap.shape[0]
+        T = int(time_granularity)
+
+        if n_times % T != 0:
+            raise ValueError("n_times must be a multiple of time_granularity (T).")
+
+        if navaid_sector_time_assignment.shape != (N, n_times):
+            raise ValueError(
+                f"navaid_sector_time_assignment must be shape (N, n_times) = ({N}, {n_times})"
+            )
+
+        S = navaid_sector_time_assignment.astype(np.int64, copy=False)
+        if S.min() < 0 or S.max() >= N:
+            print(S)
+            raise ValueError("Sector ids in navaid_sector_time_assignment must be in [0, N-1].")
+
+        # ---- 1) Sum atomic per-block caps and contributor counts per (sector,time)
+        atomic_block_cap = np.asarray(cap[:, 1], dtype=np.int64)  # length N
+
+        total_atomic_sum = np.zeros((N, n_times), dtype=np.int64)
+        contrib_count    = np.zeros((N, n_times), dtype=np.int64)
+
+        S_flat      = S.ravel(order="C")
+        t_idx_flat  = np.tile(np.arange(n_times, dtype=np.int64), N)
+        cap_rep_flat= np.repeat(atomic_block_cap, n_times)
+
+        np.add.at(total_atomic_sum, (S_flat, t_idx_flat), cap_rep_flat)
+        np.add.at(contrib_count,    (S_flat, t_idx_flat), 1)
+
+
+        max_atomic = None
+        avg = None
+
+        if composite_sector_function == MAX:
+            # Also compute per-(sector,time) MAX for the "max" rule
+            max_atomic = np.full((N, n_times), np.iinfo(np.int64).min, dtype=np.int64)
+            np.maximum.at(max_atomic, (S_flat, t_idx_flat), cap_rep_flat)
+            max_atomic = np.where(contrib_count > 0, max_atomic, 0)
+
+        if composite_sector_function == TRIANGULAR:
+            # Average with safe denom (still useful for triangular & linear rules)
+            avg = total_atomic_sum.astype(np.float64) / np.maximum(1, contrib_count)
+
+        # ---- 2) Explicit, *vectorized* capacity rule
+        # Returns per-block integer capacities
+        total_capacity = cls.compute_sector_capacity(contrib_count, float(z), avg_ = avg,
+                                                            max_ = max_atomic, sum_=total_atomic_sum, function = composite_sector_function)
+
+        # ---- 3) Distribute per-block capacity across T slots (unchanged)
+        base = total_capacity // T
+        rem  = total_capacity - base * T
+
+        rem_table = cls._remainder_distribution_table(T)   # (T+1, T)
+        k_mod     = np.arange(n_times, dtype=np.int64) % T
+
+        extra      = rem_table[rem, k_mod[None, :]]
+        sector_cap = (base + extra).astype(np.int64, copy=False)
+
+        return sector_cap
+ 
+    @classmethod
+    def create_initial_navpoint_sector_assignment(cls,
+                                    flights: np.ndarray,
+                                    airplane_flight: np.ndarray,
+                                    navaid_sector: np.ndarray,
+                                    max_time: int,
+                                    time_granularity: int,
+                                    *,
+                                    fill_value: int = -1,
+                                    compress: bool = False):
+        """
+        Vectorized/semi-vectorized rewrite instance_to_matrix.
+        Assumes IDs are non-negative ints (reasonably dense).
+        """
+
+        # --- ensure integer views without copies where possible
+        flights = flights.astype(np.int64, copy=False)
+        airplane_flight = airplane_flight.astype(np.int64, copy=False)
+
+        # --- build flight -> airplane mapping (array is fastest if IDs are dense)
+        fid_map_max = int(max(flights[:,0].max(), airplane_flight[:,1].max()))
+        flight_to_airplane = np.full(fid_map_max + 1, -1, dtype=np.int64)
+        flight_to_airplane[airplane_flight[:,1]] = airplane_flight[:,0]
+
+        # --- sort by flight, then time (stable contiguous blocks per flight)
+        order = np.lexsort((flights[:,2], flights[:,0]))
+        f_sorted = flights[order]
+
+        t   = f_sorted[:,2]
+
+        # --- output matrix shape (airplane_id rows, time columns)
+        max_time_dim = int(max(t.max() + 1, (max_time + 1) * time_granularity))
+
+        if max_time_dim % time_granularity != 0:
+            remainder = max_time_dim % time_granularity
+            max_time_dim += time_granularity - remainder
+
+            if max_time_dim % time_granularity != 0:
+                print("[ERROR] - Should never occur - failure in maths")
+                raise Exception("[ERROR IN COMPUTATION]")
+
+        sectors = navaid_sector[:, 1]                      # shape (N,)
+
+        largest_navaid = navaid_sector[navaid_sector.shape[0]-1,0]
+
+        output = np.ones((largest_navaid+1, max_time_dim), dtype=int)  * (-1)
+
+        for index in range(navaid_sector.shape[0]):
+            output_index = navaid_sector[index,0]
+            output[output_index,:] = navaid_sector[index,1]
+
+        for index in range(output.shape[0]):
+
+            if output[index,0] == -1:
+                output[index,:] = index
+
+        return output
+        #np.repeat(sectors[:, None], max_time_dim, axis=1)  # shape (N, T)
+
+
+    @classmethod
+    def compute_sector_capacity(cls,
+                                counts: np.ndarray,
+                                z: float,
+                                avg_ = None,
+                                max_ = None,
+                                sum_ = None,
+                                function = "triangular"
+                                ) -> np.ndarray:
+        """
+        Vectorized capacity rule (edit here to change behavior).
+        Inputs:
+            avg    : (N, n_times) float64, mean atomic per-block capacity for each (sector,time)
+            counts : (N, n_times) int64, number of contributors k per (sector,time)
+            z      : float, rule parameter
+        Returns:
+            int64 (N, n_times) per-block capacities BEFORE remainder distribution.
+        Current rule (matches your earlier piecewise):
+            if k > z:   cap = round(((z+1)/2) * avg)
+            else:       cap = round(avg * triangular_weight_sum(k, z))
+        """
+        
+        empty_mask = (counts == 0)
+
+        if function == LINEAR:
+            if sum_ is None:
+                raise ValueError("compute_sector_capacity(rule='linear') requires sum_.")
+            out = sum_.astype(np.int64, copy=False)
+            out = np.where(empty_mask, 0, out)
+            return out
+        
+        if function == MAX:
+
+            if max_ is None:
+                raise ValueError("compute_sector_capacity(rule='max') requires max_.")
+            out = max_.astype(np.int64, copy=False)
+            out = np.where(empty_mask, 0, out)
+            return out
+        
+        if function == TRIANGULAR:
+
+            counts = counts.astype(np.int64, copy=False)
+            avg    = avg_.astype(np.float64, copy=False)
+
+            tri    = cls._triangular_weight_sum_counts(counts, z)
+
+            out = np.where(
+                counts > z,
+                ((z + 1.0) / 2.0) * avg,
+                avg * tri
+            )
+
+            # Ensure empty groups yield 0 exactly
+            out = np.where(counts == 0, 0.0, out)
+
+            return np.rint(out).astype(np.int64)
+ 
+    @classmethod 
+    def _triangular_weight_sum_counts(cls, counts: np.ndarray, denom: float) -> np.ndarray:
+        """
+        Vectorized: for each integer count k, compute
+        sum_{i=0}^{m-1} (1 - i/denom),
+        where m = min(k, number of positive weights), see compute_sector_capacity.
+        Returns an array of same shape as counts (float64).
+        """
+        counts = counts.astype(np.int64, copy=False)
+        d = float(denom)
+        if d <= 0:
+            return counts.astype(np.float64)  # no diminishing
+
+        d_floor = np.floor(d)
+        # m_pos = floor(d) if d integer else floor(d)+1
+        m_pos = np.where(np.isclose(d, d_floor), d_floor, d_floor + 1.0)
+        m = np.minimum(counts.astype(np.float64), np.maximum(0.0, m_pos))
+
+        # tri = m - (m-1)m/(2*d)
+        tri = m - (m - 1.0) * m / (2.0 * d)
+        return tri
+
+    @classmethod
+    def _remainder_distribution_table(slc, T: int) -> np.ndarray:
+        """
+        Build a (T+1, T) table where row r gives, for remainder r,
+        the number of extra +1 drops that land at each index k∈[0..T-1]
+        when stepping by ceil(T/r) and wrapping mod T, for r steps.
+
+        Row 0 is all zeros (no remainder to distribute).
+        """
+        table = np.zeros((T + 1, T), dtype=np.int64)
+        for r in range(1, T):  # r = remainder, strictly < T
+            step = (T + r - 1) // r  # ceil(T / r)
+            hits = (np.arange(r, dtype=np.int64) * step) % T
+            # count duplicates (they matter!)
+            cnt = np.bincount(hits, minlength=T)
+            table[r, :cnt.size] = cnt
+        return table
+
 
 
 
