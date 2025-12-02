@@ -62,8 +62,8 @@ flightID(ID) :- navpointFlightPlan(ID,_,_).
 
 % MORE TIME HEURISTIC:
 time(0).
-time(T+1) :- time(T), maxTime(TMAX), T <= TMAX.
-time(T+1) :- time(T), inducedMaxTime(TMAX), T <= TMAX.
+time(T+1) :- time(T), maxTime(TMAX), T < TMAX.
+time(T+1) :- time(T), inducedMaxTime(TMAX), T < TMAX.
 inducedMaxTime(T) :- T = #max{T': navpointFlightPlan(_,T',_)}.
 
 % NORMAL FLIGHT:
@@ -148,9 +148,9 @@ flight(ID,T',S') :- navpointFlight(ID,T,X), navpointFlight(ID,T+D,X'), navpointS
 %output_sec_avg(X,Y,Z) :- sector_avg_cap(X,Y,Z), Y = 12.
 %output_sec(X,Y,Z) :- sector(X,Y,Z), Y = 12.
 
-%#show flight/3.
+#show flight/3.
 %#show navpointFlight/3.
-%#show reroute/1.
+#show reroute/1.
 %#show navpointSeq/4.
 %#show actualArrivalTime/2.
 %#show plannedArrivalTime/2.
@@ -166,10 +166,7 @@ flight(ID,T',S') :- navpointFlight(ID,T,X), navpointFlight(ID,T+D,X'), navpointS
 %#show output_sec_len/3.
 %#show output_sec/3.
 %#show output_sec_avg/3.
+%#show navaid_sector/3.
 
-#show output_len/3.
-#show output_avg/3.
-#show output_var/5.
-#show output_sector/3.
-#show output_sum/3.
+#show time/1.
 

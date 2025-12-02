@@ -16,7 +16,8 @@ FLIGHT: Final[str] = "flight"
 NAVPOINT_FLIGHT: Final[str] = "navpointFlight"
 NAVAID_SECTOR: Final[str] = "navaid_sector"
 REROUTED: Final[str] = "reroute"
-SIGNATURES: Final[set[str]] = {ARRIVAL_DELAY, FLIGHT, REROUTED, NAVPOINT_FLIGHT, NAVAID_SECTOR}
+OVERLOAD: Final[str] = "overload"
+SIGNATURES: Final[set[str]] = {ARRIVAL_DELAY, FLIGHT, REROUTED, NAVPOINT_FLIGHT, NAVAID_SECTOR, OVERLOAD}
 
 class Solver:
     def __init__(self, encoding, instance, seed = 1):
@@ -74,18 +75,20 @@ class Solver:
 
         parsed = [symbol for symbol in model.symbols(atoms=True) if symbol.name in SIGNATURES]
 
+        overload = [symbol for symbol in parsed if symbol.name == OVERLOAD]
+
         arrival_delays = [symbol for symbol in parsed if symbol.name == ARRIVAL_DELAY]
         flights = [symbol for symbol in parsed if symbol.name in FLIGHT]
         navpoint_flights = [symbol for symbol in parsed if symbol.name in NAVPOINT_FLIGHT]
         navaid_sector_time = [symbol for symbol in parsed if symbol.name in NAVAID_SECTOR]
         reroutes = [symbol for symbol in parsed if symbol.name in REROUTED]
 
-        self.final_model = Model(flights, reroutes, arrival_delays, navpoint_flights, navaid_sector_time)
+        self.final_model = Model(overload, flights, reroutes, arrival_delays, navpoint_flights, navaid_sector_time)
 
 
 class Model:
 
-    def __init__(self, flights, reroutes, atfm_delays, navpoint_flights, navaid_sector_time):
+    def __init__(self, overloads, flights, reroutes, atfm_delays, navpoint_flights, navaid_sector_time):
         self.flights = flights
         self.reroutes = reroutes
         self.atfm_delays = atfm_delays
@@ -93,6 +96,8 @@ class Model:
 
         self.navpoint_flights = navpoint_flights
         self.navaid_sector_time = navaid_sector_time
+
+        self.overloads = overloads
 
     def get_total_atfm_delay(self):
 
@@ -105,6 +110,12 @@ class Model:
         airplanes = [str(symbol.arguments[0]) for symbol in self.reroutes]
 
         return airplanes
+    
+    def get_total_overload(self):
+
+        overload_sum = sum([int(symbol.arguments[2].number) for symbol in self.overloads])
+
+        return overload_sum
     
     def set_computation_time(self, runtime):
         self.computation_time = round(runtime,2)

@@ -379,24 +379,41 @@ def main(argv: Optional[List[str]] = None) -> None:
     else:
         wandb_log = None
 
-    asp_instance = TranslateCSVtoLogicProgram().main(graph_csv, flights_csv, sectors_csv,
-        airports_csv, airplanes_csv, airplane_flight_csv, navaid_sector_csv, encoding_path, timestep_granularity, max_time,
-        sector_capacity_factor)
-    
-    instance_asp_atoms = "\n".join(asp_instance)
-
-    #open("20250827_instance.lp","w").write(instance_asp_atoms)
-    #quit()
-
-    encoding = open(encoding_path, "r").read()
 
     model = None
 
+
     while model is None:
+
+        asp_instance = TranslateCSVtoLogicProgram().main(graph_csv, flights_csv, sectors_csv,
+            airports_csv, airplanes_csv, airplane_flight_csv, navaid_sector_csv, encoding_path, timestep_granularity, max_time,
+            sector_capacity_factor)
+        
+
+        
+        instance_asp_atoms = "\n".join(asp_instance)
+
+        #open("20251202_instance.lp","w").write(instance_asp_atoms)
+        #quit()
+
+        encoding = open(encoding_path, "r").read()
 
         solver: Model = Solver(encoding, instance_asp_atoms, seed=seed)
         model = solver.solve()
-        
+            
+        if verbosity > 0:
+            print(f"""
+        Result of Answer:
+        - Overload: {model.get_total_overload()}
+        - ATFM Delay: {model.get_total_atfm_delay()}
+        - Computation time: {model.computation_time}s
+        - Rerouted Airplanes: {model.get_rerouted_airplanes()}
+            """)
+
+        if model.get_total_overload() > 0:
+            max_time += 1
+            model = None
+
     if verbosity > 0:
         print(f"""
     Result of Answer:
@@ -404,7 +421,6 @@ def main(argv: Optional[List[str]] = None) -> None:
     - Computation time: {model.computation_time}s
     - Rerouted Airplanes: {model.get_rerouted_airplanes()}
         """)
-
     flights = model.get_flights()
 
     distinct_flights = set()
