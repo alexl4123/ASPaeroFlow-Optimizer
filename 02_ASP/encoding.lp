@@ -18,7 +18,9 @@
 navaid(NAV) :- navaid_sector(NAV,_,_).
 
 % Sector Guess:
+% Airport Strict:
 navaid_sector(SEC,SEC,T) :- navaid(SEC), time(T), airport(SEC).
+% En-Route Guess:
 1{navaid_sector(NAV,SEC,T):navaid_sector(_,SEC,0)}1:- navaid(NAV), time(T).
 :- navaid_sector(NAV,SEC1,T), navaid_sector(NAV,SEC2,T), SEC1 != SEC2.
 %:- navaid_sector(NAV1,SEC,T), navaid_sector(NAV2,SEC,T), NAV1 != NAV2.
@@ -74,7 +76,7 @@ overload(X,T,LOAD-C) :- sector(X,T,C), #count{ID:flight(ID,T,X)} = LOAD, LOAD > 
 % REROUTE - YES/NO:
 {reroute(ID)} :- navpointFlightPlan(ID,_,_).
 reroute(ID) :- plannedDepartureTime(ID,T), actualDepartureTime(ID,T'), T' > T.
-{navpointFlight(ID,T,X):navpoint(X)}1 :- reroute(ID), time(T).
+{navpointFlight(ID,T,X):navpoint(X)}1 :- reroute(ID), time(T), actualDepartureTime(ID,T'), T >= T'.
 
 % ----------------- ONLY FOR REROUTED PLANES --------------------
 % NO FLIGHT BEFORE PLANNED START TIME:
@@ -129,8 +131,6 @@ flight(ID,T',S') :- navpointFlight(ID,T,X), navpointFlight(ID,T+D,X'), navpointS
 
 % Multi-leg flights:
 :- airplane_flight(AID,FID0), airplane_flight(AID,FID1), FID0 != FID1, plannedArrivalTime(FID0,T0), plannedArrivalTime(FID1,T1), T0 < T1, actualArrivalTime(FID0, T0'), actualDepartureTime(FID1,T1'), T0' >= T1'.
-%lololol(AID,FID0,FID1,T0,T0',FID1,T1,T1'):- airplane_flight(AID,FID0), airplane_flight(AID,FID1), FID0 != FID1, plannedArrivalTime(FID0,T0), plannedArrivalTime(FID1,T1), T0 < T1, actualArrivalTime(FID0, T0'), actualDepartureTime(FID1,T1').%, T0' >= T1'.
-%:- not arrivalDelay(0,2).
 
 % ------------------------------------------------------------------------------
 % PRIMARY WEAK CONSTRAINT:
