@@ -379,18 +379,6 @@ def main(argv: Optional[List[str]] = None) -> None:
     else:
         wandb_log = None
 
-    """
-    # Track to Weights & Biases when enabled
-    if wandb_log is not None:
-        wandb_log({
-            "iteration": int(-1), # FIRST ONE:
-            "number_of_conflicts": int(-1),
-            "total_delay": int(-1), # FIRST ONE
-        })
-    """
-
-
-
     asp_instance = TranslateCSVtoLogicProgram().main(graph_csv, flights_csv, sectors_csv,
         airports_csv, airplanes_csv, airplane_flight_csv, navaid_sector_csv, encoding_path, timestep_granularity, max_time,
         sector_capacity_factor)
