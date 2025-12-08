@@ -182,7 +182,7 @@ class TranslateCSVtoLogicProgram:
     def convert_sectors(self, sectors, timestep_granularity, max_time, max_time_flights, navaid_sector_time_assignment) -> List[str]:
         """Convert Capacity to ASP"""
 
-        max_time_dim = int(max(max_time_flights, (max_time + 1) * timestep_granularity))
+        max_time_dim = int(max(max_time_flights, (max_time + 1) * timestep_granularity, navaid_sector_time_assignment.shape[1]))
 
         sectors_matrix = TranslateCSVtoLogicProgram.capacity_time_matrix(sectors, max_time_dim, timestep_granularity, navaid_sector_time_assignment)
         
