@@ -103,8 +103,8 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str) -
             "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
             "verbosity": None,
             "cmd": [
-                "--max-explored-vertices=6",
-                "--max-delay-per-iteration=10",
+                "--max-explored-vertices=3",
+                "--max-delay-per-iteration=5",
                 "--capacity-management-enabled=True",
                 "--number-capacity-management-configs=7",
                 "--sector-capacity-factor=6",
@@ -113,6 +113,8 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str) -
                 "--wandb-experiment-name-suffix=_01_ASPaeroFlow",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
+                "--minimize-number-sectors=true",
+                "--max-number-navpoints-per-sector=100",
                 ]
         },
         {
@@ -121,8 +123,8 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str) -
             "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
             "verbosity": None,
             "cmd": [
-                "--max-explored-vertices=6",
-                "--max-delay-per-iteration=10",
+                "--max-explored-vertices=3",
+                "--max-delay-per-iteration=5",
                 "--capacity-management-enabled=False",
                 "--number-capacity-management-configs=1",
                 f"--results-root={output_path}/solver_outputs/02_RerouteDelay",
@@ -130,6 +132,8 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str) -
                 "--wandb-experiment-name-suffix=_02_RerouteDelay",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
+                "--minimize-number-sectors=true",
+                "--max-number-navpoints-per-sector=100",
                 ]
         },
         {
@@ -139,7 +143,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str) -
             "verbosity": None,
             "cmd": [
                 "--max-explored-vertices=1",
-                "--max-delay-per-iteration=10",
+                "--max-delay-per-iteration=5",
                 "--capacity-management-enabled=False",
                 "--number-capacity-management-configs=1",
                 f"--results-root={output_path}/solver_outputs/03_DELAY",
@@ -147,6 +151,8 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str) -
                 "--wandb-experiment-name-suffix=_03_Delay",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
+                "--minimize-number-sectors=true",
+                "--max-number-navpoints-per-sector=100",
                 ]
         },
         {
@@ -176,6 +182,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str) -
                 ]
         },
     ]
+
 
 
 # ---------------------------------------------
@@ -297,6 +304,9 @@ def main() -> None:
     parser.add_argument("--timestep-granularity", type=int, default=1, help="Timestep granularity")
     parser.add_argument("--experiment-name", type=str, default="", help="Specify an experiment name for various settings (such as wandb).")
 
+    parser.add_argument("--scaling-experiments", type=int, default=0, help="true (val!=0), false (val=0)")
+    
+
     args = parser.parse_args()
     mem_limit_bytes = args.memory_limit * (1024 ** 3)
 
@@ -305,6 +315,13 @@ def main() -> None:
     output_root = args.output_root
     output_dir = args.output_dir
     output_path = Path(output_root, output_dir)
+
+
+    scaling_experiments = args.scaling_experiments
+    if scaling_experiments == 0:
+        scaling_experiments = False
+    else:
+        scaling_experiments = True
 
     base_dir = Path(__file__).resolve().parent
     systems = build_system_config(base_dir, output_path, experiment_name)
@@ -333,7 +350,7 @@ def main() -> None:
             system_name = system["key"]
 
             # Propagate previous failure without running anything
-            if system_name in first_failure and first_failure[system_name] is not None:
+            if system_name in first_failure and first_failure[system_name] is not None and scaling_experiments is True:
                 exec_time[inst_name][system_name] = first_failure[system_name]
                 ram_usage[inst_name][system_name] = first_failure[system_name]
                 sol_value[inst_name][system_name] = first_failure[system_name]
