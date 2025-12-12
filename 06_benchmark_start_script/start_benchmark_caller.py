@@ -31,12 +31,14 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
 import signal
 import subprocess
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -53,6 +55,104 @@ UNPARSE_CODE = 'P'   #  unparsable output
 # ---------------------------------------------
 # Helpers
 # ---------------------------------------------
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+def load_hotstart_state(state_path: Path) -> Dict:
+    """
+    Load hot-start progress from JSON.
+    Structure:
+      {
+        "schema_version": 1,
+        "created_utc": "...",
+        "updated_utc": "...",
+        "records": {
+          "<instance_name>": {
+            "<system_name>": {
+              "instance_path": "...",
+              "system_name": "...",
+              "execution_time": <float|str>,
+              "ram_usage": <int|str>,
+              "solution_value": <int|str>,
+              "experiment_failed": <0|str>,
+              "timestamp_utc": "..."
+            }
+          }
+        }
+      }
+    """
+    if not state_path.exists():
+        return {
+            "schema_version": 1,
+            "created_utc": _utc_now_iso(),
+            "updated_utc": _utc_now_iso(),
+            "records": {},
+        }
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("hot-start state must be a JSON object")
+        if "records" not in data or not isinstance(data["records"], dict):
+            data["records"] = {}
+        data.setdefault("schema_version", 1)
+        data.setdefault("created_utc", _utc_now_iso())
+        data["updated_utc"] = _utc_now_iso()
+        return data
+    except Exception:
+        # If the file is corrupted (e.g., partial write during outage), move it aside and start fresh.
+        try:
+            backup = state_path.with_suffix(state_path.suffix + f".corrupt.{int(time.time())}")
+            state_path.replace(backup)
+        except Exception:
+            pass
+        return {
+            "schema_version": 1,
+            "created_utc": _utc_now_iso(),
+            "updated_utc": _utc_now_iso(),
+            "records": {},
+        }
+
+
+def save_hotstart_state_atomic(state_path: Path, state: Dict) -> None:
+    """Atomic-ish write: write to temp file in same dir, then os.replace()."""
+    state["updated_utc"] = _utc_now_iso()
+    tmp_path = state_path.with_suffix(state_path.suffix + ".tmp")
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    with tmp_path.open("w", encoding="utf-8") as fh:
+        json.dump(state, fh, indent=2, sort_keys=True)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp_path, state_path)
+
+
+def hotstart_get(state: Dict, inst_name: str, system_name: str) -> Dict | None:
+    return state.get("records", {}).get(inst_name, {}).get(system_name)
+
+
+def hotstart_set(
+    state: Dict,
+    inst_name: str,
+    inst_path: Path,
+    system_name: str,
+    execution_time,
+    ram_usage,
+    solution_value,
+) -> None:
+    records = state.setdefault("records", {})
+    per_inst = records.setdefault(inst_name, {})
+    failed = 0 if solution_value not in (TIMEOUT_CODE, MEMOUT_CODE, ERROR_CODE, UNPARSE_CODE) else solution_value
+    per_inst[system_name] = {
+        "instance_path": str(inst_path.resolve()),
+        "system_name": system_name,
+        "execution_time": execution_time,
+        "ram_usage": ram_usage,
+        "solution_value": solution_value,
+        "experiment_failed": failed,
+        "timestamp_utc": _utc_now_iso(),
+    }
+
+
 
 def get_recursive_memory_usage(pid: int) -> int:
     """Return RSS usage (bytes) of *pid* + all recursive children."""
@@ -305,6 +405,11 @@ def main() -> None:
     parser.add_argument("--experiment-name", type=str, default="", help="Specify an experiment name for various settings (such as wandb).")
 
     parser.add_argument("--scaling-experiments", type=int, default=0, help="true (val!=0), false (val=0)")
+    parser.add_argument(
+        "--hot-start",
+        action="store_true",
+        help="Resume from existing hot-start JSON in output directory; skip completed (instance, solver) runs.",
+    )
     
 
     args = parser.parse_args()
@@ -316,6 +421,13 @@ def main() -> None:
     output_dir = args.output_dir
     output_path = Path(output_root, output_dir)
 
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    hot_state = None
+    hot_state_path = output_path / "hotstart_state.json"
+    if args.hot_start:
+        hot_state = load_hotstart_state(hot_state_path)
+        save_hotstart_state_atomic(hot_state_path, hot_state)
 
     scaling_experiments = args.scaling_experiments
     if scaling_experiments == 0:
@@ -338,7 +450,7 @@ def main() -> None:
     sol_value: Dict[str, Dict[str, float | int]] = {inst.name: {} for inst in instances}
 
     # Remember first failure per system to skip later instances
-    first_failure: Dict[str, int | None] = {sys_["key"]: None for sys_ in systems}
+    first_failure: Dict[str, str | None] = {sys_["key"]: None for sys_ in systems}
 
     timestep_granularity = args.timestep_granularity
 
@@ -349,11 +461,39 @@ def main() -> None:
         for system in systems:
             system_name = system["key"]
 
+            # Hot-start: reuse stored results if present
+            if hot_state is not None:
+                rec = hotstart_get(hot_state, inst_name, system_name)
+                if rec is not None:
+                    exec_time[inst_name][system_name] = rec.get("execution_time")
+                    ram_usage[inst_name][system_name] = rec.get("ram_usage")
+                    sol_value[inst_name][system_name] = rec.get("solution_value")
+                    # Ensure scaling skip logic continues correctly after resuming
+                    if (
+                        scaling_experiments is True
+                        and first_failure.get(system_name) is None
+                        and sol_value[inst_name][system_name] in (TIMEOUT_CODE, MEMOUT_CODE, ERROR_CODE, UNPARSE_CODE)
+                    ):
+                        first_failure[system_name] = sol_value[inst_name][system_name]
+                    continue
+
+
             # Propagate previous failure without running anything
             if system_name in first_failure and first_failure[system_name] is not None and scaling_experiments is True:
                 exec_time[inst_name][system_name] = first_failure[system_name]
                 ram_usage[inst_name][system_name] = first_failure[system_name]
                 sol_value[inst_name][system_name] = first_failure[system_name]
+                if hot_state is not None:
+                    hotstart_set(
+                        hot_state,
+                        inst_name,
+                        inst_path,
+                        system_name,
+                        exec_time[inst_name][system_name],
+                        ram_usage[inst_name][system_name],
+                        sol_value[inst_name][system_name],
+                    )
+                    save_hotstart_state_atomic(hot_state_path, hot_state)
                 continue
 
             # Required files
@@ -394,11 +534,22 @@ def main() -> None:
             if sol in (TIMEOUT_CODE, MEMOUT_CODE, ERROR_CODE, UNPARSE_CODE):
                 first_failure[system_name] = sol
 
+            # Persist progress after every (instance, solver) is decided (run or failure-propagated)
+            if hot_state is not None:
+                hotstart_set(
+                    hot_state,
+                    inst_name,
+                    inst_path,
+                    system_name,
+                    exec_time[inst_name][system_name],
+                    ram_usage[inst_name][system_name],
+                    sol_value[inst_name][system_name],
+                )
+                save_hotstart_state_atomic(hot_state_path, hot_state)
+
     # -----------------------------------------
     # Write CSVs
     # -----------------------------------------
-    output_path.mkdir(parents=True, exist_ok=True)
-
     header = ["Instance"] + [s["key"] for s in systems]
 
     def dicts_to_rows(container: Dict[str, Dict[str, float | int]]) -> List[List]:
