@@ -82,7 +82,7 @@ class TranslateCSVtoLogicProgram:
                 x1 = edge[1]
                 unit_distance = edge[2]["weight"]        
 
-                navpoint_edges.append(f"navpointEdge({x0},{x1},{speed},{unit_distance}).")
+                navpoint_edges.append(f"navpoint_edge({x0},{x1},{speed},{unit_distance}).")
 
         return navpoint_edges
 
@@ -94,7 +94,7 @@ class TranslateCSVtoLogicProgram:
         asp_atoms = []
         for row_index in range(flights.shape[0]):
             # ASP expects flightPlan(<ID>,<TIME>,<LOCATION>)
-            asp_atoms.append(f"navpointFlightPlan({flights[row_index,0]},{flights[row_index,2]},{flights[row_index,1]}).")
+            asp_atoms.append(f"navpoint_flight_plan({flights[row_index,0]},{flights[row_index,1]},{flights[row_index,2]}).")
 
             if int(flights[row_index,2]) > max_time:
                 max_time = int(flights[row_index,2])
@@ -175,6 +175,7 @@ class TranslateCSVtoLogicProgram:
         sector_cap = (base + extra).astype(np.int64, copy=False)
 
         return sector_cap
+
  
 
 
@@ -184,13 +185,18 @@ class TranslateCSVtoLogicProgram:
 
         max_time_dim = int(max(max_time_flights, (max_time + 1) * timestep_granularity, navaid_sector_time_assignment.shape[1]))
 
-        sectors_matrix = TranslateCSVtoLogicProgram.capacity_time_matrix(sectors, max_time_dim, timestep_granularity, navaid_sector_time_assignment)
+        tmp_navaid_sector_time_assignment = np.zeros(navaid_sector_time_assignment.shape, dtype=int)
+
+        for index in range(navaid_sector_time_assignment.shape[0]):
+            tmp_navaid_sector_time_assignment[index,:] = index
+
+        sectors_matrix = TranslateCSVtoLogicProgram.capacity_time_matrix(sectors, max_time_dim, timestep_granularity, tmp_navaid_sector_time_assignment)
         
         asp_atoms = []
-        for row_index in range(sectors_matrix.shape[0]):
-            for column_index in range(sectors_matrix.shape[1]):
+        for navaid_index in range(sectors_matrix.shape[0]):
+            for time_index in range(sectors_matrix.shape[1]):
                 # ASP expects flightPlan(<ID>,<TIME>,<LOCATION>)
-                asp_atoms.append(f"atomic_sector({row_index},{column_index},{sectors_matrix[row_index,column_index]}).")
+                asp_atoms.append(f"atomic_sector({navaid_index},{sectors_matrix[navaid_index,time_index]},{time_index}).")
 
         return asp_atoms
 
@@ -249,7 +255,10 @@ class TranslateCSVtoLogicProgram:
 
     def main(self, graph_path: str, flights_path: str, sectors_path: str, airports_path: str, airplanes_path, airplane_flight_path,
              navaid_sector_path, encoding_path, timestep_granularity: int, max_time,
-             sector_capactiy_factor) -> None:
+             sector_capactiy_factor,
+             regulation_ground_delay_active,
+             regulation_rerouting_active,
+             regulation_dynamic_sectorization_active) -> None:
         """Read and print rows from the three required CSV files."""
 
         self.load_data(graph_path, sectors_path, flights_path, airports_path, airplanes_path,
@@ -299,15 +308,32 @@ class TranslateCSVtoLogicProgram:
         airplane_flight_instance = self.convert_airplane_flight(self.airplane_flight)
         navaid_sector_instance = self.convert_navaid_sector(self.navaid_sector)
 
-        sector_capactiy_factor_instance = [f"sectorCapacityFactor({sector_capactiy_factor})."]
-        timestep_granularity_instance = [f"timestepGranularity({timestep_granularity})."]
-        max_time_instance = [f"maxTime({max_time*timestep_granularity})."]
+        sector_capactiy_factor_instance = [f"sector_capacity_factor({sector_capactiy_factor})."]
+        timestep_granularity_instance = [f"timestep_granularity({timestep_granularity})."]
+        max_time_instance = [f"max_time({max_time*timestep_granularity})."]
         #max_time_instance = [f"maxTime(30)."]
+
+        regulation_instance = []
+
+        if regulation_ground_delay_active is True:
+            regulation_instance.append("regulation_delaying.")
+        else:
+            regulation_instance.append("-regulation_delaying.")
+
+        if regulation_rerouting_active is True:
+            regulation_instance.append("regulation_rerouting.")
+        else:
+            regulation_instance.append("-regulation_rerouting.")
+
+        if regulation_dynamic_sectorization_active is True:
+            regulation_instance.append("regulation_dynamic_sector_allocation.")
+        else:
+            regulation_instance.append("-regulation_dynamic_sector_allocation.")
 
         instance = graph_instance + flights_instance + sectors_instance + airplanes_instance +\
             airports_instance + airplane_flight_instance + navaid_sector_instance +\
             timestep_granularity_instance + max_time_instance+\
-            sector_capactiy_factor_instance
+            sector_capactiy_factor_instance + regulation_instance
     
         return instance
 

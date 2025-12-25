@@ -1,167 +1,169 @@
-% NAIVE ENCODING - FIRST VERSION:
-% Assumptions:
-% Each time step = 1h
-% Each airplane takes exactly 1h per sector, regardless of its type (uniform sectors and airplanes)
-% Each airplane has a filed flight plan
-% No environmental effects
-
 % FACTS:
-% navpointFlightPlan(<ID>,<TIME>,<NAVPOINT-LOCATION>)
-% sector(<LOCATION>,<TIME>,<CAPACITY>)
-% navpointEdge(<X0>,<X1>,<PLANE-SPEED>,<UNIT-DIST>)
+% navpoint_flight_plan(<ID>,<NAVPOINT-LOCATION>,<TIME>)
+% navaid_sector(<NAVAID-ID>,<SECTOR-ID>,<TIME=0 for FACTS>)
+% navpoint_edge(<X0>,<X1>,<PLANE-SPEED>,<UNIT-DIST>)
 % airport(<X>)
 % airplane(<ID>,<PLANE-SPEED>)
 % airplane_flight(<PLANE-ID>,<FLIGHT-ID>)
-% navaid_sector(<NAVAID-ID>,<SECTOR-ID>,<TIME=0 for FACTS>)
-% sectorCapacityFactor({sector_capactiy_factor}).
+% atomic_sector(<NAVAID-ID>,<CAPACITY>,<TIME>)
 
 navaid(NAV) :- navaid_sector(NAV,_,_).
 
-% Sector Guess:
-% Airport Strict:
+
+
+% Dynamic Sector Allocation:
 navaid_sector(SEC,SEC,T) :- navaid(SEC), time(T), airport(SEC).
-% En-Route Guess:
-1{navaid_sector(NAV,SEC,T):navaid_sector(_,SEC,0)}1:- navaid(NAV), time(T).
+1{navaid_sector(NAV,SEC,T):navaid_sector(_,SEC,0)}1:- navaid(NAV), time(T), not airport(NAV), regulation_dynamic_sector_allocation.
+navaid_sector(NAV,SEC,T) :- time(T), navaid_sector(NAV,SEC,0), -regulation_dynamic_sector_allocation.
+
 :- navaid_sector(NAV,SEC1,T), navaid_sector(NAV,SEC2,T), SEC1 != SEC2.
-%:- navaid_sector(NAV1,SEC,T), navaid_sector(NAV2,SEC,T), NAV1 != NAV2.
 :- navaid_sector(NAV,SEC,T), not airport(NAV), airport(SEC).
+:- navaid_sector(NAV1,SEC,T), NAV1 !=SEC, not navaid_sector(SEC,SEC,T).
 
 % MINIMIZE NAVAID-SECTOR ASSIGNMENT CHANGES:
 navaid_changed(NAV,T,1) :- navaid_sector(NAV,SEC0,T), navaid_sector(NAV,SEC1,T+1), SEC0 != SEC1.
 navaid_changed(NAV,T,0) :- navaid_sector(NAV,SEC0,T), navaid_sector(NAV,SEC0,T+1).
-sector_diff(SEC,T,DIFF) :- sector_len(SEC,T,_), DIFF = #sum{V,NAV: navaid_changed(NAV,T,V)}.
-
-% SECTOR CAP FUNCTION:
-%sector_avg_cap(SEC,T,CAP_SUM / CAP_LEN) :- time(T), navaid(SEC), CAP_SUM = #sum{C,NAV:navaid_sector(NAV,SEC,T), atomic_sector(NAV,T,C)}, sector_len(SEC,T,CAP_LEN), CAP_LEN > 0.
-%sector_avg_cap(SEC,T,0) :- time(T), navaid(SEC), sector_len(SEC,T,CAP_LEN), CAP_LEN = 0.
-%sector_variables(SEC,T,CAP_LEN,Z,CAP_AVG) :- sectorCapacityFactor(Z), navaid_sector(_,SEC,T), sector_len(SEC,T,CAP_LEN), sector_avg_cap(SEC,T,CAP_AVG).
-%sector(SEC,T,C) :- sector_variables(SEC,T,CAP_LEN,Z,CAP_AVG), CAP_LEN >= Z, C = (CAP_AVG * (Z+1)) / 2, CAP_LEN >= 1. 
-%sector(SEC,T,C) :- sector_variables(SEC,T,CAP_LEN,Z,CAP_AVG), CAP_LEN < Z, C = (CAP_AVG * (2 * Z * CAP_LEN - CAP_LEN * CAP_LEN + CAP_LEN)) / (Z*2), CAP_LEN >= 1. 
+sector_diff(T,DIFF) :- time(T), DIFF = #sum{V,NAV: navaid_changed(NAV,T,V)}.
 
 sector_len(SEC,T,CAP_LEN) :- time(T), navaid(SEC), CAP_LEN = #count{NAV:navaid_sector(NAV,SEC,T)}.
 sector(SEC,T,0) :- sector_len(SEC,T,CAP_LEN), CAP_LEN = 0. 
-sector(SEC,T,C) :- time(T), navaid(SEC), C = #max{C',NAV:navaid_sector(NAV,SEC,T),atomic_sector(NAV,T,C')}, sector_len(SEC,T,CAP_LEN), CAP_LEN > 0.
+sector(SEC,T,C) :- time(T), navaid(SEC), C = #max{C',NAV:navaid_sector(NAV,SEC,T),atomic_sector(NAV,C',T)}, sector_len(SEC,T,CAP_LEN), CAP_LEN > 0.
 sector_number(T,NUM) :- time(T), NUM = #count{SEC:sector(SEC,T,C), C > 0}.
 
 % GET ALL AIRPLANE SPEEDS
 airplane_speed(S) :- airplane(_,S).
 
 % UNDIRECTED GRAPH:
-navpointEdge(Y,X,S,D) :- navpointEdge(X,Y,S,D).
-navpointEdge(X,X,S,1) :- airport(X), airplane_speed(S).
+navpoint_edge(Y,X,S,D) :- navpoint_edge(X,Y,S,D).
+navpoint_edge(X,X,S,1) :- airport(X), airplane_speed(S).
 
 % GET NAVPOINTS
-navpoint(X) :- navpointEdge(X,_,_,_).
-navpoint(Y) :- navpointEdge(_,Y,_,_).
+navpoint(X) :- navpoint_edge(X,_,_,_).
+navpoint(Y) :- navpoint_edge(_,Y,_,_).
 
 % PRELIMINARIES:
 % GET ALL TIME STEPS:
-time(T) :- navpointFlightPlan(_,T,_).
+time(T) :- navpoint_flight_plan(_,_,T).
 % GET ALL FLIHT IDS:
-flightID(ID) :- navpointFlightPlan(ID,_,_).
+flightID(ID) :- navpoint_flight_plan(ID,_,_).
 
 % MORE TIME HEURISTIC:
 time(0).
-time(T+1) :- time(T), maxTime(TMAX), T < TMAX.
-time(T+1) :- time(T), inducedMaxTime(TMAX), T < TMAX.
-inducedMaxTime(T) :- T = #max{T': navpointFlightPlan(_,T',_)}.
+time(T+1) :- time(T), max_time(TMAX), T < TMAX.
+time(T+1) :- time(T), induced_max_time(TMAX), T < TMAX.
+induced_max_time(T) :- T = #max{T': navpoint_flight_plan(_,_,T')}.
 
 % NORMAL FLIGHT:
-navpointFlight(ID,T,X) :- navpointFlightPlan(ID,T,X), not reroute(ID).
+navpoint_flight(ID,X,T) :- navpoint_flight_plan(ID,X,T), not reroute(ID).
 
 % LIMIT SECTOR CAPACITY (hard constraint modelling):
-%overload(X,T,LOAD-C) :- sector(X,T,C), #count{ID:flight(ID,T,X),flight(ID,T-1,X2), X!=X2} = LOAD, LOAD > C.
-overload(X,T,LOAD-C) :- sector(X,T,C), #count{ID:flight(ID,T,X)} = LOAD, LOAD > C.
+%overload(X,T,LOAD-C) :- sector(X,T,C), #count{ID:flight(ID,X,T),flight(ID,X2,T-1), X!=X2} = LOAD, LOAD > C.
+% CURRENT METHOD -> LIMIT NUMBER FLIGHTS PER TIMESTEP IN SECTOR:
+overload(X,T,LOAD-C) :- sector(X,T,C), #count{ID:flight(ID,X,T)} = LOAD, LOAD > C.
 
 % REROUTE - YES/NO:
-{reroute(ID)} :- navpointFlightPlan(ID,_,_).
-reroute(ID) :- plannedDepartureTime(ID,T), actualDepartureTime(ID,T'), T' > T.
-{navpointFlight(ID,T,X):navpoint(X)}1 :- reroute(ID), time(T), actualDepartureTime(ID,T'), T >= T'.
+{reroute(ID)} :- navpoint_flight_plan(ID,_,_).
+reroute(ID) :- planned_departure_time(ID,T), actual_departure_time(ID,T'), T' > T.
+{navpoint_flight(ID,X,T):navpoint(X)}1 :- reroute(ID), time(T), actual_departure_time(ID,T'), T >= T', regulation_rerouting.
+navpoint_flight(ID,X,T + TT) :- navpoint_flight_plan(ID,X,T), actual_departure_time(ID,TACT),planned_departure_time(ID,TPLAN), TT = TACT - TPLAN, -regulation_rerouting.
 
 % ----------------- ONLY FOR REROUTED PLANES --------------------
 % NO FLIGHT BEFORE PLANNED START TIME:
-plannedDepartureTime(ID,T) :- flightID(ID), T = #min{T':navpointFlightPlan(ID,T',_)}.
-:- reroute(ID), navpointFlight(ID,T,_), plannedDepartureTime(ID,T'), T < T'.
+planned_departure_time(ID,T) :- flightID(ID), T = #min{T':navpoint_flight_plan(ID,_,T')}.
+:- reroute(ID), navpoint_flight(ID,_,T), planned_departure_time(ID,T'), T < T'.
 
 
 % FLIGHT STARTS AT ORIGIN:
-plannedOrigin(ID,X) :- reroute(ID),plannedDepartureTime(ID,T),navpointFlightPlan(ID,T,X).
-%navpointFlight(ID,T,X) :- reroute(ID), navpointFlightPlan(ID,T,X), plannedOrigin(ID,X).
-navpointFlight(ID,T,X) :- reroute(ID), actualDepartureTime(ID,T), plannedOrigin(ID,X).
-%:- navpointFlight(ID,T,_), actualDepartureTime(ID,T'), T < T'.
-%navpointFlight(ID,T,X) :- reroute(ID), time(T), plannedDepartureTime(ID,T'), actualDepartureTime(ID,T''), T >= T', T <= T'', plannedOrigin(ID,X).
+planned_origin(ID,X) :- reroute(ID),planned_departure_time(ID,T),navpoint_flight_plan(ID,X,T).
+navpoint_flight(ID,X,T) :- reroute(ID), actual_departure_time(ID,T), planned_origin(ID,X).
 
 % FLIGHT ENDS AT DESTINATION:
-plannedDestination(ID,X) :- reroute(ID), T=#max{T':navpointFlightPlan(ID,T',_)}, navpointFlightPlan(ID,T,X).
-actualArrivalTime(ID,T) :- flightID(ID), T = #max{T':navpointFlight(ID,T',_)}.
-:- reroute(ID), actualArrivalTime(ID,T), navpointFlight(ID,T,X), plannedDestination(ID,X'), X != X'.
-:- flightID(ID), not actualArrivalTime(ID,_).
-:- flightID(ID), plannedDestination(ID,X), actualArrivalTime(ID,T), navpointFlight(ID,T,X'), X != X'.
+planned_destination(ID,X) :- reroute(ID), T=#max{T':navpoint_flight_plan(ID,_,T')}, navpoint_flight_plan(ID,X,T).
+actual_arrival_time(ID,T) :- flightID(ID), T = #max{T':navpoint_flight(ID,_,T')}.
+:- reroute(ID), actual_arrival_time(ID,T), navpoint_flight(ID,X,T), planned_destination(ID,X'), X != X'.
+:- flightID(ID), not actual_arrival_time(ID,_).
+:- flightID(ID), planned_destination(ID,X), actual_arrival_time(ID,T), navpoint_flight(ID,X',T), X != X'.
 
 % NO FLIGHT AFTER DESTINATION REACHED:
-actualDestinationFirstReachedTime(ID,T) :- reroute(ID), plannedDestination(ID,X), T = #min{T':navpointFlight(ID,T',X)}.
-:- reroute(ID), navpointFlight(ID,T,_), actualDestinationFirstReachedTime(ID,T'), T > T'.
+actual_destination_first_reached_time(ID,T) :- reroute(ID), planned_destination(ID,X), T = #min{T':navpoint_flight(ID,X,T')}.
+:- reroute(ID), navpoint_flight(ID,_,T), actual_destination_first_reached_time(ID,T'), T > T'.
 
 % MUST BE PATH:
-navpointSeq(ID,T,X,X'') :- navpointFlight(ID,T,X), T'' = #min{T',X': navpointFlight(ID,T',X'), T' > T}, navpointFlight(ID,T'',X'').
-:- navpointFlight(ID,T,X), navpointFlight(ID,T',X'), T' > T, navpointSeq(ID,T,X,X'), airplane_flight(AID,ID), airplane(AID,S), D = T'-T, not navpointEdge(X,X',S,D).
+%navpoint_seq(ID,T,X,X'') :- navpoint_flight(ID,X,T), T'' = #min{T',X': navpoint_flight(ID,X',T'), T' > T}, navpoint_flight(ID,X'',T'').
+%:- navpoint_flight(ID,X,T), navpoint_flight(ID,X',T'), T' > T, navpoint_seq(ID,T,X,X'), airplane_flight(AID,ID), airplane(AID,S), D = T'-T, not navpoint_edge(X,X',S,D).
+
+% MUST BE PATH:
+pot_navpoint_seq(ID,T,TT) :- navpoint_flight(ID,_,T), navpoint_flight(ID,_,TT), T < TT.
+not_navpoint_seq(ID,T,TT) :- pot_navpoint_seq(ID,T,TT), T < TTT, TTT < TT, pot_navpoint_seq(ID,T,TTT).
+navpoint_seq(ID,T,TT) :- pot_navpoint_seq(ID,T,TT), not not_navpoint_seq(ID,T,TT).
+:- navpoint_seq(ID,T,TT), navpoint_flight(ID,X,T), navpoint_flight(ID,XX,TT), airplane_flight(AID,ID), airplane(AID,S), D = TT - T, not navpoint_edge(X,XX,S,D).
 
 
 % NEVER TWICE AT SAME LOCATION:
-:- navpointFlight(ID,T,X), navpointFlight(ID,T',X), T != T', not airport(X).
+:- navpoint_flight(ID,X,T), navpoint_flight(ID,X,T'), T != T', not airport(X).
 
 % FLIGHT MUST OCCUR:
-flightOccurs(ID) :- navpointFlight(ID,_,_).
+flightOccurs(ID) :- navpoint_flight(ID,_,_).
 :- flightID(ID), not flightOccurs(ID).
 
 % HELPER PREDS:
-1{actualDepartureTime(ID,T):time(T), T >= TP}1 :- plannedDepartureTime(ID,TP).
-plannedArrivalTime(ID,T) :- flightID(ID), T = #max{T':navpointFlightPlan(ID,T',_)}.
-arrivalDelay(ID,Y-T) :- plannedArrivalTime(ID,T), actualArrivalTime(ID,Y).
-actualFlightTime(ID,T) :- actualDepartureTime(ID,TDA),actualDestinationFirstReachedTime(ID,TRA), T = TRA - TDA.
-plannedFlightTime(ID,T) :- plannedDepartureTime(ID,TDP), plannedArrivalTime(ID,TRP), T = TRP - TDP.
+1{actual_departure_time(ID,T):time(T), T >= TP}1 :- planned_departure_time(ID,TP), regulation_delaying.
+actual_departure_time(ID,TP) :- planned_departure_time(ID,TP), -regulation_delaying.
+
+planned_arrival_time(ID,T) :- flightID(ID), T = #max{T':navpoint_flight_plan(ID,_,T')}.
+arrival_delay(ID,Y-T) :- planned_arrival_time(ID,T), actual_arrival_time(ID,Y).
+actualFlightTime(ID,T) :- actual_departure_time(ID,TDA),actual_destination_first_reached_time(ID,TRA), T = TRA - TDA.
+plannedFlightTime(ID,T) :- planned_departure_time(ID,TDP), planned_arrival_time(ID,TRP), T = TRP - TDP.
 
 % NO GAPS:
-:- time(T), actualDepartureTime(ID,T'), T > T', actualArrivalTime(ID,T''), T < T'', not flight(ID,T,_).
+:- time(T), actual_departure_time(ID,T'), T > T', actual_arrival_time(ID,T''), T < T'', not flight(ID,_,T).
 
-% TRANSLATE navpointFlight to flight
-flight(ID,T,S) :- navpointFlight(ID,T,X), navaid_sector(X,S,T).
-flight(ID,T',S) :- navpointFlight(ID,T,X), navpointFlight(ID,T+D,X'), navpointSeq(ID,T,X,X'), navaid_sector(X,S,T'), airplane_flight(AID,ID), airplane(AID,SPEED), navpointEdge(X,X',SPEED,D), time(T'), T' > T, T' <= T + D/2. 
-flight(ID,T',S') :- navpointFlight(ID,T,X), navpointFlight(ID,T+D,X'), navpointSeq(ID,T,X,X'), navaid_sector(X',S',T'), airplane_flight(AID,ID),  airplane(ID,SPEED), navpointEdge(X,X',SPEED,D), time(T'), T' < T+D, T' > T + D/2. 
+% TRANSLATE navpoint_flight to flight
+flight(ID,S,T) :- navpoint_flight(ID,X,T), navaid_sector(X,S,T).
+flightT(ID,T,T',0) :- navpoint_seq(ID,T,TT), D = TT - T, time(T'), T' > T, T' <= T + D/2.
+flightT(ID,TT,T',1) :- navpoint_seq(ID,T,TT), D = TT - T, time(T'), T' < TT, T' > T + D/2.
+flight(ID,S,T') :- flightT(ID,T,T',0), navpoint_flight(ID,X,T), navaid_sector(X,S,T').
+flight(ID,S,T') :- flightT(ID,TT,T',1), navpoint_flight(ID,XX,TT), navaid_sector(XX,S,T').
+
+%flight(ID,S,T') :- navpoint_flight(ID,X,T), navpoint_flight(ID,_,TT), navpoint_seq(ID,T,TT), D = TT - T, time(T'), T' > T, T' <= T + D/2, navaid_sector(X,S,T').
+%flight(ID,S',T') :- navpoint_flight(ID,_,T), navpoint_flight(ID,X',TT), navpoint_seq(ID,T,TT), D = TT - T,time(T'), T' < TT, T' > T + D/2, navaid_sector(X',S',T').
 
 % Multi-leg flights:
-:- airplane_flight(AID,FID0), airplane_flight(AID,FID1), FID0 != FID1, plannedArrivalTime(FID0,T0), plannedArrivalTime(FID1,T1), T0 < T1, actualArrivalTime(FID0, T0'), actualDepartureTime(FID1,T1'), T0' >= T1'.
+:- airplane_flight(AID,FID0), airplane_flight(AID,FID1), FID0 != FID1, planned_arrival_time(FID0,T0), planned_arrival_time(FID1,T1), T0 < T1, actual_arrival_time(FID0, T0'), actual_departure_time(FID1,T1'), T0' >= T1'.
 
 % ------------------------------------------------------------------------------
 % PRIMARY WEAK CONSTRAINT:
 :~ overload(X,T,OVER). [OVER@10,X,T]
 % SECONDARY WEAK CONSTRAINT:
-:~ arrivalDelay(ID,DIFF). [DIFF@9,ID]
+:~ arrival_delay(ID,DIFF). [DIFF@9,ID]
 % TERTIARY WEAK CONSTRAINT:
 :~ sector_number(T,NUM). [NUM@8,T]
-% QUARTINARY OPTIMIZE FOR MINIMUM TRAVEL TIME:
-:~ actualFlightTime(ID,TA), plannedFlightTime(ID,TP), DIFF = TA - TP. [DIFF@7,ID]
 % OPTIMIZE FOR LEAST SECTOR CHANGES:
-:~ sector_diff(SEC,T,DIFF). [DIFF@6,SEC,T]
+:~ sector_diff(T,DIFF). [DIFF@7,T]
+% OPTIMIZE FOR LEAST REROUTES/DELAYS
+:~ reroute(ID). [1@6,ID]
+
+%#heuristic navpoint_flight(ID,X,T) : navpoint_flight_plan(ID,X,T). [10,init]
+%#heuristic navaid_sector(NAV,SEC,T) : time(T), navaid_sector(NAV,SEC,0). [10,init]
+%#heuristic actual_departure_time(ID,TP) : planned_departure_time(ID,TP). [10,init]
 
 %output_sec_len(X,Y,Z) :- sector_len(X,Y,Z), Y = 12.
 %output_sec_avg(X,Y,Z) :- sector_avg_cap(X,Y,Z), Y = 12.
 %output_sec(X,Y,Z) :- sector(X,Y,Z), Y = 12.
 
 #show flight/3.
-%#show navpointFlight/3.
-#show reroute/1.
-%#show navpointSeq/4.
-%#show actualArrivalTime/2.
-%#show plannedArrivalTime/2.
-%#show arrivalDelay/2.
+#show navpoint_flight/3.
+%#show reroute/1.
+%#show navpoint_seq/3.
+%#show navpoint_seq/4.
+%#show actual_arrival_time/2.
+%#show planned_arrival_time/2.
+%#show arrival_delay/2.
 %#show overload/3.
-%#show timeStepGranularities/1.
 %#show time/1.
-%#show actualDestinationFirstReachedTime/2.
-%#show plannedDepartureTime/2.
-%#show actualDepartureTime/2.
-%#show lololol/8.
+%#show actual_destination_first_reached_time/2.
+%#show planned_departure_time/2.
+%#show actual_departure_time/2.
 %#show navaid_sector/3.
 %#show output_sec_len/3.
 %#show output_sec/3.

@@ -147,6 +147,14 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
                         help="Weights & Biases project name (default: ASPaeroFlow).")
     parser.add_argument("--wandb-entity", type=str, default=C("wandb-entity", None),
                         help="Weights & Biases entity (username or team/organization). Leave empty to use your default entity.")
+    
+    # REGULATIONS ACTIVE:
+    parser.add_argument("--regulation-ground-delay-active", type=str, default=str(C("regulation-ground-delay-active", "true")),
+                        help="true/false: Enable ground delays of aircraft.")
+    parser.add_argument("--regulation-rerouting-active", type=str, default=str(C("regulation-rerouting-active", "true")),
+                        help="true/false: Enable rerouting of aircraft.")
+    parser.add_argument("--regulation-dynamic-sectorization-active", type=str, default=str(C("regulation-dynamic-sectorization-active", "true")),
+                        help="true/false: Enable dynamic sectorization.")
 
     return parser
 
@@ -223,6 +231,10 @@ def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
         return s in ("1","true","t","yes","y","on")
     args.save_results = _str2bool(args.save_results)
     args.wandb_enabled = _str2bool(args.wandb_enabled)
+    
+    args.regulation_ground_delay_active = _str2bool(args.regulation_ground_delay_active)
+    args.regulation_rerouting_active = _str2bool(args.regulation_rerouting_active)
+    args.regulation_dynamic_sectorization_active = _str2bool(args.regulation_dynamic_sectorization_active)
 
     return args
 
@@ -316,9 +328,6 @@ class ModelData:
         self.converted_instance_matrix = converted_instance_matrix
         self.converted_navpoint_matrix = converted_navpoint_matrix
 
-
-
-
 # ---------------------------------------------------------------------------
 # Top‑level script wrapper
 # ---------------------------------------------------------------------------
@@ -338,6 +347,10 @@ def main(argv: Optional[List[str]] = None) -> None:
     encoding_path = args.encoding_path
     verbosity = args.verbosity
     sector_capacity_factor = args.sector_capacity_factor
+
+    regulation_ground_delay_active = args.regulation_ground_delay_active
+    regulation_rerouting_active = args.regulation_rerouting_active
+    regulation_dynamic_sectorization_active = args.regulation_dynamic_sectorization_active
 
     seed = args.seed
 
@@ -387,14 +400,15 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         asp_instance = TranslateCSVtoLogicProgram().main(graph_csv, flights_csv, sectors_csv,
             airports_csv, airplanes_csv, airplane_flight_csv, navaid_sector_csv, encoding_path, timestep_granularity, max_time,
-            sector_capacity_factor)
+            sector_capacity_factor,
+            regulation_ground_delay_active, regulation_rerouting_active, regulation_dynamic_sectorization_active)
         
 
         
         instance_asp_atoms = "\n".join(asp_instance)
 
-        #open("20251202_instance.lp","w").write(instance_asp_atoms)
-        #quit()
+        open("20251223_instance.lp","w").write(instance_asp_atoms)
+        quit()
 
         encoding = open(encoding_path, "r").read()
 
