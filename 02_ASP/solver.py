@@ -24,10 +24,11 @@ NAVAID_SECTOR: Final[str] = "navaid_sector"
 SIGNATURES: Final[set[str]] = {ARRIVAL_DELAY, FLIGHT, REROUTE, NAVPOINT_FLIGHT, NAVAID_SECTOR, OVERLOAD, SECTOR_NUMBER, SECTOR_DIFF}
 
 class Solver:
-    def __init__(self, encoding, instance, seed = 1):
+    def __init__(self, encoding, instance, seed = 1, wandb_log = None):
         self.encoding = encoding
         self.instance = instance
         self.seed = seed
+        self.wandb_log = wandb_log
 
         self.final_model = None
 
@@ -99,8 +100,9 @@ class Solver:
         sector_number = [symbol for symbol in parsed if symbol.name == SECTOR_NUMBER]
         sector_diff = [symbol for symbol in parsed if symbol.name == SECTOR_DIFF]
         reroute = [symbol for symbol in parsed if symbol.name in REROUTE]
-
-        self.final_model = Model(overload, arrival_delay, sector_number, sector_diff, reroute, flights, navpoint_flights, navaid_sector_time, self.grounding_time, time.time() - self.total_time_start, model.optimality_proven)
+        
+        current_time = time.time() - self.total_time_start
+        self.final_model = Model(overload, arrival_delay, sector_number, sector_diff, reroute, flights, navpoint_flights, navaid_sector_time, self.grounding_time, current_time, model.optimality_proven)
         
         output_string = self.final_model.get_model_optimization_string()
         tmp = os.dup(self.tmp_fd)
@@ -108,6 +110,17 @@ class Solver:
             fdopen.write(output_string + "\n")
             fdopen.close()
         self.tmp_fd = tmp
+        
+        if self.wandb_log:
+            self.wandb_log({
+                "OVERLOAD":int(self.final_model.get_total_overload()),
+                "ARRIVAL-DELAY":int(self.final_model.get_total_atfm_delay()),
+                "SECTOR-NUMBER":int(self.final_model.get_total_sector_number()),
+                "SECTOR_DIFF":int(self.final_model.get_total_sector_diff()),
+                "REROUTE":int(self.final_model.get_total_reroute()),
+                "GROUNDING-TIME": int(self.grounding_time),
+                "TOTAL-TIME-TO-THIS-POINT": int(current_time)
+                })
 
 class Model:
 

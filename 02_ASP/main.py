@@ -414,7 +414,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         #open("20251223_instance.lp","w").write(instance_asp_atoms)
         
-        solver: Model = Solver(encoding, instance_asp_atoms, seed=seed)
+        solver: Model = Solver(encoding, instance_asp_atoms, seed=seed, wandb_log = wandb_log)
         model = solver.solve()
             
         if verbosity > 0:
