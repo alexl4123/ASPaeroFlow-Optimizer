@@ -34,7 +34,6 @@ import csv
 import json
 import os
 import signal
-import json
 import subprocess
 import sys
 import threading
@@ -772,10 +771,28 @@ def main() -> None:
         metric_values = sol_value_to_rows(sol_value, metric)
         write_csv(output_path / f"{metric.lower()}.csv", metric_values[0], metric_values[1])
 
+    for inst in (p.name for p in instances):
+        tmp_list = [inst]
+        for system in systems:
+            system_name = system["key"]
+
+            tmp_path_root = output_path / "individual_outputs"
+            tmp_path = tmp_path_root / f"{inst}_{system_name}.json"
+            
+            json_object_list = []
+            for json_val_line in sol_value[inst][system_name]:
+                json_object_list.append(json.dumps(json_val_line))
+
+            json_object = "{\"object\":[" + ','.join(json_object_list) + "}]}"
+
+            tmp_path_root.mkdir(parents=True, exist_ok=True)
+
+            with tmp_path.open("w", encoding="utf-8") as fh:
+                fh.write(json_object)
+
     print("Benchmarking finished. Results written to:")
     for fn in ("execution_time.csv", "ram_usage.csv", "solution_value.csv"):
         print("  -", output_path / fn)
-
 
 if __name__ == "__main__":
     main()
