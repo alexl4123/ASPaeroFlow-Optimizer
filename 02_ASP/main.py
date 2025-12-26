@@ -155,6 +155,8 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
                         help="true/false: Enable rerouting of aircraft.")
     parser.add_argument("--regulation-dynamic-sectorization-active", type=str, default=str(C("regulation-dynamic-sectorization-active", "true")),
                         help="true/false: Enable dynamic sectorization.")
+    parser.add_argument("--allow-overloads", type=str, default=str(C("allow-overloads", "false")),
+                        help="true/false: Allow solutions with overload constraint violations.")
 
     return parser
 
@@ -235,6 +237,7 @@ def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
     args.regulation_ground_delay_active = _str2bool(args.regulation_ground_delay_active)
     args.regulation_rerouting_active = _str2bool(args.regulation_rerouting_active)
     args.regulation_dynamic_sectorization_active = _str2bool(args.regulation_dynamic_sectorization_active)
+    args.allow_overloads = _str2bool(args.allow_overloads)
 
     return args
 
@@ -352,6 +355,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     regulation_rerouting_active = args.regulation_rerouting_active
     regulation_dynamic_sectorization_active = args.regulation_dynamic_sectorization_active
 
+    allow_overloads = args.allow_overloads
+
     seed = args.seed
 
     timestep_granularity = args.timestep_granularity
@@ -403,15 +408,12 @@ def main(argv: Optional[List[str]] = None) -> None:
             sector_capacity_factor,
             regulation_ground_delay_active, regulation_rerouting_active, regulation_dynamic_sectorization_active)
         
-
-        
         instance_asp_atoms = "\n".join(asp_instance)
-
-        open("20251223_instance.lp","w").write(instance_asp_atoms)
-        quit()
 
         encoding = open(encoding_path, "r").read()
 
+        #open("20251223_instance.lp","w").write(instance_asp_atoms)
+        
         solver: Model = Solver(encoding, instance_asp_atoms, seed=seed)
         model = solver.solve()
             
@@ -424,9 +426,13 @@ def main(argv: Optional[List[str]] = None) -> None:
         - Rerouted Airplanes: {model.get_rerouted_airplanes()}
             """)
 
-        if model.get_total_overload() > 0:
+        #quit()
+
+        if model.get_total_overload() > 0 and allow_overloads is False:
             max_time += 1
             model = None
+
+
 
     if verbosity > 0:
         print(f"""
@@ -481,7 +487,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     if verbosity > 0:
         print(model.get_rerouted_airplanes())
 
-    print(model.get_total_atfm_delay())
+    model.computation_finished = True
+    print(model.get_model_optimization_string())
     #np.savetxt(sys.stdout, converted_instance_matrix, delimiter=",", fmt="%i") 
 
     # Save results if requested
