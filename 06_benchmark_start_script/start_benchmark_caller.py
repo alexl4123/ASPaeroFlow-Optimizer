@@ -34,6 +34,7 @@ import csv
 import json
 import os
 import signal
+import json
 import subprocess
 import sys
 import threading
@@ -194,10 +195,12 @@ def kill_descendants(pid: int):
 # System configuration (edit paths here if your layout differs)
 # ---------------------------------------------
 
-def build_system_config(base_dir: Path, output_path:Path, experiment_name:str) -> List[Dict]:
+def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, args) -> List[Dict]:
     """Return the list with per‑solver metadata."""
-    return [
-        {
+    system_config = []
+
+    if args.experiment_asp_aero_flow != 0:
+        system_config.append({
             "key": "01_ASPaeroFlow",
             "script": base_dir / "../01_ASPaeroFlow/main.py",
             "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
@@ -216,8 +219,10 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str) -
                 "--minimize-number-sectors=true",
                 "--max-number-navpoints-per-sector=100",
                 ]
-        },
-        {
+        })
+
+    if args.experiment_route_delay != 0:
+        system_config.append({
             "key": "02_RerouteDelay",
             "script": base_dir / "../01_ASPaeroFlow/main.py",
             "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
@@ -235,8 +240,10 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str) -
                 "--minimize-number-sectors=true",
                 "--max-number-navpoints-per-sector=100",
                 ]
-        },
-        {
+        })
+
+    if args.experiment_delay != 0:
+        system_config.append({
             "key": "03_DELAY",
             "script": base_dir / "../01_ASPaeroFlow/main.py",
             "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
@@ -254,22 +261,11 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str) -
                 "--minimize-number-sectors=true",
                 "--max-number-navpoints-per-sector=100",
                 ]
-        },
-        {
-            "key": "04_ASP",
-            "script": base_dir / "../02_ASP/main.py",
-            "encoding": base_dir / "../02_ASP/encoding.lp",
-            "verbosity": None,
-            "cmd": [
-                f"--results-root={output_path}/solver_outputs/02_ASP",
-                "--wandb-enabled=True",
-                "--wandb-experiment-name-suffix=_04_ASP",
-                f"--wandb-experiment-name-prefix={experiment_name}_",
-                "--wandb-entity=thinklex",
-                ]
-        },
-        {
-            "key": "05_MIP",
+        })
+
+    if args.experiment_mip != 0:
+        system_config.append({
+            "key": "04_MIP",
             "script": base_dir / "../04_MIP/main.py",
             "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
             "verbosity": None,
@@ -280,8 +276,155 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str) -
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
                 ]
-        },
-    ]
+        })
+
+    if args.experiment_asp_r_d_s != 0:
+
+        system_config.append({
+            "key": "05_ASP_r_d_s",
+            "script": base_dir / "../02_ASP/main.py",
+            "encoding": base_dir / "../02_ASP/encoding.lp",
+            "verbosity": None,
+            "cmd": [
+                f"--results-root={output_path}/solver_outputs/02_ASP",
+                "--wandb-enabled=True",
+                "--wandb-experiment-name-suffix=_05_ASP_r_d_s",
+                f"--wandb-experiment-name-prefix={experiment_name}_",
+                "--wandb-entity=thinklex",
+                "--regulation-ground-delay-active=True",
+                "--regulation-rerouting-active=True",
+                "--regulation-dynamic-sectorization-active=True",
+                ]
+        })
+
+    if args.experiment_asp_r_d_ns != 0:
+        system_config.append({
+            "key": "06_ASP_r_d_ns",
+            "script": base_dir / "../02_ASP/main.py",
+            "encoding": base_dir / "../02_ASP/encoding.lp",
+            "verbosity": None,
+            "cmd": [
+                f"--results-root={output_path}/solver_outputs/02_ASP",
+                "--wandb-enabled=True",
+                "--wandb-experiment-name-suffix=_06_ASP_r_d_ns",
+                f"--wandb-experiment-name-prefix={experiment_name}_",
+                "--wandb-entity=thinklex",
+                "--regulation-ground-delay-active=True",
+                "--regulation-rerouting-active=True",
+                "--regulation-dynamic-sectorization-active=False",
+                ]
+        })
+
+    if args.experiment_asp_r_nd_s != 0:
+        system_config.append({
+            "key": "07_ASP_r_nd_s",
+            "script": base_dir / "../02_ASP/main.py",
+            "encoding": base_dir / "../02_ASP/encoding.lp",
+            "verbosity": None,
+            "cmd": [
+                f"--results-root={output_path}/solver_outputs/02_ASP",
+                "--wandb-enabled=True",
+                "--wandb-experiment-name-suffix=_07_ASP_r_nd_s",
+                f"--wandb-experiment-name-prefix={experiment_name}_",
+                "--wandb-entity=thinklex",
+                "--regulation-ground-delay-active=False",
+                "--regulation-rerouting-active=True",
+                "--regulation-dynamic-sectorization-active=True",
+                ]
+        })
+
+    if args.experiment_asp_nr_d_s != 0:
+        system_config.append({
+            "key": "08_ASP_nr_d_s",
+            "script": base_dir / "../02_ASP/main.py",
+            "encoding": base_dir / "../02_ASP/encoding.lp",
+            "verbosity": None,
+            "cmd": [
+                f"--results-root={output_path}/solver_outputs/02_ASP",
+                "--wandb-enabled=True",
+                "--wandb-experiment-name-suffix=_08_ASP_nr_d_s",
+                f"--wandb-experiment-name-prefix={experiment_name}_",
+                "--wandb-entity=thinklex",
+                "--regulation-ground-delay-active=True",
+                "--regulation-rerouting-active=False",
+                "--regulation-dynamic-sectorization-active=True",
+                ]
+        })
+
+    if args.experiment_asp_r_nd_ns != 0:
+        system_config.append({
+            "key": "09_ASP_r_nd_ns",
+            "script": base_dir / "../02_ASP/main.py",
+            "encoding": base_dir / "../02_ASP/encoding.lp",
+            "verbosity": None,
+            "cmd": [
+                f"--results-root={output_path}/solver_outputs/02_ASP",
+                "--wandb-enabled=True",
+                "--wandb-experiment-name-suffix=_09_ASP_r_nd_ns",
+                f"--wandb-experiment-name-prefix={experiment_name}_",
+                "--wandb-entity=thinklex",
+                "--regulation-ground-delay-active=False",
+                "--regulation-rerouting-active=True",
+                "--regulation-dynamic-sectorization-active=False",
+                ]
+        })
+
+    if args.experiment_asp_nr_nd_s != 0:
+        system_config.append({
+            "key": "10_ASP_nr_nd_s",
+            "script": base_dir / "../02_ASP/main.py",
+            "encoding": base_dir / "../02_ASP/encoding.lp",
+            "verbosity": None,
+            "cmd": [
+                f"--results-root={output_path}/solver_outputs/02_ASP",
+                "--wandb-enabled=True",
+                "--wandb-experiment-name-suffix=_10_ASP_nr_nd_s",
+                f"--wandb-experiment-name-prefix={experiment_name}_",
+                "--wandb-entity=thinklex",
+                "--regulation-ground-delay-active=False",
+                "--regulation-rerouting-active=False",
+                "--regulation-dynamic-sectorization-active=True",
+                ]
+        })
+
+    if args.experiment_asp_nr_d_ns != 0:
+        system_config.append({
+            "key": "11_ASP_nr_d_ns",
+            "script": base_dir / "../02_ASP/main.py",
+            "encoding": base_dir / "../02_ASP/encoding.lp",
+            "verbosity": None,
+            "cmd": [
+                f"--results-root={output_path}/solver_outputs/02_ASP",
+                "--wandb-enabled=True",
+                "--wandb-experiment-name-suffix=_11_ASP_nr_d_ns",
+                f"--wandb-experiment-name-prefix={experiment_name}_",
+                "--wandb-entity=thinklex",
+                "--regulation-ground-delay-active=True",
+                "--regulation-rerouting-active=False",
+                "--regulation-dynamic-sectorization-active=False",
+                ]
+        })
+
+    if args.experiment_asp_nr_nd_ns != 0:
+        system_config.append({
+            "key": "12_ASP_nr_nd_ns",
+            "script": base_dir / "../02_ASP/main.py",
+            "encoding": base_dir / "../02_ASP/encoding.lp",
+            "verbosity": None,
+            "cmd": [
+                f"--results-root={output_path}/solver_outputs/02_ASP",
+                "--wandb-enabled=True",
+                "--wandb-experiment-name-suffix=_12_ASP_nr_nd_ns",
+                f"--wandb-experiment-name-prefix={experiment_name}_",
+                "--wandb-entity=thinklex",
+                "--regulation-ground-delay-active=False",
+                "--regulation-rerouting-active=False",
+                "--regulation-dynamic-sectorization-active=False",
+                "--allow-overloads=True",
+                ]
+        })
+
+    return system_config
 
 
 
@@ -349,33 +492,60 @@ def run_process(cmd: List[str], time_limit: int, mem_limit_bytes: int) -> Tuple[
 
     try:
         stdout, stderr = proc.communicate(timeout=time_limit)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
+
+        stdout = e.stdout or ""
+        stderr = e.stderr or ""
+
         kill_descendants(proc.pid)
         kill_process_tree(proc.pid)
-        return TIMEOUT_CODE, TIMEOUT_CODE, TIMEOUT_CODE
 
+        
+        try: 
+            out2, err2 = proc.communicate()
+            stdout += out2 or ""
+            stderr += err2 or ""
+        except Exception:
+            pass
+        
+        output = []
+        for line in stdout.splitlines():
+            try:
+                output.append(json.loads(line))
+            except:
+                pass
+
+        runtime = time.perf_counter() - start
+        output[-1]["ERROR"] = TIMEOUT_CODE
+        return runtime, peak["value"], output
+    
     print(stderr)
+
+    runtime = time.perf_counter() - start
+    output = []
+    for line in stdout.splitlines():
+        try:
+            output.append(json.loads(line))
+        except:
+            pass
 
     # Memory limit hit?
     if mem_exceeded.is_set():
-        return MEMOUT_CODE, MEMOUT_CODE, MEMOUT_CODE
+        output[-1]["ERROR"] = MEMOUT_CODE
+        return runtime, peak["value"], output
 
-    runtime = time.perf_counter() - start
 
     if proc.returncode != 0:
-        return ERROR_CODE, ERROR_CODE, ERROR_CODE
+        output[-1]["ERROR"] = ERROR_CODE
+        return runtime, peak["value"], output
 
     # Parse solution (first line of stdout)
-    first_line = stdout.splitlines()[0].strip() if stdout else ""
     print("-------------")
-    print(first_line)
+    print(f"Overload:{output[-1]['OVERLOAD']}, Arrival Delay:{output[-1]['ARRIVAL-DELAY']}, Sector-Number: {output[-1]['SECTOR-NUMBER']}, Sector-Diff: {output[-1]['SECTOR-DIFF']}, Reroute: {output[-1]['REROUTE']}")
     print("==============")
-    try:
-        solution_val = int(first_line)
-    except ValueError:
-        solution_val = UNPARSE_CODE
 
-    return runtime, peak["value"], solution_val
+    output[-1]["ERROR"] = ""
+    return runtime, peak["value"], output
 
 
 # ---------------------------------------------
@@ -405,6 +575,20 @@ def main() -> None:
     parser.add_argument("--experiment-name", type=str, default="", help="Specify an experiment name for various settings (such as wandb).")
 
     parser.add_argument("--scaling-experiments", type=int, default=0, help="true (val!=0), false (val=0)")
+
+    parser.add_argument("--experiment-asp-aero-flow", type=int, default=1, help="true (val!=0), false (val=0)")
+    parser.add_argument("--experiment-route-delay", type=int, default=1, help="true (val!=0), false (val=0)")
+    parser.add_argument("--experiment-delay", type=int, default=1, help="true (val!=0), false (val=0)")
+    parser.add_argument("--experiment-mip", type=int, default=1, help="true (val!=0), false (val=0)")
+    parser.add_argument("--experiment-asp-r-d-s", type=int, default=1, help="true (val!=0), false (val=0)")
+    parser.add_argument("--experiment-asp-r-d-ns", type=int, default=1, help="true (val!=0), false (val=0)")
+    parser.add_argument("--experiment-asp-r-nd-s", type=int, default=1, help="true (val!=0), false (val=0)")
+    parser.add_argument("--experiment-asp-nr-d-s", type=int, default=1, help="true (val!=0), false (val=0)")
+    parser.add_argument("--experiment-asp-r-nd-ns", type=int, default=1, help="true (val!=0), false (val=0)")
+    parser.add_argument("--experiment-asp-nr-nd-s", type=int, default=1, help="true (val!=0), false (val=0)")
+    parser.add_argument("--experiment-asp-nr-d-ns", type=int, default=1, help="true (val!=0), false (val=0)")
+    parser.add_argument("--experiment-asp-nr-nd-ns", type=int, default=1, help="true (val!=0), false (val=0)")
+
     parser.add_argument(
         "--hot-start",
         action="store_true",
@@ -436,7 +620,7 @@ def main() -> None:
         scaling_experiments = True
 
     base_dir = Path(__file__).resolve().parent
-    systems = build_system_config(base_dir, output_path, experiment_name)
+    systems = build_system_config(base_dir, output_path, experiment_name, args)
 
     # Collect & sort instances
     instances = sorted(p for p in args.instance_dir.iterdir() if p.is_dir())
@@ -531,7 +715,7 @@ def main() -> None:
             ram_usage[inst_name][system_name] = int(peak // (1024 ** 2)) if peak not in (TIMEOUT_CODE, MEMOUT_CODE, ERROR_CODE, UNPARSE_CODE) else peak
             sol_value[inst_name][system_name] = sol
 
-            if sol in (TIMEOUT_CODE, MEMOUT_CODE, ERROR_CODE, UNPARSE_CODE):
+            if rt in (TIMEOUT_CODE, MEMOUT_CODE, ERROR_CODE, UNPARSE_CODE):
                 first_failure[system_name] = sol
 
             # Persist progress after every (instance, solver) is decided (run or failure-propagated)
@@ -555,9 +739,38 @@ def main() -> None:
     def dicts_to_rows(container: Dict[str, Dict[str, float | int]]) -> List[List]:
         return [[inst] + [container[inst][s["key"]] for s in systems] for inst in (p.name for p in instances)]
 
+    def sol_value_to_rows(container, metric):
+        
+        own_heads = {}
+        own_heads["Instance"] = 1
+
+        output_list = []
+        for inst in (p.name for p in instances):
+            tmp_list = [inst]
+
+            for system in systems:
+
+                system_name = system["key"]
+
+                final_sol_dict = container[inst][system_name][-1]
+
+                if metric in final_sol_dict:
+                    if system_name not in own_heads:
+                        own_heads[system_name] = 1
+
+                    tmp_list.append(final_sol_dict[metric])
+
+            output_list.append(tmp_list)
+
+        return own_heads, output_list
+
+
     write_csv(output_path / "execution_time.csv", header, dicts_to_rows(exec_time))
     write_csv(output_path / "ram_usage.csv", header, dicts_to_rows(ram_usage))
-    write_csv(output_path / "solution_value.csv", header, dicts_to_rows(sol_value))
+    
+    for metric in ["OVERLOAD", "ARRIVAL-DELAY", "SECTOR-NUMBER", "SECTOR-DIFF", "REROUTE", "COMPUTATION-FINISHED","GROUNDING-TIME","TOTAL-TIME-TO-THIS-POINT","ERROR"]:
+        metric_values = sol_value_to_rows(sol_value, metric)
+        write_csv(output_path / f"{metric.lower()}.csv", metric_values[0], metric_values[1])
 
     print("Benchmarking finished. Results written to:")
     for fn in ("execution_time.csv", "ram_usage.csv", "solution_value.csv"):
