@@ -292,7 +292,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--wandb-entity=thinklex",
                 "--regulation-ground-delay-active=True",
                 "--regulation-rerouting-active=True",
-                "--regulation-dynamic-sectorization-active=True",
+                "--regulation-dynamic-sectorization=2",
                 ]
         })
 
@@ -310,7 +310,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--wandb-entity=thinklex",
                 "--regulation-ground-delay-active=True",
                 "--regulation-rerouting-active=True",
-                "--regulation-dynamic-sectorization-active=False",
+                "--regulation-dynamic-sectorization=0",
                 ]
         })
 
@@ -328,7 +328,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--wandb-entity=thinklex",
                 "--regulation-ground-delay-active=False",
                 "--regulation-rerouting-active=True",
-                "--regulation-dynamic-sectorization-active=True",
+                "--regulation-dynamic-sectorization=2",
                 ]
         })
 
@@ -346,7 +346,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--wandb-entity=thinklex",
                 "--regulation-ground-delay-active=True",
                 "--regulation-rerouting-active=False",
-                "--regulation-dynamic-sectorization-active=True",
+                "--regulation-dynamic-sectorization=2",
                 ]
         })
 
@@ -364,7 +364,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--wandb-entity=thinklex",
                 "--regulation-ground-delay-active=False",
                 "--regulation-rerouting-active=True",
-                "--regulation-dynamic-sectorization-active=False",
+                "--regulation-dynamic-sectorization=0",
                 ]
         })
 
@@ -382,7 +382,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--wandb-entity=thinklex",
                 "--regulation-ground-delay-active=False",
                 "--regulation-rerouting-active=False",
-                "--regulation-dynamic-sectorization-active=True",
+                "--regulation-dynamic-sectorization=2",
                 ]
         })
 
@@ -400,7 +400,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--wandb-entity=thinklex",
                 "--regulation-ground-delay-active=True",
                 "--regulation-rerouting-active=False",
-                "--regulation-dynamic-sectorization-active=False",
+                "--regulation-dynamic-sectorization=0",
                 ]
         })
 
@@ -418,7 +418,83 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--wandb-entity=thinklex",
                 "--regulation-ground-delay-active=False",
                 "--regulation-rerouting-active=False",
-                "--regulation-dynamic-sectorization-active=False",
+                "--regulation-dynamic-sectorization=0",
+                "--allow-overloads=True",
+                ]
+        })
+
+    if args.experiment_asp_r_d_sp != 0:
+        system_config.append({
+            "key": "13_ASP_r_d_sp",
+            "script": base_dir / "../02_ASP/main.py",
+            "encoding": base_dir / "../02_ASP/encoding.lp",
+            "verbosity": None,
+            "cmd": [
+                f"--results-root={output_path}/solver_outputs/02_ASP",
+                "--wandb-enabled=True",
+                "--wandb-experiment-name-suffix=_13_ASP_r_d_sp",
+                f"--wandb-experiment-name-prefix={experiment_name}_",
+                "--wandb-entity=thinklex",
+                "--regulation-ground-delay-active=True",
+                "--regulation-rerouting-active=True",
+                "--regulation-dynamic-sectorization=1",
+                "--allow-overloads=True",
+                ]
+        })
+
+    if args.experiment_asp_nr_d_sp != 0:
+        system_config.append({
+            "key": "14_ASP_nr_d_sp",
+            "script": base_dir / "../02_ASP/main.py",
+            "encoding": base_dir / "../02_ASP/encoding.lp",
+            "verbosity": None,
+            "cmd": [
+                f"--results-root={output_path}/solver_outputs/02_ASP",
+                "--wandb-enabled=True",
+                "--wandb-experiment-name-suffix=_14_ASP_nr_d_sp",
+                f"--wandb-experiment-name-prefix={experiment_name}_",
+                "--wandb-entity=thinklex",
+                "--regulation-ground-delay-active=True",
+                "--regulation-rerouting-active=False",
+                "--regulation-dynamic-sectorization=1",
+                "--allow-overloads=True",
+                ]
+        })
+
+    if args.experiment_asp_r_nd_sp != 0:
+        system_config.append({
+            "key": "15_ASP_r_nd_sp",
+            "script": base_dir / "../02_ASP/main.py",
+            "encoding": base_dir / "../02_ASP/encoding.lp",
+            "verbosity": None,
+            "cmd": [
+                f"--results-root={output_path}/solver_outputs/02_ASP",
+                "--wandb-enabled=True",
+                "--wandb-experiment-name-suffix=_15_ASP_r_nd_sp",
+                f"--wandb-experiment-name-prefix={experiment_name}_",
+                "--wandb-entity=thinklex",
+                "--regulation-ground-delay-active=False",
+                "--regulation-rerouting-active=True",
+                "--regulation-dynamic-sectorization=1",
+                "--allow-overloads=True",
+                ]
+        })
+
+    if args.experiment_asp_nr_nd_sp != 0:
+        system_config.append({
+            "key": "16_ASP_nr_nd_sp",
+            "script": base_dir / "../02_ASP/main.py",
+            "encoding": base_dir / "../02_ASP/encoding.lp",
+            "verbosity": None,
+            "cmd": [
+                f"--results-root={output_path}/solver_outputs/02_ASP",
+                "--wandb-enabled=True",
+                "--wandb-experiment-name-suffix=_16_ASP_nr_nd_sp",
+                f"--wandb-experiment-name-prefix={experiment_name}_",
+                "--wandb-entity=thinklex",
+                "--regulation-ground-delay-active=False",
+                "--regulation-rerouting-active=False",
+                "--regulation-dynamic-sectorization=1",
                 "--allow-overloads=True",
                 ]
         })
@@ -587,6 +663,11 @@ def main() -> None:
     parser.add_argument("--experiment-asp-nr-nd-s", type=int, default=1, help="true (val!=0), false (val=0)")
     parser.add_argument("--experiment-asp-nr-d-ns", type=int, default=1, help="true (val!=0), false (val=0)")
     parser.add_argument("--experiment-asp-nr-nd-ns", type=int, default=1, help="true (val!=0), false (val=0)")
+
+    parser.add_argument("--experiment-asp-r-d-sp", type=int, default=1, help="true (val!=0), false (val=0)")
+    parser.add_argument("--experiment-asp-nr-d-sp", type=int, default=1, help="true (val!=0), false (val=0)")
+    parser.add_argument("--experiment-asp-r-nd-sp", type=int, default=1, help="true (val!=0), false (val=0)")
+    parser.add_argument("--experiment-asp-nr-nd-sp", type=int, default=1, help="true (val!=0), false (val=0)")
 
     parser.add_argument(
         "--hot-start",
