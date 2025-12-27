@@ -17,6 +17,7 @@ import time
 import math
 import networkx as nx
 import os
+import json
 
 import numpy as np
 import warnings
@@ -202,6 +203,7 @@ class Main:
         """Run the application"""
         self.load_data()
 
+        original_start_time = time.time()
 
         # For NumPy floating-point issues (divide/overflow/invalid/underflow):
         np.seterr(all='raise')  # or: with np.errstate(divide='raise', invalid='raise', over='raise')
@@ -344,14 +346,19 @@ class Main:
             _, _, flight_durations = self.flight_spans_contiguous(converted_instance_matrix, fill_value=-1)
 
         # Track to Weights & Biases when enabled
+        current_time = time.time() - original_start_time
+
+        number_sectors = self.compute_total_number_sectors(navaid_sector_time_assignment)
+
         if self._wandb_log is not None:
-            uniq = np.unique_counts(navaid_sector_time_assignment[:,0])
 
             self._wandb_log({
                 "iteration": int(iteration), # FIRST ONE:
                 "number_of_conflicts": int(number_of_conflicts),
                 "total_delay": int(0),
-                "number_sectors": len(uniq.values),
+                "number_sectors": int(number_sectors),
+                "sector_diff": int(0),
+                "number_reroutes": int(0),
                 "current_time": int(0),
             })
 
@@ -363,6 +370,19 @@ class Main:
     number_sectors -> {len(uniq.values)}
     current_time -> {int(0)}
                       """)
+                
+        output_dict = {}
+        output_dict["OVERLOAD"] = int(number_of_conflicts)
+        output_dict["ARRIVAL-DELAY"] = int(0)
+        output_dict["SECTOR-NUMBER"] = int(number_sectors)
+        output_dict["SECTOR-DIFF"] = int(0)
+        output_dict["REROUTE"] = int(0)
+        output_dict["TOTAL-TIME-TO-THIS-POINT"] =  int(current_time)
+        output_dict["COMPUTATION-FINISHED"] = False
+        output_string = json.dumps(output_dict)
+        print(output_string)
+
+
 
         last_time_bucket_updated = 0
 
@@ -849,48 +869,63 @@ class Main:
                             print(f">>> RESET PROCESSOR COUNT TO:{max_number_processors}; AIRPLANES TO: {max_number_airplanes_considered_in_ASP}")
 
             # -----------------------------------------------------------------------------
+            t_init  = self.last_valid_pos(original_converted_instance_matrix)      # last non--1 in the *initial* schedule
+            t_final = self.last_valid_pos(converted_instance_matrix)     # last non--1 in the *final* schedule
 
-            if self.verbosity > 1 or self._wandb_log is not None:
-                t_init  = self.last_valid_pos(original_converted_instance_matrix)      # last non--1 in the *initial* schedule
-                t_final = self.last_valid_pos(converted_instance_matrix)     # last non--1 in the *final* schedule
+            # --- 3. compute delays --------------------------------------------------------
+            # Flights that disappear completely (-1 in *both* files) get a delay of 0
+            delay = np.where(t_init >= 0, t_final - t_init, 0)          # shape (|I|,)
 
-                # --- 3. compute delays --------------------------------------------------------
-                # Flights that disappear completely (-1 in *both* files) get a delay of 0
-                delay = np.where(t_init >= 0, t_final - t_init, 0)          # shape (|I|,)
-
-                # --- 4. aggregate in whichever way you need -----------------------------------
-                total_delay  = delay.sum()
+            # --- 4. aggregate in whichever way you need -----------------------------------
+            total_delay  = delay.sum()
 
             if self.verbosity > 1:
                 print(f">>> Current total delay: {total_delay}")
 
             
             iteration += 1
-            # Track to Weights & Biases when enabled
-            #if iteration == 372:
-            #    print("DEBUG EXIT AT ITERATION 372!")
-            #    quit()
+
+            number_sectors = self.compute_total_number_sectors(navaid_sector_time_assignment)
+            sector_diff = np.count_nonzero(navaid_sector_time_assignment[:, 1:] != navaid_sector_time_assignment[:, :-1])
+
+            original_max_time_converted = original_converted_instance_matrix.shape[1]  # original_max_time
+            rerouted_mask = np.any(converted_instance_matrix[:, :original_max_time_converted] != original_converted_instance_matrix, axis=1)     # True if flight differs anywhere
+            number_reroutes = int(np.count_nonzero(rerouted_mask))
+
             if self._wandb_log is not None:
                 if time_bucket_updated >= navaid_sector_time_assignment.shape[1]:
                     time_bucket_updated = navaid_sector_time_assignment.shape[1] - 1
 
-                uniq = np.unique_counts(navaid_sector_time_assignment[:,time_bucket_updated])
                 self._wandb_log({
                     "iteration": int(iteration),
                     "number_of_conflicts": int(number_of_conflicts),
                     "total_delay": int(total_delay),
-                    "number_sectors": len(uniq.values),
+                    "number_sectors": int(number_sectors),
+                    "sector_diff": int(sector_diff),
+                    "number_reroutes": int(number_reroutes),
                     "current_time": int(time_bucket_updated),
                 })
 
-                if self.verbosity > 1:
-                    print(f"""
-        iteration -> {int(iteration)}
-        number_of_conflicts -> {int(number_of_conflicts)}
-        total_delay -> {int(total_delay)}
-        number_sectors -> {len(uniq.values)}
-        current_time -> {int(time_bucket_updated)}
-                        """)
+            if self.verbosity > 1:
+                print(f"""
+    iteration -> {int(iteration)}
+    number_of_conflicts -> {int(number_of_conflicts)}
+    total_delay -> {int(total_delay)}
+    number_sectors -> {number_sectors}
+    current_time -> {int(time_bucket_updated)}
+                    """)
+                    
+            current_time = time.time() - original_start_time
+            output_dict = {}
+            output_dict["OVERLOAD"] = int(number_of_conflicts)
+            output_dict["ARRIVAL-DELAY"] = int(total_delay)
+            output_dict["SECTOR-NUMBER"] = int(number_sectors)
+            output_dict["SECTOR-DIFF"] = int(sector_diff)
+            output_dict["REROUTE"] = int(number_reroutes)
+            output_dict["TOTAL-TIME-TO-THIS-POINT"] =  int(current_time)
+            output_dict["COMPUTATION-FINISHED"] = False
+            output_string = json.dumps(output_dict)
+            print(output_string)
 
 
         if self.minimize_number_sectors is True:
@@ -924,15 +959,38 @@ class Main:
         #per_flight   = delay.tolist()
 
         # Track to Weights & Biases when enabled
+        number_sectors = self.compute_total_number_sectors(navaid_sector_time_assignment)
+        sector_diff = np.count_nonzero(navaid_sector_time_assignment[:, 1:] != navaid_sector_time_assignment[:, :-1])
+
+        original_max_time_converted = original_converted_instance_matrix.shape[1]  # original_max_time
+        rerouted_mask = np.any(converted_instance_matrix[:, :original_max_time_converted] != original_converted_instance_matrix, axis=1)     # True if flight differs anywhere
+        number_reroutes = int(np.count_nonzero(rerouted_mask))
+
         if self._wandb_log is not None:
-            uniq = np.unique_counts(navaid_sector_time_assignment[:,time_bucket_updated])
             self._wandb_log({
                 "iteration": int(iteration+1),
                 "number_of_conflicts": int(number_of_conflicts),
                 "total_delay": int(total_delay),
-                "number_sectors": len(uniq.values),
+                "number_sectors": int(number_sectors),
+                "sector_diff": int(sector_diff),
+                "number_reroutes": int(number_reroutes),
                 "current_time": int(time_bucket_updated),
             })
+
+
+        current_time = time.time() - original_start_time
+        output_dict = {}
+        output_dict["OVERLOAD"] = int(number_of_conflicts)
+        output_dict["ARRIVAL-DELAY"] = int(total_delay)
+        output_dict["SECTOR-NUMBER"] = int(number_sectors)
+        output_dict["SECTOR-DIFF"] = int(sector_diff)
+        output_dict["REROUTE"] = int(number_reroutes)
+        output_dict["TOTAL-TIME-TO-THIS-POINT"] =  int(current_time)
+        output_dict["COMPUTATION-FINISHED"] = True
+        output_string = json.dumps(output_dict)
+        print(output_string)
+
+
 
         if self.verbosity > 0:
 
@@ -957,6 +1015,19 @@ class Main:
 
     def get_total_atfm_delay(self):
         return self.total_atfm_delay
+    
+    def compute_total_number_sectors(self, navaid_sector_time_assignment):
+
+        if navaid_sector_time_assignment.shape[0] == 0:
+            number_sectors = 0
+        else:
+            S = np.sort(navaid_sector_time_assignment, axis=0)                       # sort within each column
+            changes = (S[1:, :] != S[:-1, :])            # True where a new value starts
+            uniq_per_col = 1 + changes.sum(axis=0)       # unique count per column
+        number_sectors = int(uniq_per_col.sum())     # sum over all columns
+
+        return number_sectors
+
 
     def build_job(self, time_index: int,
                 sector_index: int,
@@ -2098,7 +2169,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     if run is not None:
         run.finish()
 
-    print(app.get_total_atfm_delay())
+    #print(app.get_total_atfm_delay())
 
 
 if __name__ == "__main__":  # pragma: no cover — direct execution guard
