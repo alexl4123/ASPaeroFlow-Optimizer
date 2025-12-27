@@ -14,7 +14,11 @@ navaid(NAV) :- navaid_sector(NAV,_,_).
 % Dynamic Sector Allocation:
 navaid_sector(SEC,SEC,T) :- navaid(SEC), time(T), airport(SEC).
 1{navaid_sector(NAV,SEC,T):navaid_sector(_,SEC,0)}1:- navaid(NAV), time(T), not airport(NAV), regulation_dynamic_sector_allocation.
+initial_sector(SEC) :- navaid_sector(_,SEC,0), regulation_restricted_dynamic_sector_allocation.
+1{navaid_sector_decision(SEC,0..3,T)}1 :- initial_sector(SEC), time(T), not airport(SEC), regulation_restricted_dynamic_sector_allocation.
+navaid_sector(NAV1,SEC1,T) :- navaid_sector_decision(SEC,DEC,T), navaid_sector_restricted_sector_allocation(SEC,DEC,NAV1,SEC1), regulation_restricted_dynamic_sector_allocation.
 navaid_sector(NAV,SEC,T) :- time(T), navaid_sector(NAV,SEC,0), -regulation_dynamic_sector_allocation.
+
 
 :- navaid_sector(NAV,SEC1,T), navaid_sector(NAV,SEC2,T), SEC1 != SEC2.
 :- navaid_sector(NAV,SEC,T), not airport(NAV), airport(SEC).
@@ -66,6 +70,7 @@ overload(X,T,LOAD-C) :- sector(X,T,C), #count{ID:flight(ID,X,T)} = LOAD, LOAD > 
 reroute(ID) :- planned_departure_time(ID,T), actual_departure_time(ID,T'), T' > T.
 {navpoint_flight(ID,X,T):navpoint(X)}1 :- reroute(ID), time(T), actual_departure_time(ID,T'), T >= T', regulation_rerouting.
 navpoint_flight(ID,X,T + TT) :- navpoint_flight_plan(ID,X,T), actual_departure_time(ID,TACT),planned_departure_time(ID,TPLAN), TT = TACT - TPLAN, -regulation_rerouting.
+
 
 % ----------------- ONLY FOR REROUTED PLANES --------------------
 % NO FLIGHT BEFORE PLANNED START TIME:
@@ -143,9 +148,12 @@ flight(ID,S,T') :- flightT(ID,TT,T',1), navpoint_flight(ID,XX,TT), navaid_sector
 % OPTIMIZE FOR LEAST REROUTES/DELAYS
 :~ reroute(ID). [1@6,ID]
 
-%#heuristic navpoint_flight(ID,X,T) : navpoint_flight_plan(ID,X,T). [10,init]
-%#heuristic navaid_sector(NAV,SEC,T) : time(T), navaid_sector(NAV,SEC,0). [10,init]
-%#heuristic actual_departure_time(ID,TP) : planned_departure_time(ID,TP). [10,init]
+%#heuristic navaid_sector(NAV,SEC,T) : time(T), navaid_sector(NAV,SEC,0). [1,sign]
+%#heuristic navaid_sector(NAV,SEC,T) : time(T), navaid_sector(NAV,SEC,0). [2,factor]
+%#heuristic reroute(ID):navpoint_flight_plan(ID,_,_). [1,sign]
+%#heuristic actual_departure_time(ID,TP) : planned_departure_time(ID,TP). [1,sign]
+
+
 
 %output_sec_len(X,Y,Z) :- sector_len(X,Y,Z), Y = 12.
 %output_sec_avg(X,Y,Z) :- sector_avg_cap(X,Y,Z), Y = 12.
@@ -153,6 +161,7 @@ flight(ID,S,T') :- flightT(ID,TT,T',1), navpoint_flight(ID,XX,TT), navaid_sector
 
 #show flight/3.
 #show navpoint_flight/3.
+%#show navaid_sector_decision/3.
 %#show reroute/1.
 %#show navpoint_seq/3.
 %#show navpoint_seq/4.

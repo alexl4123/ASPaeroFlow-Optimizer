@@ -153,8 +153,8 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
                         help="true/false: Enable ground delays of aircraft.")
     parser.add_argument("--regulation-rerouting-active", type=str, default=str(C("regulation-rerouting-active", "true")),
                         help="true/false: Enable rerouting of aircraft.")
-    parser.add_argument("--regulation-dynamic-sectorization-active", type=str, default=str(C("regulation-dynamic-sectorization-active", "true")),
-                        help="true/false: Enable dynamic sectorization.")
+    parser.add_argument("--regulation-dynamic-sectorization", type=int, default=str(C("regulation-dynamic-sectorization", 2)),
+                        help="0=no dynamic sectorization, 1=restricted dynamic sectorization, 2=full dynamic sectorization.")
     parser.add_argument("--allow-overloads", type=str, default=str(C("allow-overloads", "false")),
                         help="true/false: Allow solutions with overload constraint violations.")
 
@@ -236,7 +236,6 @@ def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
     
     args.regulation_ground_delay_active = _str2bool(args.regulation_ground_delay_active)
     args.regulation_rerouting_active = _str2bool(args.regulation_rerouting_active)
-    args.regulation_dynamic_sectorization_active = _str2bool(args.regulation_dynamic_sectorization_active)
     args.allow_overloads = _str2bool(args.allow_overloads)
 
     return args
@@ -353,7 +352,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     regulation_ground_delay_active = args.regulation_ground_delay_active
     regulation_rerouting_active = args.regulation_rerouting_active
-    regulation_dynamic_sectorization_active = args.regulation_dynamic_sectorization_active
+    regulation_dynamic_sectorization_active = args.regulation_dynamic_sectorization
 
     allow_overloads = args.allow_overloads
 
@@ -412,7 +411,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         encoding = open(encoding_path, "r").read()
 
-        #open("20251223_instance.lp","w").write(instance_asp_atoms)
+        open("20251223_instance.lp","w").write(instance_asp_atoms)
         
         solver: Model = Solver(encoding, instance_asp_atoms, seed=seed, wandb_log = wandb_log)
         model = solver.solve()

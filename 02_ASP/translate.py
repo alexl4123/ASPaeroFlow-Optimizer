@@ -230,13 +230,139 @@ class TranslateCSVtoLogicProgram:
 
         return airplane_flight_instance
 
-    def convert_navaid_sector(self, navaid_sector) -> List[str]:
+    def convert_navaid_sector(self, navaid_sector, networkx_graph) -> List[str]:
         """Convert navaid_sector to ASP"""
         
         navaid_sector_instance = []
 
         for row_index in range(navaid_sector.shape[0]):
             navaid_sector_instance.append(f"navaid_sector({navaid_sector[row_index,0]},{navaid_sector[row_index,1]},0).")
+
+        # Build per-sector navpoint lists
+        from collections import defaultdict, deque
+        import networkx as nx
+
+        sector_to_navs = defaultdict(set)
+        for row_index in range(navaid_sector.shape[0]):
+            nav = str(navaid_sector[row_index, 0])
+            sec = str(navaid_sector[row_index, 1])
+            sector_to_navs[sec].add(nav)
+
+        def _bfs_order(G: nx.Graph, start: str) -> List[str]:
+            """Deterministic BFS order (neighbors sorted by str)."""
+            seen = {start}
+            q = deque([start])
+            order = []
+            while q:
+                u = q.popleft()
+                order.append(u)
+                for v in sorted(G.neighbors(u), key=str):
+                    if v not in seen:
+                        seen.add(v)
+                        q.append(v)
+            return order
+
+        def _split_connected(G: nx.Graph, nodes: List[str]):
+            """
+            Attempt to split 'nodes' into two connected parts, roughly half/half.
+            Deterministic: BFS-prefix is connected; we search for a cut where the remainder is connected.
+            Returns (A, B) as sets, or None if no valid split found.
+            """
+            if len(nodes) < 2:
+                return None
+            nodes_sorted = sorted(nodes, key=str)
+            root = nodes_sorted[0]
+            order = _bfs_order(G, root)
+            if len(order) != len(nodes_sorted):
+                return None  # not connected
+
+            desired = len(nodes_sorted) // 2
+            for delta in range(len(nodes_sorted)):
+                for m in (desired - delta, desired + delta):
+                    if m <= 0 or m >= len(nodes_sorted):
+                        continue
+                    A = set(order[:m])           # connected by construction
+                    B = set(nodes_sorted) - A
+                    if not B:
+                        continue
+                    # B must be connected
+                    if len(B) == 1 or nx.is_connected(G.subgraph(B)):
+                        return A, B
+            return None
+
+        def _partition_k(G: nx.Graph, nodes: List[str], k: int):
+            """k in {2,4}. Returns list[set] of connected parts, or None if impossible."""
+            nodes_sorted = sorted(nodes, key=str)
+            if not nodes_sorted:
+                return []
+            sub = G.subgraph(nodes_sorted)
+            if k == 2:
+                split = _split_connected(sub, nodes_sorted)
+                return list(split) if split is not None else None
+            if k == 4:
+                split = _split_connected(sub, nodes_sorted)
+                if split is None:
+                    return None
+                A, B = split
+                splitA = _split_connected(sub.subgraph(A), sorted(A, key=str))
+                splitB = _split_connected(sub.subgraph(B), sorted(B, key=str))
+                if splitA is None or splitB is None:
+                    return None
+                return [splitA[0], splitA[1], splitB[0], splitB[1]]
+            raise ValueError("k must be 2 or 4")
+
+        def _emit(sec: str, dec: int, nav_to_sec1: dict):
+            for nav in sorted(nav_to_sec1.keys(), key=str):
+                sec1 = nav_to_sec1[nav]
+                navaid_sector_instance.append(
+                    f"navaid_sector_restricted_sector_allocation({sec},{dec},{nav},{sec1})."
+                )
+
+        # For each sector: offer DEC in {0,1,2,3}
+        for sec, navs_set in sector_to_navs.items():
+            navs = sorted(navs_set, key=str)
+            navs = [int(n) for n in navs]
+
+            # Induced graph on sector navpoints (add missing nodes as isolated)
+            present = [n for n in navs if n in networkx_graph]
+            missing = [n for n in navs if n not in networkx_graph]
+            induced = networkx_graph.subgraph(present).copy()
+            if missing:
+                induced.add_nodes_from(missing)
+
+            # DEC 0: unchanged allocation (SEC1 == SEC)
+            _emit(sec, 0, {nav: sec for nav in navs})
+
+            # DEC 3: atomic allocation (SEC1 == NAV1)
+            _emit(sec, 3, {nav: nav for nav in navs})
+
+            if induced.number_of_nodes() > 1:
+                # DEC 1: two connected parts (fallback: DEC 0 mapping)
+                parts2 = _partition_k(induced, navs, 2)
+                if parts2 is None:
+                    nav_to_rep2 = {nav: sec for nav in navs}
+                else:
+                    reps2 = {tuple(sorted(part, key=str))[0]: part for part in parts2}  # rep is min node
+                    nav_to_rep2 = {}
+                    for rep, part in reps2.items():
+                        for nav in part:
+                            nav_to_rep2[nav] = rep
+                _emit(sec, 1, nav_to_rep2)
+
+                # DEC 2: four connected parts (fallback: DEC 1 mapping; if that fell back, effectively DEC 0)
+                parts4 = _partition_k(induced, navs, 4)
+                if parts4 is None:
+                    nav_to_rep4 = dict(nav_to_rep2)
+                else:
+                    reps4 = {tuple(sorted(part, key=str))[0]: part for part in parts4}
+                    nav_to_rep4 = {}
+                    for rep, part in reps4.items():
+                        for nav in part:
+                            nav_to_rep4[nav] = rep
+                _emit(sec, 2, nav_to_rep4)
+            else:
+                _emit(sec, 1, {nav: sec for nav in navs})
+                _emit(sec, 2, {nav: sec for nav in navs})
 
         return navaid_sector_instance
     
@@ -306,7 +432,7 @@ class TranslateCSVtoLogicProgram:
         airports_instance = self.convert_airports(self.airports)
         airplanes_instance = self.convert_airplanes(self.airplanes)
         airplane_flight_instance = self.convert_airplane_flight(self.airplane_flight)
-        navaid_sector_instance = self.convert_navaid_sector(self.navaid_sector)
+        navaid_sector_instance = self.convert_navaid_sector(self.navaid_sector, self.networkx_navpoint_graph)
 
         sector_capactiy_factor_instance = [f"sector_capacity_factor({sector_capactiy_factor})."]
         timestep_granularity_instance = [f"timestep_granularity({timestep_granularity})."]
@@ -325,10 +451,12 @@ class TranslateCSVtoLogicProgram:
         else:
             regulation_instance.append("-regulation_rerouting.")
 
-        if regulation_dynamic_sectorization_active is True:
-            regulation_instance.append("regulation_dynamic_sector_allocation.")
-        else:
+        if regulation_dynamic_sectorization_active == 0:
             regulation_instance.append("-regulation_dynamic_sector_allocation.")
+        elif regulation_dynamic_sectorization_active == 1:
+            regulation_instance.append("regulation_restricted_dynamic_sector_allocation.")
+        elif regulation_dynamic_sectorization_active == 2:
+            regulation_instance.append("regulation_dynamic_sector_allocation.")
 
         instance = graph_instance + flights_instance + sectors_instance + airplanes_instance +\
             airports_instance + airplane_flight_instance + navaid_sector_instance +\
