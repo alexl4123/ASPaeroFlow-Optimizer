@@ -591,8 +591,16 @@ def run_process(cmd: List[str], time_limit: int, mem_limit_bytes: int) -> Tuple[
                 pass
 
         runtime = time.perf_counter() - start
-        output[-1]["ERROR"] = TIMEOUT_CODE
+
+        if len(output) > 0:
+            output[-1]["ERROR"] = TIMEOUT_CODE
+        else:
+            tmp_dict = {}
+            tmp_dict["ERROR"] = TIMEOUT_CODE
+            output.append(tmp_dict)
+
         return runtime, peak["value"], output
+
     
     print(stderr)
 
@@ -606,12 +614,26 @@ def run_process(cmd: List[str], time_limit: int, mem_limit_bytes: int) -> Tuple[
 
     # Memory limit hit?
     if mem_exceeded.is_set():
-        output[-1]["ERROR"] = MEMOUT_CODE
+
+        if len(output) > 0:
+            output[-1]["ERROR"] = MEMOUT_CODE
+        else:
+            tmp_dict = {}
+            tmp_dict["ERROR"] = MEMOUT_CODE
+            output.append(tmp_dict)
+
         return runtime, peak["value"], output
 
 
     if proc.returncode != 0:
-        output[-1]["ERROR"] = ERROR_CODE
+
+        if len(output) > 0:
+            output[-1]["ERROR"] = ERROR_CODE
+        else:
+            tmp_dict = {}
+            tmp_dict["ERROR"] = ERROR_CODE
+            output.append(tmp_dict)
+
         return runtime, peak["value"], output
 
     # Parse solution (first line of stdout)
@@ -619,7 +641,13 @@ def run_process(cmd: List[str], time_limit: int, mem_limit_bytes: int) -> Tuple[
     print(f"Overload:{output[-1]['OVERLOAD']}, Arrival Delay:{output[-1]['ARRIVAL-DELAY']}, Sector-Number: {output[-1]['SECTOR-NUMBER']}, Sector-Diff: {output[-1]['SECTOR-DIFF']}, Reroute: {output[-1]['REROUTE']}")
     print("==============")
 
-    output[-1]["ERROR"] = ""
+    if len(output) > 0:
+        output[-1]["ERROR"] = ""
+    else:
+        tmp_dict = {}
+        tmp_dict["ERROR"] = ""
+        output.append(tmp_dict)
+
     return runtime, peak["value"], output
 
 
@@ -839,6 +867,10 @@ def main() -> None:
                         own_heads[system_name] = 1
 
                     tmp_list.append(final_sol_dict[metric])
+
+                else:
+                    if system_name in own_heads:
+                        tmp_list.append(-1)
 
             output_list.append(tmp_list)
 
