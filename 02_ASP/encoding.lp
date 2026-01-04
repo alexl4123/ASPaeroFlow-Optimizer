@@ -19,6 +19,8 @@ initial_sector(SEC) :- navaid_sector(_,SEC,0), regulation_restricted_dynamic_sec
 navaid_sector(NAV1,SEC1,T) :- navaid_sector_decision(SEC,DEC,T), navaid_sector_restricted_sector_allocation(SEC,DEC,NAV1,SEC1), regulation_restricted_dynamic_sector_allocation.
 navaid_sector(NAV,SEC,T) :- time(T), navaid_sector(NAV,SEC,0), -regulation_dynamic_sector_allocation.
 
+reconfig(NAV,T) :- navaid_sector(NAV,SEC,0), navaid_sector(NAV,SEC2,T), SEC != SEC2, T > 0.
+
 
 :- navaid_sector(NAV,SEC1,T), navaid_sector(NAV,SEC2,T), SEC1 != SEC2.
 :- navaid_sector(NAV,SEC,T), not airport(NAV), airport(SEC).
@@ -145,8 +147,10 @@ flight(ID,S,T') :- flightT(ID,TT,T',1), navpoint_flight(ID,XX,TT), navaid_sector
 :~ sector_number(T,NUM). [NUM@8,T]
 % OPTIMIZE FOR LEAST SECTOR CHANGES:
 :~ sector_diff(T,DIFF). [DIFF@7,T]
-% OPTIMIZE FOR LEAST REROUTES/DELAYS
+% OPTIMIZE FOR LEAST REROUTES/DELAYS:
 :~ reroute(ID). [1@6,ID]
+% OPTIMIZE FOR LEAST RECONFIGS:
+:~ reconfig(ID,T). [1@5,ID,T]
 
 %#heuristic navaid_sector(NAV,SEC,T) : time(T), navaid_sector(NAV,SEC,0). [1,sign]
 %#heuristic navaid_sector(NAV,SEC,T) : time(T), navaid_sector(NAV,SEC,0). [2,factor]
