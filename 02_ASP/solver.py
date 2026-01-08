@@ -17,11 +17,12 @@ ARRIVAL_DELAY: Final[str] = "arrival_delay"
 SECTOR_NUMBER: Final[str] = "sector_number"
 SECTOR_DIFF: Final[str] = "sector_diff"
 REROUTE: Final[str] = "reroute"
+RECONFIG: Final[str] = "reconfig"
 
 FLIGHT: Final[str] = "flight"
 NAVPOINT_FLIGHT: Final[str] = "navpoint_flight"
 NAVAID_SECTOR: Final[str] = "navaid_sector"
-SIGNATURES: Final[set[str]] = {ARRIVAL_DELAY, FLIGHT, REROUTE, NAVPOINT_FLIGHT, NAVAID_SECTOR, OVERLOAD, SECTOR_NUMBER, SECTOR_DIFF}
+SIGNATURES: Final[set[str]] = {ARRIVAL_DELAY, FLIGHT, REROUTE, NAVPOINT_FLIGHT, NAVAID_SECTOR, OVERLOAD, SECTOR_NUMBER, SECTOR_DIFF, RECONFIG}
 
 class Solver:
     def __init__(self, encoding, instance, seed = 1, wandb_log = None):
@@ -100,9 +101,10 @@ class Solver:
         sector_number = [symbol for symbol in parsed if symbol.name == SECTOR_NUMBER]
         sector_diff = [symbol for symbol in parsed if symbol.name == SECTOR_DIFF]
         reroute = [symbol for symbol in parsed if symbol.name in REROUTE]
+        reconfig = [symbol for symbol in parsed if symbol.name in RECONFIG]
         
         current_time = time.time() - self.total_time_start
-        self.final_model = Model(overload, arrival_delay, sector_number, sector_diff, reroute, flights, navpoint_flights, navaid_sector_time, self.grounding_time, current_time, model.optimality_proven)
+        self.final_model = Model(overload, arrival_delay, sector_number, sector_diff, reroute, reconfig, flights, navpoint_flights, navaid_sector_time, self.grounding_time, current_time, model.optimality_proven)
         
         output_string = self.final_model.get_model_optimization_string()
         tmp = os.dup(self.tmp_fd)
@@ -118,19 +120,21 @@ class Solver:
                 "SECTOR-NUMBER":int(self.final_model.get_total_sector_number()),
                 "SECTOR_DIFF":int(self.final_model.get_total_sector_diff()),
                 "REROUTE":int(self.final_model.get_total_reroute()),
+                "RECONFIG":int(self.final_model.get_total_reconfig()),
                 "GROUNDING-TIME": int(self.grounding_time),
                 "TOTAL-TIME-TO-THIS-POINT": int(current_time)
                 })
 
 class Model:
 
-    def __init__(self, overloads, arrival_delay, sector_number, sector_diff, reroute, flights, navpoint_flights, navaid_sector_time, grounding_time, current_time, computation_finished):
+    def __init__(self, overloads, arrival_delay, sector_number, sector_diff, reroute, reconfig, flights, navpoint_flights, navaid_sector_time, grounding_time, current_time, computation_finished):
 
         self.overloads = overloads
         self.arrival_delays = arrival_delay
         self.sector_numbers = sector_number
         self.sector_diffs = sector_diff
         self.reroutes = reroute
+        self.reconfig = reconfig
 
         self.computation_time = -1
 
@@ -151,6 +155,7 @@ class Model:
         output_dict["SECTOR-NUMBER"] = self.get_total_sector_number()
         output_dict["SECTOR-DIFF"] = self.get_total_sector_diff()
         output_dict["REROUTE"] = self.get_total_reroute()
+        output_dict["RECONFIG"] = self.get_total_reconfig()
         output_dict["GROUNDING-TIME"] = self.grounding_time
         output_dict["TOTAL-TIME-TO-THIS-POINT"] = self.current_time
         output_dict["COMPUTATION-FINISHED"] = self.computation_finished
@@ -164,6 +169,11 @@ class Model:
 
         overload_sum = sum([int(symbol.arguments[2].number) for symbol in self.overloads])
         return overload_sum
+    
+    def get_total_reconfig(self):
+
+        total = sum(1 for reroute in self.reconfig)
+        return total
 
     def get_total_atfm_delay(self):
 

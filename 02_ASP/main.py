@@ -451,7 +451,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     for navpoint_sector in model.get_navaid_sector_time_assignment():
         distinct_navpoints.add(navpoint_sector.arguments[0])
         if max_time < int(str(navpoint_sector.arguments[2])):
-            max_time = int(str(navpoint_sector.arguments[2]))
+            max_time = int(str(navpoint_sector.arguments[2])) 
+
+    max_time += 1
 
     converted_instance_matrix = np.ones((len(distinct_flights),max_time+1)) * -1
 

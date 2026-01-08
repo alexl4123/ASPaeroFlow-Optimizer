@@ -1798,6 +1798,7 @@ class OptimizeFlights:
     # ---------------------------------------------------------
     # Fast remainder distribution lookup (matches reference)
     # ---------------------------------------------------------
+
     @classmethod
     def _remainder_distribution_table(slc, T: int) -> np.ndarray:
         """

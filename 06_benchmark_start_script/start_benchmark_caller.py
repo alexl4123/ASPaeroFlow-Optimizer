@@ -638,7 +638,7 @@ def run_process(cmd: List[str], time_limit: int, mem_limit_bytes: int) -> Tuple[
 
     # Parse solution (first line of stdout)
     print("-------------")
-    print(f"Overload:{output[-1]['OVERLOAD']}, Arrival Delay:{output[-1]['ARRIVAL-DELAY']}, Sector-Number: {output[-1]['SECTOR-NUMBER']}, Sector-Diff: {output[-1]['SECTOR-DIFF']}, Reroute: {output[-1]['REROUTE']}")
+    print(f"Overload:{output[-1]['OVERLOAD']}, Arrival Delay:{output[-1]['ARRIVAL-DELAY']}, Sector-Number: {output[-1]['SECTOR-NUMBER']}, Sector-Diff: {output[-1]['SECTOR-DIFF']}, Reroute: {output[-1]['REROUTE']}, Reconfig: {output[-1]['RECONFIG']}")
     print("==============")
 
     if len(output) > 0:
@@ -880,7 +880,7 @@ def main() -> None:
     write_csv(output_path / "execution_time.csv", header, dicts_to_rows(exec_time))
     write_csv(output_path / "ram_usage.csv", header, dicts_to_rows(ram_usage))
     
-    for metric in ["OVERLOAD", "ARRIVAL-DELAY", "SECTOR-NUMBER", "SECTOR-DIFF", "REROUTE", "COMPUTATION-FINISHED","GROUNDING-TIME","TOTAL-TIME-TO-THIS-POINT","ERROR"]:
+    for metric in ["OVERLOAD", "ARRIVAL-DELAY", "SECTOR-NUMBER", "SECTOR-DIFF", "REROUTE", "RECONFIG", "COMPUTATION-FINISHED","GROUNDING-TIME","TOTAL-TIME-TO-THIS-POINT","ERROR"]:
         metric_values = sol_value_to_rows(sol_value, metric)
         write_csv(output_path / f"{metric.lower()}.csv", metric_values[0], metric_values[1])
 

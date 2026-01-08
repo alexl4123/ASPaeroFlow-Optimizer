@@ -359,6 +359,7 @@ class Main:
                 "number_sectors": int(number_sectors),
                 "sector_diff": int(0),
                 "number_reroutes": int(0),
+                "number_reconfigurations": int(0),
                 "current_time": int(0),
             })
 
@@ -377,12 +378,11 @@ class Main:
         output_dict["SECTOR-NUMBER"] = int(number_sectors)
         output_dict["SECTOR-DIFF"] = int(0)
         output_dict["REROUTE"] = int(0)
+        output_dict["RECONFIG"] = int(0)
         output_dict["TOTAL-TIME-TO-THIS-POINT"] =  int(current_time)
         output_dict["COMPUTATION-FINISHED"] = False
         output_string = json.dumps(output_dict)
         print(output_string)
-
-
 
         last_time_bucket_updated = 0
 
@@ -881,12 +881,13 @@ class Main:
 
             if self.verbosity > 1:
                 print(f">>> Current total delay: {total_delay}")
-
             
             iteration += 1
 
             number_sectors = self.compute_total_number_sectors(navaid_sector_time_assignment)
             sector_diff = np.count_nonzero(navaid_sector_time_assignment[:, 1:] != navaid_sector_time_assignment[:, :-1])
+
+            number_sector_reconfigurations = np.count_nonzero(navaid_sector_time_assignment != old_navaid_sector_time_assignment)
 
             original_max_time_converted = original_converted_instance_matrix.shape[1]  # original_max_time
             rerouted_mask = np.any(converted_instance_matrix[:, :original_max_time_converted] != original_converted_instance_matrix, axis=1)     # True if flight differs anywhere
@@ -903,6 +904,7 @@ class Main:
                     "number_sectors": int(number_sectors),
                     "sector_diff": int(sector_diff),
                     "number_reroutes": int(number_reroutes),
+                    "number_reconfigurations": int(number_sector_reconfigurations),
                     "current_time": int(time_bucket_updated),
                 })
 
@@ -922,6 +924,7 @@ class Main:
             output_dict["SECTOR-NUMBER"] = int(number_sectors)
             output_dict["SECTOR-DIFF"] = int(sector_diff)
             output_dict["REROUTE"] = int(number_reroutes)
+            output_dict["RECONFIG"] = int(number_sector_reconfigurations)
             output_dict["TOTAL-TIME-TO-THIS-POINT"] =  int(current_time)
             output_dict["COMPUTATION-FINISHED"] = False
             output_string = json.dumps(output_dict)
@@ -962,6 +965,8 @@ class Main:
         number_sectors = self.compute_total_number_sectors(navaid_sector_time_assignment)
         sector_diff = np.count_nonzero(navaid_sector_time_assignment[:, 1:] != navaid_sector_time_assignment[:, :-1])
 
+        number_sector_reconfigurations = np.count_nonzero(navaid_sector_time_assignment != old_navaid_sector_time_assignment)
+
         original_max_time_converted = original_converted_instance_matrix.shape[1]  # original_max_time
         rerouted_mask = np.any(converted_instance_matrix[:, :original_max_time_converted] != original_converted_instance_matrix, axis=1)     # True if flight differs anywhere
         number_reroutes = int(np.count_nonzero(rerouted_mask))
@@ -974,6 +979,7 @@ class Main:
                 "number_sectors": int(number_sectors),
                 "sector_diff": int(sector_diff),
                 "number_reroutes": int(number_reroutes),
+                "number_reconfigurations": int(number_sector_reconfigurations),
                 "current_time": int(time_bucket_updated),
             })
 
@@ -985,6 +991,7 @@ class Main:
         output_dict["SECTOR-NUMBER"] = int(number_sectors)
         output_dict["SECTOR-DIFF"] = int(sector_diff)
         output_dict["REROUTE"] = int(number_reroutes)
+        output_dict["RECONFIG"] = int(number_sector_reconfigurations)
         output_dict["TOTAL-TIME-TO-THIS-POINT"] =  int(current_time)
         output_dict["COMPUTATION-FINISHED"] = True
         output_string = json.dumps(output_dict)
@@ -1565,7 +1572,7 @@ class Main:
         # We treat sector IDs as integers in [0, max_sector_id]
         # (this is consistent with capacity_time_matrix / system_loads rows).
         if navaid_sector_time_assignment.size == 0:
-            return 0
+            return converted_instance_matrix, converted_navpoint_matrix, navaid_sector_time_assignment, capacity_time_matrix, system_loads 
 
         n_sectors = navaid_sector_time_assignment.shape[0]
 
@@ -1614,11 +1621,11 @@ class Main:
 
         # If there are no light sectors, nothing to do.
         if not light_sectors:
-            print("NO LIGHT SECTORS")
-            print(np.any(sector_has_navpoints))
-            print(np.any(has_capacity))
-            print(np.any(below_threshold))
-            return int((demand_window.sum(axis=1) > 0).sum())
+            #print("NO LIGHT SECTORS")
+            #print(np.any(sector_has_navpoints))
+            #print(np.any(has_capacity))
+            #print(np.any(below_threshold))
+            return converted_instance_matrix, converted_navpoint_matrix, navaid_sector_time_assignment, capacity_time_matrix, system_loads 
 
         # --- Helper to count current active sectors in the window ----------
         def active_sector_count() -> int:

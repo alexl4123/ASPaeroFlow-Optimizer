@@ -1,6 +1,4 @@
 % Encoding in the ASPaeroFlow Optimizer:
-
-
 % GET ALL FLIGHT IDS:
 
 flightID(ID) :- flightPlan(ID,_,_).
@@ -43,23 +41,14 @@ overload(SEC, T, LOAD-CAPACITY) :- sector_capacity(SEC,CAPACITY,T), #count{ID:se
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-% REROUTE - YES/NO:
-%{reroute(ID)} :- flightPlan(ID,_,_).
-%reroute(ID) :- flightPlan(ID,_,_).
-%1{path(ID,P):paths(ID,P)}1 :- reroute(ID).
-%flight(ID,T + T',X) :- reroute(ID), path(ID,P), actualDepartureTime(ID, T), sectorFlight(ID,T',X,P).
-
 % FLIGHT MUST OCCUR:
 flightOccurs(ID) :- sector_flight(ID,_,_).
 :- flightID(ID), not flightOccurs(ID).
 
 
-% ------------- OPTIMIZATION ----------------
 arrivalDelay(ID,Y-T) :- chosen_path(ID,P), plannedArrivalTime(ID,T), actualArrivalTime(ID,Y,P).
 
-%tmp_output(8,50,T) :- sector_flight(8,50,T).
-%tmp_output(8,2,T) :- sector_flight(8,2,T).
-
+% ------------- OPTIMIZATION ----------------
 % ------------------------------------------------------------------------------
 % PRIMARY WEAK CONSTRAINT:
 :~ overload(X,T,OVER). [OVER@10,X,T]
@@ -68,10 +57,10 @@ arrivalDelay(ID,Y-T) :- chosen_path(ID,P), plannedArrivalTime(ID,T), actualArriv
 :~ arrivalDelay(ID,DIFF). [DIFF@9,ID]
 % TERTIARY WEAK CONSTRAINT:
 :~ chosen_config(CONFIG), config_number_sectors(CONFIG,NUMBER). [NUMBER@8,CONFIG]
-% QUARTERNARY WEAK CONSTRAINT:
-%:~ reconfigure_sectors(CONFIG). [1@7,CONFIG]
 % QUINARY WEAK CONSTRAINT:
-:~ reroute(ID). [1@6,ID]
+:~ reroute(ID). [1@7,ID]
+% QUARTERNARY WEAK CONSTRAINT:
+:~ chosen_config(CONFIG). [CONFIG@6,CONFIG]
 
 
 %#show output_sec_cap/3.
