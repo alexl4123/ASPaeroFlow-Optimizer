@@ -63,11 +63,13 @@ class OptimizeFlights:
                  capacity_management_enabled = False,
                  composite_sector_function  = MAX,
                  optimizer = "ASP",
-                 max_number_sectors = -1
+                 max_number_sectors = -1,
+                 convex_sectors = 0,
                  ):
 
         self.capacity_management_enabled = capacity_management_enabled
         self.number_configs = number_configs
+        self._convex_sectors = convex_sectors
 
         self.max_number_sectors = max_number_sectors
         self._optimizer = optimizer
@@ -557,6 +559,7 @@ class OptimizeFlights:
         current_config += 1
         number_configs -= 1
 
+
         if capacity_management_enabled:
 
             navpoints_in_sector = np.nonzero(self.navaid_sector_time_assignment[:,time_index] == sector_index)[0]
@@ -580,7 +583,6 @@ class OptimizeFlights:
             #self.airport_vertices
             #self.capacity
             #self.navaid_sector_time_assignment
-
 
             if nontrivial_count > 0:
 
@@ -606,7 +608,11 @@ class OptimizeFlights:
 
                 current_number_sectors = len(np.unique_counts(self.navaid_sector_time_assignment[:,time_index]).values)
 
-                parts = self.partition_navpoints_connected(navpoints_in_sector, number_partitions)
+                if self._convex_sectors == 0:
+                    parts = self.partition_navpoints_connected(navpoints_in_sector, number_partitions)
+                else:
+                    parts = self._partition_connected_convex(navpoints_in_sector, number_partitions)
+
                 self.max_number_sectors 
 
                 #if self.verbosity > 2:
@@ -1217,6 +1223,93 @@ class OptimizeFlights:
                 partitions.append(tuple(tmp_parts))
         
         return partitions
+
+
+    def _partition_connected_convex(self, navpoints, number_partitions):
+        # Partition navpoints in approximately equally sized connected subgraphs
+        # Induced subgraph on the given navpoints
+        G_sub = self.networkx_graph.subgraph(navpoints).copy()
+
+        # Connected components of induced subgraph
+        components = [set(c) for c in nx.connected_components(G_sub)]
+
+        partition_sizes = [i+2 for i in range(number_partitions)]
+
+        navpoints_dict = {}
+        for navpoint in navpoints:
+            navpoints_dict[navpoint] = True
+
+        partitions = []
+        for k in partition_sizes:
+
+            sectors = []
+
+            n = max(int(math.ceil(len(navpoints) / k)),1)
+
+            unmarked = navpoints_dict.copy()
+
+            while len(list(unmarked.keys())) > 0:
+                for key in unmarked.keys():
+                    seed = key
+                    break
+
+                queue = [seed]
+                sector = {}
+
+                iter = 0
+                while len(sector) < n and len(queue) > 0:
+
+                    v = queue.pop(0)
+                    sector[v] = True
+
+                    S, convexity_possible = self._convexity(G_sub, sector, v, unmarked)
+
+                    if convexity_possible is True:
+                        
+                        neighbors = []
+                        for v_prim in S:
+                            sector[v_prim] = True
+                            unmarked.pop(v_prim)
+                            neighbors += G_sub.neighbors(v_prim)
+
+                            if v_prim in queue:
+                                queue.remove(v_prim)
+
+                        unmarked.pop(v)
+                        neighbors += G_sub.neighbors(v)
+
+                        for neighbor in neighbors:
+                            if neighbor not in queue and neighbor not in sector and neighbor in unmarked:
+                                queue.append(neighbor)
+
+                    else:
+                        del sector[v]
+                
+                sectors.append(tuple(list(sector.keys())))
+
+            partitions.append(tuple(sectors))
+            
+        return partitions
+
+    def _convexity(self, G, sector, v, unmarked):
+        S = []
+        for v_prim in sector:
+            if v == v_prim:
+                continue
+
+            paths = nx.all_shortest_paths(G,source= v, target=v_prim, weight="weight")
+            for path in paths:
+                for v_prim_prim in path:
+                    if v_prim_prim not in unmarked and v_prim_prim not in sector:
+                        return [], False
+
+                    if v_prim_prim not in sector:
+                        S.append(v_prim_prim)
+
+        S = list(set(S))
+
+        return S, True
+
     
     def first_l_nontrivial_partitions(self, items, l):
         l = int(l)

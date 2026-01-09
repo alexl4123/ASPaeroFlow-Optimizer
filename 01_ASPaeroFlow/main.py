@@ -122,6 +122,7 @@ class Main:
         max_number_navpoints_per_sector = -1,
         max_number_sectors = -1,
         minimize_number_sectors = False,        
+        convex_sectors = 0,
         ) -> None:
 
         self._graph_path: Optional[Path] = graph_path
@@ -140,6 +141,7 @@ class Main:
 
         self._wandb_log = wandb_log
 
+        self._convex_sectors = convex_sectors
 
         self.number_capacity_management_configs = number_capacity_management_configs
         if capacity_management_enabled in ["True","true"]:
@@ -1181,7 +1183,8 @@ class Main:
                                     self.capacity_management_enabled,
                                     self.composite_sector_function,
                                     self._optimizer,
-                                    self.max_number_sectors
+                                    self.max_number_sectors,
+                                    self._convex_sectors,
                                     )
 
         return job, rows_pool
@@ -1885,6 +1888,8 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
                         help="Verbosity levels (0,1,2).")
     parser.add_argument("--sector-capacity-factor", type=int, default=int(C("sector-capacity-factor", 6)),
                         help="Defines capacity of composite sectors.")
+    parser.add_argument("--convex-sectors", type=int, default=int(C("convex-sectors", 0)),
+                        help="--convex-sectors=0 (false), --convex-sectors=1 (true)")
     parser.add_argument("--max-number-navpoints-per-sector", type=int, default=int(C("max-number-navpoints-per-sector", -1)),
                         help="Defines the maximum number of navpoints per composite sectors (-1=initial max number).")
     parser.add_argument("--max-number-sectors", type=int, default=int(C("max-number-sectors", -1)),
@@ -2166,7 +2171,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                composite_sector_function,
                experiment_name,
                wandb_log,
-               args.optimizer, args.max_number_navpoints_per_sector, args.max_number_sectors, args.minimize_number_sectors)
+               args.optimizer, args.max_number_navpoints_per_sector, args.max_number_sectors, args.minimize_number_sectors,
+               args.convex_sectors)
     app.run()
 
     # Save results if requested
