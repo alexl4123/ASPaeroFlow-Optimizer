@@ -210,6 +210,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--capacity-management-enabled=True",
                 "--number-capacity-management-configs=7",
                 "--sector-capacity-factor=6",
+                "--convex-sectors=1",
                 f"--results-root={output_path}/solver_outputs/01_ASPaeroFlow",
                 "--wandb-enabled=True",
                 "--wandb-experiment-name-suffix=_01_ASPaeroFlow",
@@ -219,6 +220,101 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--max-number-navpoints-per-sector=100",
                 ]
         })
+
+    if args.experiment_asp_aero_flow_no_convex != 0:
+        system_config.append({
+            "key": "0A_ASPaeroFlow_NoConvex",
+            "script": base_dir / "../01_ASPaeroFlow/main.py",
+            "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
+            "verbosity": None,
+            "cmd": [
+                "--max-explored-vertices=3",
+                "--max-delay-per-iteration=5",
+                "--capacity-management-enabled=True",
+                "--number-capacity-management-configs=7",
+                "--sector-capacity-factor=6",
+                "--convex-sectors=0",
+                f"--results-root={output_path}/solver_outputs/01_ASPaeroFlow",
+                "--wandb-enabled=True",
+                "--wandb-experiment-name-suffix=_0A_ASPaeroFlow_NoConvex",
+                f"--wandb-experiment-name-prefix={experiment_name}_",
+                "--wandb-entity=thinklex",
+                "--minimize-number-sectors=true",
+                "--max-number-navpoints-per-sector=100",
+                ]
+        })
+
+    if args.experiment_asp_aero_flow_nr_nd != 0:
+        system_config.append({
+            "key": "0B_Sector_NoReroute_NoDelay",
+            "script": base_dir / "../01_ASPaeroFlow/main.py",
+            "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
+            "verbosity": None,
+            "cmd": [
+                "--max-explored-vertices=1",
+                "--max-delay-per-iteration=1",
+                "--capacity-management-enabled=True",
+                "--number-capacity-management-configs=7",
+                "--sector-capacity-factor=6",
+                "--convex-sectors=1",
+                f"--results-root={output_path}/solver_outputs/01_ASPaeroFlow",
+                "--wandb-enabled=True",
+                "--wandb-experiment-name-suffix=_0B_Sector_NoReroute_NoDelay",
+                f"--wandb-experiment-name-prefix={experiment_name}_",
+                "--wandb-entity=thinklex",
+                "--minimize-number-sectors=true",
+                "--max-number-navpoints-per-sector=100",
+                ]
+        })
+
+    if args.experiment_asp_aero_flow_nr_d != 0:
+        system_config.append({
+            "key": "0C_Sector_NoReroute_NoDelay",
+            "script": base_dir / "../01_ASPaeroFlow/main.py",
+            "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
+            "verbosity": None,
+            "cmd": [
+                "--max-explored-vertices=1",
+                "--max-delay-per-iteration=5",
+                "--capacity-management-enabled=True",
+                "--number-capacity-management-configs=7",
+                "--sector-capacity-factor=6",
+                "--convex-sectors=1",
+                f"--results-root={output_path}/solver_outputs/01_ASPaeroFlow",
+                "--wandb-enabled=True",
+                "--wandb-experiment-name-suffix=_0C_Sector_NoReroute_NoDelay",
+                f"--wandb-experiment-name-prefix={experiment_name}_",
+                "--wandb-entity=thinklex",
+                "--minimize-number-sectors=true",
+                "--max-number-navpoints-per-sector=100",
+                ]
+        })
+
+    if args.experiment_asp_aero_flow_r_nd != 0:
+        system_config.append({
+            "key": "0D_Sector_Reroute_NoDelay",
+            "script": base_dir / "../01_ASPaeroFlow/main.py",
+            "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
+            "verbosity": None,
+            "cmd": [
+                "--max-explored-vertices=3",
+                "--max-delay-per-iteration=1",
+                "--capacity-management-enabled=True",
+                "--number-capacity-management-configs=7",
+                "--sector-capacity-factor=6",
+                "--convex-sectors=1",
+                f"--results-root={output_path}/solver_outputs/01_ASPaeroFlow",
+                "--wandb-enabled=True",
+                "--wandb-experiment-name-suffix=_0D_Sector_Reroute_NoDelay",
+                f"--wandb-experiment-name-prefix={experiment_name}_",
+                "--wandb-entity=thinklex",
+                "--minimize-number-sectors=true",
+                "--max-number-navpoints-per-sector=100",
+                ]
+        })
+
+
+
 
     if args.experiment_route_delay != 0:
         system_config.append({
@@ -234,6 +330,27 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 f"--results-root={output_path}/solver_outputs/02_RerouteDelay",
                 "--wandb-enabled=True",
                 "--wandb-experiment-name-suffix=_02_RerouteDelay",
+                f"--wandb-experiment-name-prefix={experiment_name}_",
+                "--wandb-entity=thinklex",
+                "--minimize-number-sectors=true",
+                "--max-number-navpoints-per-sector=100",
+                ]
+        })
+
+    if args.experiment_route != 0:
+        system_config.append({
+            "key": "2A_Reroute",
+            "script": base_dir / "../01_ASPaeroFlow/main.py",
+            "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
+            "verbosity": None,
+            "cmd": [
+                "--max-explored-vertices=3",
+                "--max-delay-per-iteration=1",
+                "--capacity-management-enabled=False",
+                "--number-capacity-management-configs=1",
+                f"--results-root={output_path}/solver_outputs/02_RerouteDelay",
+                "--wandb-enabled=True",
+                "--wandb-experiment-name-suffix=_2A_Reroute",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
                 "--minimize-number-sectors=true",
@@ -680,7 +797,14 @@ def main() -> None:
     parser.add_argument("--scaling-experiments", type=int, default=0, help="true (val!=0), false (val=0)")
 
     parser.add_argument("--experiment-asp-aero-flow", type=int, default=1, help="true (val!=0), false (val=0)")
+    parser.add_argument("--experiment-asp-aero-flow-no-convex", type=int, default=1, help="true (val!=0), false (val=0)")
+    parser.add_argument("--experiment-asp-aero-flow-nr-nd", type=int, default=1, help="true (val!=0), false (val=0)")
+    parser.add_argument("--experiment-asp-aero-flow-nr-d", type=int, default=1, help="true (val!=0), false (val=0)")
+    parser.add_argument("--experiment-asp-aero-flow-r-nd", type=int, default=1, help="true (val!=0), false (val=0)")
+
+
     parser.add_argument("--experiment-route-delay", type=int, default=1, help="true (val!=0), false (val=0)")
+    parser.add_argument("--experiment-route", type=int, default=1, help="true (val!=0), false (val=0)")
     parser.add_argument("--experiment-delay", type=int, default=1, help="true (val!=0), false (val=0)")
     parser.add_argument("--experiment-mip", type=int, default=1, help="true (val!=0), false (val=0)")
     parser.add_argument("--experiment-asp-r-d-s", type=int, default=1, help="true (val!=0), false (val=0)")
