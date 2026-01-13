@@ -42,9 +42,6 @@ from concurrent.futures import ProcessPoolExecutor
     
 import numpy as np
 import networkx as nx
-import matplotlib.pyplot as plt
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -84,11 +81,14 @@ def _load_csv(path: Path, *, dtype: Any = int, delimiter: str = ",") -> np.ndarr
         If *path* cannot be parsed as a numeric CSV file.
     """
 
+    def conv(x):
+        return int(math.ceil(float(x)))
+
     if not path.exists():
         raise FileNotFoundError(path)
 
     try:
-        return np.loadtxt(path, delimiter=delimiter, dtype=dtype, skiprows=1)
+        return np.loadtxt(path, delimiter=delimiter, dtype=dtype, skiprows=1, converters=conv)
     except ValueError as exc:
         raise ValueError(f"Could not parse {path}: {exc}") from exc
 
@@ -344,10 +344,11 @@ class Main:
             #self._max_delay_per_iteration = original_max_time
             self._max_delay_per_iteration = 20
 
+        old_converted_instance = converted_instance_matrix.copy()
+        old_converted_navpoint_matrix = converted_navpoint_matrix.copy()
+        old_navaid_sector_time_assignment = navaid_sector_time_assignment.copy()
+
         if np.any(capacity_overload_mask, where=True):
-            old_converted_instance = converted_instance_matrix.copy()
-            old_converted_navpoint_matrix = converted_navpoint_matrix.copy()
-            old_navaid_sector_time_assignment = navaid_sector_time_assignment.copy()
             
             default_number_capacity_management_configs = self.number_capacity_management_configs
 
