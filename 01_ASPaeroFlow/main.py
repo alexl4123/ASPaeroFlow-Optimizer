@@ -369,7 +369,7 @@ class Main:
                 "sector_diff": int(0),
                 "number_reroutes": int(0),
                 "number_reconfigurations": int(0),
-                "current_time": int(0),
+                "current_time": int(current_time),
             })
 
             if self.verbosity > 1:
@@ -1724,6 +1724,7 @@ class Main:
                 
                 sector_bag.append(neighbor)
 
+                unmarked.remove(neighbor)
                 neighbors_tmp = list(sub_graph.neighbors(neighbor))
                 neighbors_tmp = [neighbor for neighbor in neighbors_tmp if neighbor in unmarked]
                 neighbors = list(set(neighbors + neighbors_tmp))
@@ -1733,7 +1734,6 @@ class Main:
                 
                 nx.contracted_nodes(sub_graph, seed, neighbor, copy=False, self_loops=False)
                 nx.set_node_attributes(sub_graph, {seed:{"demand":demand,"capacity":capacity, "navaids":navaids}})
-                unmarked.remove(neighbor)
 
                 cur_capacity = capacity
                 cur_demand = demand
