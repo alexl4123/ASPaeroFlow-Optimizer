@@ -419,6 +419,8 @@ class Main:
                 if max_number_sectors_update is True:
                     if len(uniq.values) > self.max_number_sectors:
                         self.max_number_sectors = len(uniq.values)
+        elif self.max_number_sectors == -2:
+            self.max_number_sectors = navaid_sector_time_assignment.shape[0]
 
         if self.minimize_number_sectors is True:
 
