@@ -335,6 +335,7 @@ class Main:
             np.savetxt("20250826_initial_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
 
         original_converted_instance_matrix = converted_instance_matrix.copy()
+        original_navaid_sector_time_assignment = navaid_sector_time_assignment.copy()
 
         original_max_explored_vertices = self._max_explored_vertices
         original_max_time = original_converted_instance_matrix.shape[1]
@@ -897,7 +898,9 @@ class Main:
             number_sectors = self.compute_total_number_sectors(navaid_sector_time_assignment)
             sector_diff = np.count_nonzero(navaid_sector_time_assignment[:, 1:] != navaid_sector_time_assignment[:, :-1])
 
-            number_sector_reconfigurations = np.count_nonzero(navaid_sector_time_assignment != old_navaid_sector_time_assignment)
+            diff_tmp = navaid_sector_time_assignment.shape[1] - original_navaid_sector_time_assignment.shape[1]
+            tmp_navaid_sector_time_assignment = np.hstack([original_navaid_sector_time_assignment, np.repeat(original_navaid_sector_time_assignment[:, [-1]], diff_tmp, axis=1)])
+            number_sector_reconfigurations = np.count_nonzero(navaid_sector_time_assignment != tmp_navaid_sector_time_assignment)
 
             original_max_time_converted = original_converted_instance_matrix.shape[1]  # original_max_time
             rerouted_mask = np.any(converted_instance_matrix[:, :original_max_time_converted] != original_converted_instance_matrix, axis=1)     # True if flight differs anywhere
@@ -976,7 +979,9 @@ class Main:
         number_sectors = self.compute_total_number_sectors(navaid_sector_time_assignment)
         sector_diff = np.count_nonzero(navaid_sector_time_assignment[:, 1:] != navaid_sector_time_assignment[:, :-1])
 
-        number_sector_reconfigurations = np.count_nonzero(navaid_sector_time_assignment != old_navaid_sector_time_assignment)
+        diff_tmp = navaid_sector_time_assignment.shape[1] - original_navaid_sector_time_assignment.shape[1]
+        tmp_navaid_sector_time_assignment = np.hstack([original_navaid_sector_time_assignment, np.repeat(original_navaid_sector_time_assignment[:, [-1]], diff_tmp, axis=1)])
+        number_sector_reconfigurations = np.count_nonzero(navaid_sector_time_assignment != tmp_navaid_sector_time_assignment)
 
         original_max_time_converted = original_converted_instance_matrix.shape[1]  # original_max_time
         rerouted_mask = np.any(converted_instance_matrix[:, :original_max_time_converted] != original_converted_instance_matrix, axis=1)     # True if flight differs anywhere

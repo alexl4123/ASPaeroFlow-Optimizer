@@ -269,7 +269,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
 
     if args.experiment_asp_aero_flow_nr_d != 0:
         system_config.append({
-            "key": "0C_Sector_NoReroute_NoDelay",
+            "key": "0C_Sector_NoReroute_Delay",
             "script": base_dir / "../01_ASPaeroFlow/main.py",
             "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
             "verbosity": None,

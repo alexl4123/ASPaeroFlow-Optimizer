@@ -895,9 +895,7 @@ class MIPModel:
         return hist
     
 
-
-
-    @classmethod 
+    @classmethod
     def capacity_time_matrix(cls,
                             cap: np.ndarray,
                             n_times: int,
@@ -971,7 +969,7 @@ class MIPModel:
         sector_cap = (base + extra).astype(np.int64, copy=False)
 
         return sector_cap
- 
+
     @classmethod
     def create_initial_navpoint_sector_assignment(cls,
                                     flights: np.ndarray,
@@ -1030,7 +1028,7 @@ class MIPModel:
 
         return output
         #np.repeat(sectors[:, None], max_time_dim, axis=1)  # shape (N, T)
-
+     
 
     @classmethod
     def compute_sector_capacity(cls,

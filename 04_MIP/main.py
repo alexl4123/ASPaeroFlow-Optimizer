@@ -15,6 +15,11 @@ import argparse
 import sys
 import time
 import os
+import json
+
+import argparse, json
+from pathlib import Path
+from typing import Optional, List, Dict
 
 import networkx as nx
 import numpy as np
@@ -60,11 +65,14 @@ def _load_csv(path: Path, *, dtype: Any = int, delimiter: str = ",") -> np.ndarr
     ValueError
         If *path* cannot be parsed as a numeric CSV file.
     """
+    def conv(x):
+        return int(math.ceil(float(x)))
+
     if not path.exists():
         raise FileNotFoundError(path)
 
     try:
-        return np.loadtxt(path, delimiter=delimiter, dtype=dtype, skiprows=1)
+        return np.loadtxt(path, delimiter=delimiter, dtype=dtype, skiprows=1, converters=conv)
     except ValueError as exc:
         raise ValueError(f"Could not parse {path}: {exc}") from exc
 
@@ -243,9 +251,75 @@ class Main:
         start_time = time.time()
         
         original_converted_instance_matrix = converted_instance_matrix.copy()
+        old_navaid_sector_time_assignment = navaid_sector_time_assignment.copy()
 
 
-        converted_instance_matrix, converted_navpoint_matrix, navaid_sector_time_assignment = self.build_MIP_model(self.unit_graphs, converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix, planned_arrival_times, self.airplane_flight, navaid_sector_time_assignment)
+        current_time = time.time() - start_time
+        capacity_overload_mask = capacity_demand_diff_matrix < 0
+        number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
+        number_sectors = self.compute_total_number_sectors(navaid_sector_time_assignment)
+        output_dict = {}
+        output_dict["OVERLOAD"] = int(number_of_conflicts)
+        output_dict["ARRIVAL-DELAY"] = int(0)
+        output_dict["SECTOR-NUMBER"] = int(number_sectors)
+        output_dict["SECTOR-DIFF"] = int(0)
+        output_dict["REROUTE"] = int(0)
+        output_dict["RECONFIG"] = int(0)
+        output_dict["TOTAL-TIME-TO-THIS-POINT"] =  int(current_time)
+        output_dict["COMPUTATION-FINISHED"] = False
+        output_string = json.dumps(output_dict)
+        print(output_string)
+
+        # START COMPUTATION:
+        converted_instance_matrix, converted_navpoint_matrix, _ = self.build_MIP_model(self.unit_graphs, converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix, planned_arrival_times, self.airplane_flight, navaid_sector_time_assignment)
+
+        # -----------------------------------------------------------------------------
+        t_init  = self.last_valid_pos(original_converted_instance_matrix)      # last non--1 in the *initial* schedule
+        t_final = self.last_valid_pos(converted_instance_matrix)     # last non--1 in the *final* schedule
+        
+        diff_tmp = converted_instance_matrix.shape[1] - original_converted_instance_matrix.shape[1]
+        navaid_sector_time_assignment = np.hstack([navaid_sector_time_assignment, np.repeat(navaid_sector_time_assignment[:, [-1]], diff_tmp, axis=1)])
+        old_navaid_sector_time_assignment = np.hstack([old_navaid_sector_time_assignment, np.repeat(old_navaid_sector_time_assignment[:, [-1]], diff_tmp, axis=1)])
+
+        if t_final is not None:
+            delay = np.where(t_init >= 0, t_final - t_init, 0)          # shape (|I|,)
+
+            system_loads = MIPModel.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+            capacity_time_matrix = MIPModel.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self._sector_capacity_factor, composite_sector_function=self._composite_sector_function)
+            capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+
+            capacity_overload_mask = capacity_demand_diff_matrix < 0
+
+            number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
+            total_delay  = delay.sum()
+            number_sectors = self.compute_total_number_sectors(navaid_sector_time_assignment)
+            sector_diff = np.count_nonzero(navaid_sector_time_assignment[:, 1:] != navaid_sector_time_assignment[:, :-1])
+
+            original_max_time_converted = original_converted_instance_matrix.shape[1]  # original_max_time
+            rerouted_mask = np.any(converted_instance_matrix[:, :original_max_time_converted] != original_converted_instance_matrix, axis=1)     # True if flight differs anywhere
+            number_reroutes = int(np.count_nonzero(rerouted_mask))
+            number_sector_reconfigurations = np.count_nonzero(navaid_sector_time_assignment != old_navaid_sector_time_assignment)
+        else:
+            number_of_conflicts = -10
+            total_delay = -10
+            number_sectors = -10
+            sector_diff = -10
+            number_reroutes = -10
+            number_sector_reconfigurations = -10
+            
+
+        current_time = time.time() - start_time
+        output_dict = {}
+        output_dict["OVERLOAD"] = int(number_of_conflicts)
+        output_dict["ARRIVAL-DELAY"] = int(total_delay)
+        output_dict["SECTOR-NUMBER"] = int(number_sectors)
+        output_dict["SECTOR-DIFF"] = int(sector_diff)
+        output_dict["REROUTE"] = int(number_reroutes)
+        output_dict["RECONFIG"] = int(number_sector_reconfigurations)
+        output_dict["TOTAL-TIME-TO-THIS-POINT"] =  int(current_time)
+        output_dict["COMPUTATION-FINISHED"] = True
+        output_string = json.dumps(output_dict)
+        print(output_string)
 
         end_time = time.time()
         if self.verbosity > 0:
@@ -254,40 +328,19 @@ class Main:
         self.converted_instance_matrix = converted_instance_matrix
         self.converted_navpoint_matrix = converted_navpoint_matrix
         self.navaid_sector_time_assignment = navaid_sector_time_assignment
+ 
+    def compute_total_number_sectors(self, navaid_sector_time_assignment):
 
-        #np.savetxt("01_final_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
-
-        t_init  = self.last_valid_pos(original_converted_instance_matrix)      # last non--1 in the *initial* schedule
-        t_final = self.last_valid_pos(converted_instance_matrix)     # last non--1 in the *final* schedule
-
-        if self.verbosity > 0:
-            print("<<<<<<<<<<<<<<<<----------------->>>>>>>>>>>>>>>>")
-            print("                  FINAL RESULTS")
-            print("<<<<<<<<<<<<<<<<----------------->>>>>>>>>>>>>>>>")
-
-        if t_final is not None:
-            # --- 3. compute delays --------------------------------------------------------
-            # Flights that disappear completely (-1 in *both* files) get a delay of 0
-            delay = np.where(t_init >= 0, t_final - t_init, 0)          # shape (|I|,)
-
-            # --- 4. aggregate in whichever way you need -----------------------------------
-            total_delay  = delay.sum()
-            mean_delay   = delay.mean()
-            max_delay    = delay.max()
-            #per_flight   = delay.tolist()
-
-            if self.verbosity > 0:
-                print(f"Total delay (all flights): {total_delay}")
-                print(f"Average delay per flight:  {mean_delay:.2f}")
-                print(f"Maximum single-flight delay: {max_delay}")
-
-            print(total_delay)
-            np.savetxt("tmp_new.csv", converted_instance_matrix, delimiter=",", fmt="%i") 
-            np.savetxt("tmp_orig.csv", original_converted_instance_matrix, delimiter=",", fmt="%i") 
-
+        if navaid_sector_time_assignment.shape[0] == 0:
+            number_sectors = 0
         else:
-            if self.verbosity > 0:
-                print("Could not find a solution.")
+            S = np.sort(navaid_sector_time_assignment, axis=0)                       # sort within each column
+            changes = (S[1:, :] != S[:-1, :])            # True where a new value starts
+            uniq_per_col = 1 + changes.sum(axis=0)       # unique count per column
+        number_sectors = int(uniq_per_col.sum())     # sum over all columns
+
+        return number_sectors
+
 
 
     def build_MIP_model(self,
@@ -592,49 +645,10 @@ class Main:
         return out, planned_arrival_times
 
 
-
-    def create_initial_navpoint_sector_assignment(self,
-                                    flights: np.ndarray,
-                                    airplane_flight: np.ndarray,
-                                    navaid_sector: np.ndarray,
-                                    max_time: int,
-                                    time_granularity: int,
-                                    *,
-                                    fill_value: int = -1,
-                                    compress: bool = False):
-        """
-        Vectorized/semi-vectorized rewrite instance_to_matrix.
-        Assumes IDs are non-negative ints (reasonably dense).
-        """
-
-        # --- ensure integer views without copies where possible
-        flights = flights.astype(np.int64, copy=False)
-        airplane_flight = airplane_flight.astype(np.int64, copy=False)
-
-        # --- build flight -> airplane mapping (array is fastest if IDs are dense)
-        fid_map_max = int(max(flights[:,0].max(), airplane_flight[:,1].max()))
-        flight_to_airplane = np.full(fid_map_max + 1, -1, dtype=np.int64)
-        flight_to_airplane[airplane_flight[:,1]] = airplane_flight[:,0]
-
-        # --- sort by flight, then time (stable contiguous blocks per flight)
-        order = np.lexsort((flights[:,2], flights[:,0]))
-        f_sorted = flights[order]
-
-        t   = f_sorted[:,2]
-
-        # --- output matrix shape (airplane_id rows, time columns)
-        max_time_dim = int(max(t.max() + 1, (max_time + 1) * time_granularity))
-
-        sectors = navaid_sector[:, 1]                      # shape (N,)
-        return np.repeat(sectors[:, None], max_time_dim, axis=1)  # shape (N, T)
-    
 # ---------------------------------------------------------------------------
 # CLI utilities (with config + bundle directory support)
 # ---------------------------------------------------------------------------
 
-import argparse, json
-from pathlib import Path
-from typing import Optional, List, Dict
 
 DEFAULT_FILENAMES = {
     "graph_path":              "graph_edges.csv",
@@ -959,6 +973,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             },
         )
         wandb_log = run.log
+
+
 
     composite_sector_function = args.composite_sector_function.lower()
     if composite_sector_function not in [MAX, LINEAR, TRIANGULAR]:

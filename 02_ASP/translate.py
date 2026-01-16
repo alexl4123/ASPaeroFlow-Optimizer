@@ -38,11 +38,14 @@ def _load_csv(path: Path, *, dtype: Any = int, delimiter: str = ",") -> np.ndarr
     ValueError
         If *path* cannot be parsed as a numeric CSV file.
     """
+    def conv(x):
+        return int(math.ceil(float(x)))
+
     if not path.exists():
         raise FileNotFoundError(path)
 
     try:
-        return np.loadtxt(path, delimiter=delimiter, dtype=dtype, skiprows=1)
+        return np.loadtxt(path, delimiter=delimiter, dtype=dtype, skiprows=1, converters=conv)
     except ValueError as exc:
         raise ValueError(f"Could not parse {path}: {exc}") from exc
 
