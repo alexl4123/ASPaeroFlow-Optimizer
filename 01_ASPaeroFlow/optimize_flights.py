@@ -211,7 +211,7 @@ class OptimizeFlights:
             path_number = 0
 
             #actual_departure_time_instance.append(f"actualDepartureTime({airplane_id},{start_time}).")
-            planned_arrival_time_instance.append(f"plannedArrivalTime({flight_index},{planned_arrival_time}).")
+            planned_arrival_time_instance.append(f"planned_arrival_time({flight_index},{planned_arrival_time}).")
 
             if self._optimizer == "Enumerate":
                 flight_path_dict[flight_index] = {}
@@ -257,7 +257,7 @@ class OptimizeFlights:
                             current_time += delay
                             #flight_time += delay                            
                             
-                            planned_departure_time_instance.append(f"actualFlightOperationsStartTime({flight_index},{current_time},{path_number}).")
+                            planned_departure_time_instance.append(f"actual_flight_operations_start_time({flight_index},{current_time},{path_number}).")
 
                             if self._optimizer == "Enumerate":
                                 flight_path_dict[flight_index][path_number]["navpoint_flight"].append((navaid,current_time))
@@ -312,7 +312,7 @@ class OptimizeFlights:
                             if self._optimizer == "Enumerate":
                                 flight_path_dict[flight_index][path_number]["navpoint_flight"].append((navaid,current_time))
 
-                    actual_arrival_time_instance.append(f"actualArrivalTime({flight_index},{current_time},{path_number}).")
+                    actual_arrival_time_instance.append(f"actual_arrival_time({flight_index},{current_time},{path_number}).")
 
                     if self._optimizer == "Enumerate":
                         flight_path_dict[flight_index][path_number]["actual_arrival_time"] = current_time
@@ -344,11 +344,11 @@ class OptimizeFlights:
                         current_time = potentially_actual_flight_operations_start_time
 
 
-                        planned_departure_time_instance.append(f"actualFlightOperationsStartTime({potentially_affected_flight},{potentially_actual_flight_operations_start_time},{path_number}).")
+                        planned_departure_time_instance.append(f"actual_flight_operations_start_time({potentially_affected_flight},{potentially_actual_flight_operations_start_time},{path_number}).")
 
                         potentially_planned_arrival_time = self.planned_arrival_times[potentially_affected_flight]
 
-                        planned_arrival_time_instance.append(f"plannedArrivalTime({potentially_affected_flight},{potentially_planned_arrival_time}).")
+                        planned_arrival_time_instance.append(f"planned_arrival_time({potentially_affected_flight},{potentially_planned_arrival_time}).")
 
                         if self._optimizer == "Enumerate":
                             flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight] = {
@@ -471,7 +471,7 @@ class OptimizeFlights:
 
                         if self._optimizer == "Enumerate":
                             flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight]["actual_arrival_time"] = current_time
-                        actual_arrival_time_instance.append(f"actualArrivalTime({potentially_affected_flight},{current_time},{path_number}).")
+                        actual_arrival_time_instance.append(f"actual_arrival_time({potentially_affected_flight},{current_time},{path_number}).")
                         path_fact_instances.append(f"chosen_path({potentially_affected_flight},{path_number}) :- chosen_path({flight_index},{path_number}).")
 
                     # path_numbers = #PATHS * #DELAYS
@@ -906,6 +906,9 @@ class OptimizeFlights:
 
         encoding = self.encoding
 
+        #open(f"20260116_test_instance_{additional_time_increase}.lp","w").write(instance)
+        #quit()
+
         if self.verbosity == 3:
             open(f"20251126_test_instance_{additional_time_increase}.lp","w").write(instance)
         
@@ -1256,7 +1259,7 @@ class OptimizeFlights:
                 queue = [seed]
                 sector = {}
 
-                iter = 0
+                #iter = 0
                 while len(sector) < n and len(queue) > 0:
 
                     v = queue.pop(0)
@@ -1413,7 +1416,7 @@ class OptimizeFlights:
                 p = nx.shortest_path(H, s, t, weight=w)
             except nx.NetworkXNoPath:
                 break
-
+            
             # Evaluate real (unpenalized) length
             L = nx.path_weight(G, p, weight=weight_key)
             if L > allowed:
@@ -1955,7 +1958,7 @@ class OptimizeFlights:
 
         if navaid_sector_time_assignment.shape != (N, n_times):
             raise ValueError(
-                f"navaid_sector_time_assignment must be shape (N, n_times) = ({N}, {n_times})"
+                "navaid_sector_time_assignment must be shape (N, n_times) = (" + str(N) + "," + str(n_times) + ")"
             )
 
         S = navaid_sector_time_assignment.astype(np.int64, copy=False)
