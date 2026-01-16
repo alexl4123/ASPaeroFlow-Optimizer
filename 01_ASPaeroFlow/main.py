@@ -290,6 +290,7 @@ class Main:
         # 3.) Create capacity matrix (|R|x|T|)
         #capacity_time_matrix = self.capacity_time_matrix_reference(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = z)
         #capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor)
+
         capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor,
                                                                     composite_sector_function=self.composite_sector_function)
         #np.testing.assert_array_equal(capacity_time_matrix, capacity_time_matrix_test_2)
@@ -370,7 +371,7 @@ class Main:
                 "sector_diff": int(0),
                 "number_reroutes": int(0),
                 "number_reconfigurations": int(0),
-                "current_time": int(0),
+                "current_time": int(current_time),
             })
 
             if self.verbosity > 1:
@@ -419,7 +420,6 @@ class Main:
                     if len(uniq.values) > self.max_number_sectors:
                         self.max_number_sectors = len(uniq.values)
 
-        print("ENTER MINIMIZATION")
         if self.minimize_number_sectors is True:
 
             if self.verbosity > 1:
@@ -435,7 +435,6 @@ class Main:
                     t_end = converted_instance_matrix.shape[1] - 1
 
                 converted_instance_matrix, converted_navpoint_matrix, navaid_sector_time_assignment, capacity_time_matrix, system_loads = self.minimize_number_of_sectors_new(navaid_sector_time_assignment,converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix, system_loads, self.max_number_navpoints_per_sector, self.max_number_sectors, t_start, t_end, self.networkx_navpoint_graph, self.airports)
-                #converted_instance_matrix, converted_navpoint_matrix, navaid_sector_time_assignment, capacity_time_matrix, system_loads = self.minimize_number_of_sectors(navaid_sector_time_assignment,converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix, system_loads, self.max_number_navpoints_per_sector, self.max_number_sectors, t_start, t_end, self.networkx_navpoint_graph, self.airports)
 
         global_t_start = 1
         time_bucket_updated = 0
@@ -1731,6 +1730,7 @@ class Main:
                 
                 sector_bag.append(neighbor)
 
+                unmarked.remove(neighbor)
                 neighbors_tmp = list(sub_graph.neighbors(neighbor))
                 neighbors_tmp = [neighbor for neighbor in neighbors_tmp if neighbor in unmarked]
                 neighbors = list(set(neighbors + neighbors_tmp))
@@ -1740,7 +1740,6 @@ class Main:
                 
                 nx.contracted_nodes(sub_graph, seed, neighbor, copy=False, self_loops=False)
                 nx.set_node_attributes(sub_graph, {seed:{"demand":demand,"capacity":capacity, "navaids":navaids}})
-                unmarked.remove(neighbor)
 
                 cur_capacity = capacity
                 cur_demand = demand
