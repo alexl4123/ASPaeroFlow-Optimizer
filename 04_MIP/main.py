@@ -270,6 +270,8 @@ class Main:
         output_string = json.dumps(output_dict)
         print(output_string)
 
+
+
         # START COMPUTATION:
         converted_instance_matrix, converted_navpoint_matrix, _ = self.build_MIP_model(self.unit_graphs, converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix, planned_arrival_times, self.airplane_flight, navaid_sector_time_assignment)
 
@@ -285,10 +287,13 @@ class Main:
             delay = np.where(t_init >= 0, t_final - t_init, 0)          # shape (|I|,)
 
             system_loads = MIPModel.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+
+
             capacity_time_matrix = MIPModel.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self._sector_capacity_factor, composite_sector_function=self._composite_sector_function)
             capacity_demand_diff_matrix = capacity_time_matrix - system_loads
 
             capacity_overload_mask = capacity_demand_diff_matrix < 0
+
 
             number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
             total_delay  = delay.sum()
@@ -328,6 +333,7 @@ class Main:
         self.converted_instance_matrix = converted_instance_matrix
         self.converted_navpoint_matrix = converted_navpoint_matrix
         self.navaid_sector_time_assignment = navaid_sector_time_assignment
+        self.capacity_time_matrix = capacity_time_matrix
  
     def compute_total_number_sectors(self, navaid_sector_time_assignment):
 
@@ -900,6 +906,7 @@ def _save_results(args: argparse.Namespace, app) -> None:
         "navaid_sector_time_assignment": getattr(app, "navaid_sector_time_assignment", None),
         "converted_instance_matrix":     getattr(app, "converted_instance_matrix", None),
         "converted_navpoint_matrix":     getattr(app, "converted_navpoint_matrix", None),
+        "capacity_time_matrix":     getattr(app, "capacity_time_matrix", None),
     }
 
     saved = {}
