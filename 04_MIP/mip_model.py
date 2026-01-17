@@ -11,6 +11,14 @@ LINEAR = "linear"
 TRIANGULAR = "triangular"
 MAX = "max"
 
+from pathlib import Path
+def _save_csv(path: Path, arr):
+    a = np.asarray(arr)
+    fmt = "%d" if a.dtype.kind in ("i","u","b") else "%g"
+    np.savetxt(path, a, fmt=fmt, delimiter=",")
+
+
+
 class MIPModel:
 
     def __init__(self, sectors, airport_vertices, max_time, max_explored_vertices, seed, timestep_granularity, verbosity, number_threads, navaid_sector_lookup, composite_sector_function, sector_capacity_factor):
@@ -443,7 +451,7 @@ class MIPModel:
                                 all_flight_navpoints_dict[flight_affected_index][delay_number] = {}
 
                             if prev_navaid not in all_flight_navpoints_dict[flight_affected_index][delay_number]:
-                                all_flight_navpoints_dict[flight_affected_index][delay_number][prev_navaid] = current_time
+                                all_flight_navpoints_dict[flight_affected_index][delay_number][prev_navaid] = current_time - 1
 
                             #graph_instance[f"sectorEdge({prev_sector},{sector})."] = True
 
@@ -487,7 +495,7 @@ class MIPModel:
                                 current_time += 1
 
                             if navaid not in all_flight_navpoints_dict[flight_affected_index][delay_number]:
-                                all_flight_navpoints_dict[flight_affected_index][delay_number][navaid] = current_time
+                                all_flight_navpoints_dict[flight_affected_index][delay_number][navaid] = current_time - 1
 
                 #actual_arrival_time_instance.append(f"actualArrivalTime({airplane_id},{current_time - 1},{path_number}).")
                 # path_numbers = #PATHS * #DELAYS
@@ -786,12 +794,13 @@ class MIPModel:
                 if row["obj"].X >= 1:
                     result_matrix[flight,row["T"]] = row["V"]
 
-
+            """
             considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["V"]==origin)&(flight_variables_pd["D"]<actual_delay)]
 
             for _,row in considered_rows.iterrows():
                 if row["obj"].X >= 1:
                     result_matrix[flight,row["T"]] = row["V"]
+            """
 
         return result_matrix, converted_navpoint_matrix
 

@@ -137,7 +137,7 @@ def run_checks(
                 sector = navaid_sector_time_assignment[navaid,time]
 
                 if converted_instance_matrix[flight_id,time] != sector:
-                    print(f"[ERROR] - NAVAID/FLIGHT (initial): FlightID:{flight_id}, TIME:{time}, navaid:{navaid}, sector-data:{converted_instance_matrix[flight_id,time]}, sector-comp.:{sector}")
+                    print(f"[ERRORA] - SECTOR MISMATCH in NAVAID/FLIGHT (initial): FlightID:{flight_id}, TIME:{time}, navaid:{navaid}: sector-data:{converted_instance_matrix[flight_id,time]} != sector-comp.:{sector}")
 
             else:
 
@@ -151,15 +151,15 @@ def run_checks(
 
 
                         if converted_instance_matrix[flight_id,prev_time + time_index] != prev_sector:
-                            print(f"[ERROR] - NAVAID/FLIGHT (<=): FlightID:{flight_id}, TIME:{prev_time+time_index}, prev-time:{prev_time}, next-time:{time}, prev_navaid:{prev_navaid}, navaid:{navaid}, sector-data:{converted_instance_matrix[flight_id,prev_time+time_index]}, sector-prev:{prev_sector}")
+                            print(f"[ERRORB] - SECTOR MISMATCH in NAVAID/FLIGHT (<=): FlightID:{flight_id}, TIME:{prev_time+time_index}, prev-time:{prev_time}, next-time:{time}, prev_navaid:{prev_navaid}, navaid:{navaid}: sector-data:{converted_instance_matrix[flight_id,prev_time+time_index]} != sector-prev:{prev_sector}")
 
 
                     else:
                         sector = navaid_sector_time_assignment[navaid,prev_time + time_index]
                         if converted_instance_matrix[flight_id,prev_time + time_index] != sector:
-                            print(f"[ERROR] - NAVAID/FLIGHT (>): FlightID:{flight_id}, TIME:{prev_time+time_index}, prev-time:{prev_time}, next-time:{time}, prev_navaid:{prev_navaid}, navaid:{navaid}, sector-data:{converted_instance_matrix[flight_id,prev_time+time_index]}, sector-comp.:{sector}")
+                            print(f"[ERRORC] - SECTOR MISMATCH in NAVAID/FLIGHT (>): FlightID:{flight_id}, TIME:{prev_time+time_index}, prev-time:{prev_time}, next-time:{time}, prev_navaid:{prev_navaid}, navaid:{navaid}: sector-data:{converted_instance_matrix[flight_id,prev_time+time_index]} != sector-comp.:{sector}")
 
-                        converted_instance_matrix[flight_id,prev_time + time_index] = sector
+                        #converted_instance_matrix[flight_id,prev_time + time_index] = sector
     
     
     print("[CHECK] -> CHECK SIMPLIFIED NAVAID-FLIGHT DONE")
@@ -171,20 +171,68 @@ def run_checks(
 
     for time_index in range(navaid_sector_time_assignment.shape[1]):
 
+        for navaid_index in range(navaid_sector_time_assignment.shape[0]):
+            if navaid_sector_time_assignment[navaid_index, time_index] == navaid_index:
+                # THIS IS A SECTOR IF NAVAIDINDEX == ASSIGNMENT
+
+                flights = np.nonzero(converted_instance_matrix[:,time_index] == navaid_index)[0]
+
+                if len(flights) > capacity_time_matrix[navaid_index,time_index]:
+                    print(flights)
+                    print(f"[ERROR] - Capacity overload at sector:{navaid_index}, time:{time_index}")
+
+    print("[CHECK2]")
+
+    for time_index in range(navaid_sector_time_assignment.shape[1]):
+
         sectors = np.unique(navaid_sector_time_assignment[:,time_index])
 
+        for sector in sectors:
+
+            navaids = np.nonzero(navaid_sector_time_assignment[:,time_index] == sector)[0]
+                
+            actual_flights = []
+
+            for navaid in navaids:
+                flights = np.nonzero(converted_navpoint_matrix[:,time_index] == navaid)[0]
+                actual_flights += list(flights)
+
+            if len(actual_flights) > capacity_time_matrix[sector,time_index]:
+                print(f"[ERROR2] - Capacity overload at sector:{navaid_index}, time:{time_index}")
+
+
+            flights = np.nonzero(converted_instance_matrix[:,time_index] == sector)[0]
+            if len(flights) > capacity_time_matrix[sector,time_index]:
+                print(flights)
+                print(f"[ERROR3] - Capacity overload at sector:{sector}, time:{time_index}")
+
+    print("[CHECK] RUN SIMPLIFIED CAPACITY CHECKS DONE")
+    print("[DEBUG] CHECKS")
+
+    for time_index in range(navaid_sector_time_assignment.shape[1]):
+
+        sectors = np.unique(navaid_sector_time_assignment[:,time_index])
+        sec0 = []
+        for sector in sectors:
+            sec0.append(int(sector))
+
+        sec1 = []
+        for navaid_index in range(navaid_sector_time_assignment.shape[0]):
+            if navaid_sector_time_assignment[navaid_index, time_index] == navaid_index:
+                sec1.append(int(navaid_index))
+        
+        if sec0 != sec1:
+            print("SECTOR COMPUTATION DIFFERS!")
+       
+        
+        """
         for navaid_index in range(navaid_sector_time_assignment.shape[0]):
             if navaid_sector_time_assignment[navaid_index, time_index] == navaid_index:
 
                 flights = np.nonzero(converted_instance_matrix[:,time_index] == navaid_index)[0]
 
-                if len(flights) > capacity_time_matrix[navaid_index,time_index]:
-                    print(f"[ERROR] - Capacity overload at sector:{navaid_index}, time:{time_index}")
-
-
-    print("[CHECK] RUN SIMPLIFIED CAPACITY CHECKS DONE")
-
-
+        """
+    print("[DEBUG] DONE")
 
 
 
@@ -224,6 +272,7 @@ def main() -> None:
     # Load CSVs into NumPy arrays
     capacity_time_matrix = load_csv_as_array(paths["capacity_time_matrix"])
     converted_instance_matrix = load_csv_as_array(paths["converted_instance_matrix"])
+
     navaid_sector_time_assignment = load_csv_as_array(
         paths["navaid_sector_time_assignment"]
     )
