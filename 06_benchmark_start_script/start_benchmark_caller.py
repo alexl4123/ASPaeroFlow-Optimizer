@@ -241,7 +241,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
                 "--minimize-number-sectors=true",
-                "--max-number-navpoints-per-sector=-1",
+                "--max-number-navpoints-per-sector=1000000",
                 "--max-number-sectors=-2",
                 ]
         })
@@ -265,7 +265,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
                 "--minimize-number-sectors=true",
-                "--max-number-navpoints-per-sector=-1",
+                "--max-number-navpoints-per-sector=1000000",
                 "--max-number-sectors=-2",
                 ]
         })
@@ -289,7 +289,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
                 "--minimize-number-sectors=true",
-                "--max-number-navpoints-per-sector=-1",
+                "--max-number-navpoints-per-sector=1000000",
                 "--max-number-sectors=-2",
                 ]
         })
@@ -313,7 +313,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
                 "--minimize-number-sectors=true",
-                "--max-number-navpoints-per-sector=-1",
+                "--max-number-navpoints-per-sector=1000000",
                 "--max-number-sectors=-2",
                 ]
         })
@@ -338,7 +338,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
                 "--minimize-number-sectors=true",
-                "--max-number-navpoints-per-sector=-1",
+                "--max-number-navpoints-per-sector=1000000",
                 "--max-number-sectors=-2",
                 ]
         })
@@ -360,7 +360,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
                 "--minimize-number-sectors=true",
-                "--max-number-navpoints-per-sector=-1",
+                "--max-number-navpoints-per-sector=1000000",
                 "--max-number-sectors=-2",
                 ]
         })
@@ -382,7 +382,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
                 "--minimize-number-sectors=true",
-                "--max-number-navpoints-per-sector=-1",
+                "--max-number-navpoints-per-sector=1000000",
                 "--max-number-sectors=-2",
                 ]
         })
