@@ -217,7 +217,8 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
                 "--minimize-number-sectors=true",
-                "--max-number-navpoints-per-sector=-1",
+                "--max-number-navpoints-per-sector=1000000",
+                "--max-number-sectors=-2",
                 ]
         })
 
@@ -234,13 +235,14 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--number-capacity-management-configs=7",
                 "--sector-capacity-factor=6",
                 "--convex-sectors=0",
-                f"--results-root={output_path}/solver_outputs/01_ASPaeroFlow",
+                f"--results-root={output_path}/solver_outputs/0A_ASPaeroFlow_NoConvex",
                 "--wandb-enabled=True",
                 "--wandb-experiment-name-suffix=_0A_ASPaeroFlow_NoConvex",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
                 "--minimize-number-sectors=true",
-                "--max-number-navpoints-per-sector=-1",
+                "--max-number-navpoints-per-sector=1000000",
+                "--max-number-sectors=-2",
                 ]
         })
 
@@ -257,13 +259,14 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--number-capacity-management-configs=7",
                 "--sector-capacity-factor=6",
                 "--convex-sectors=1",
-                f"--results-root={output_path}/solver_outputs/01_ASPaeroFlow",
+                f"--results-root={output_path}/solver_outputs/0B_Sector_NoReroute_NoDelay",
                 "--wandb-enabled=True",
                 "--wandb-experiment-name-suffix=_0B_Sector_NoReroute_NoDelay",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
                 "--minimize-number-sectors=true",
-                "--max-number-navpoints-per-sector=-1",
+                "--max-number-navpoints-per-sector=1000000",
+                "--max-number-sectors=-2",
                 ]
         })
 
@@ -280,13 +283,14 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--number-capacity-management-configs=7",
                 "--sector-capacity-factor=6",
                 "--convex-sectors=1",
-                f"--results-root={output_path}/solver_outputs/01_ASPaeroFlow",
+                f"--results-root={output_path}/solver_outputs/0C_Sector_NoReroute_Delay",
                 "--wandb-enabled=True",
                 "--wandb-experiment-name-suffix=_0C_Sector_NoReroute_NoDelay",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
                 "--minimize-number-sectors=true",
-                "--max-number-navpoints-per-sector=-1",
+                "--max-number-navpoints-per-sector=1000000",
+                "--max-number-sectors=-2",
                 ]
         })
 
@@ -303,13 +307,14 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--number-capacity-management-configs=7",
                 "--sector-capacity-factor=6",
                 "--convex-sectors=1",
-                f"--results-root={output_path}/solver_outputs/01_ASPaeroFlow",
+                f"--results-root={output_path}/solver_outputs/0D_Sector_Reroute_NoDelay",
                 "--wandb-enabled=True",
                 "--wandb-experiment-name-suffix=_0D_Sector_Reroute_NoDelay",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
                 "--minimize-number-sectors=true",
-                "--max-number-navpoints-per-sector=-1",
+                "--max-number-navpoints-per-sector=1000000",
+                "--max-number-sectors=-2",
                 ]
         })
 
@@ -333,7 +338,8 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
                 "--minimize-number-sectors=true",
-                "--max-number-navpoints-per-sector=-1",
+                "--max-number-navpoints-per-sector=1000000",
+                "--max-number-sectors=-2",
                 ]
         })
 
@@ -348,13 +354,14 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--max-delay-per-iteration=1",
                 "--capacity-management-enabled=False",
                 "--number-capacity-management-configs=1",
-                f"--results-root={output_path}/solver_outputs/02_RerouteDelay",
+                f"--results-root={output_path}/solver_outputs/0A_Reroute",
                 "--wandb-enabled=True",
                 "--wandb-experiment-name-suffix=_2A_Reroute",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
                 "--minimize-number-sectors=true",
-                "--max-number-navpoints-per-sector=-1",
+                "--max-number-navpoints-per-sector=1000000",
+                "--max-number-sectors=-2",
                 ]
         })
 
@@ -375,7 +382,8 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
                 "--minimize-number-sectors=true",
-                "--max-number-navpoints-per-sector=-1",
+                "--max-number-navpoints-per-sector=1000000",
+                "--max-number-sectors=-2",
                 ]
         })
 
@@ -402,7 +410,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
             "encoding": base_dir / "../02_ASP/encoding.lp",
             "verbosity": None,
             "cmd": [
-                f"--results-root={output_path}/solver_outputs/02_ASP",
+                f"--results-root={output_path}/solver_outputs/05_ASP_r_d_s",
                 "--wandb-enabled=True",
                 "--wandb-experiment-name-suffix=_05_ASP_r_d_s",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
@@ -420,7 +428,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
             "encoding": base_dir / "../02_ASP/encoding.lp",
             "verbosity": None,
             "cmd": [
-                f"--results-root={output_path}/solver_outputs/02_ASP",
+                f"--results-root={output_path}/solver_outputs/06_ASP_r_d_ns",
                 "--wandb-enabled=True",
                 "--wandb-experiment-name-suffix=_06_ASP_r_d_ns",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
@@ -438,7 +446,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
             "encoding": base_dir / "../02_ASP/encoding.lp",
             "verbosity": None,
             "cmd": [
-                f"--results-root={output_path}/solver_outputs/02_ASP",
+                f"--results-root={output_path}/solver_outputs/07_ASP_r_nd_s",
                 "--wandb-enabled=True",
                 "--wandb-experiment-name-suffix=_07_ASP_r_nd_s",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
@@ -456,7 +464,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
             "encoding": base_dir / "../02_ASP/encoding.lp",
             "verbosity": None,
             "cmd": [
-                f"--results-root={output_path}/solver_outputs/02_ASP",
+                f"--results-root={output_path}/solver_outputs/08_ASP_nr_d_s",
                 "--wandb-enabled=True",
                 "--wandb-experiment-name-suffix=_08_ASP_nr_d_s",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
@@ -474,7 +482,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
             "encoding": base_dir / "../02_ASP/encoding.lp",
             "verbosity": None,
             "cmd": [
-                f"--results-root={output_path}/solver_outputs/02_ASP",
+                f"--results-root={output_path}/solver_outputs/09_ASP_r_nd_ns",
                 "--wandb-enabled=True",
                 "--wandb-experiment-name-suffix=_09_ASP_r_nd_ns",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
@@ -492,7 +500,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
             "encoding": base_dir / "../02_ASP/encoding.lp",
             "verbosity": None,
             "cmd": [
-                f"--results-root={output_path}/solver_outputs/02_ASP",
+                f"--results-root={output_path}/solver_outputs/10_ASP_nr_nd_s",
                 "--wandb-enabled=True",
                 "--wandb-experiment-name-suffix=_10_ASP_nr_nd_s",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
@@ -510,7 +518,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
             "encoding": base_dir / "../02_ASP/encoding.lp",
             "verbosity": None,
             "cmd": [
-                f"--results-root={output_path}/solver_outputs/02_ASP",
+                f"--results-root={output_path}/solver_outputs/11_ASP_nr_d_ns",
                 "--wandb-enabled=True",
                 "--wandb-experiment-name-suffix=_11_ASP_nr_d_ns",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
@@ -528,7 +536,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
             "encoding": base_dir / "../02_ASP/encoding.lp",
             "verbosity": None,
             "cmd": [
-                f"--results-root={output_path}/solver_outputs/02_ASP",
+                f"--results-root={output_path}/solver_outputs/12_ASP_nr_nd_ns",
                 "--wandb-enabled=True",
                 "--wandb-experiment-name-suffix=_12_ASP_nr_nd_ns",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
@@ -547,7 +555,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
             "encoding": base_dir / "../02_ASP/encoding.lp",
             "verbosity": None,
             "cmd": [
-                f"--results-root={output_path}/solver_outputs/02_ASP",
+                f"--results-root={output_path}/solver_outputs/13_ASP_r_d_sp",
                 "--wandb-enabled=True",
                 "--wandb-experiment-name-suffix=_13_ASP_r_d_sp",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
@@ -566,7 +574,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
             "encoding": base_dir / "../02_ASP/encoding.lp",
             "verbosity": None,
             "cmd": [
-                f"--results-root={output_path}/solver_outputs/02_ASP",
+                f"--results-root={output_path}/solver_outputs/14_ASP_nr_d_sp",
                 "--wandb-enabled=True",
                 "--wandb-experiment-name-suffix=_14_ASP_nr_d_sp",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
@@ -585,7 +593,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
             "encoding": base_dir / "../02_ASP/encoding.lp",
             "verbosity": None,
             "cmd": [
-                f"--results-root={output_path}/solver_outputs/02_ASP",
+                f"--results-root={output_path}/solver_outputs/15_ASP_r_nd_sp",
                 "--wandb-enabled=True",
                 "--wandb-experiment-name-suffix=_15_ASP_r_nd_sp",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
@@ -604,7 +612,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
             "encoding": base_dir / "../02_ASP/encoding.lp",
             "verbosity": None,
             "cmd": [
-                f"--results-root={output_path}/solver_outputs/02_ASP",
+                f"--results-root={output_path}/solver_outputs/16_ASP_nr_nd_sp",
                 "--wandb-enabled=True",
                 "--wandb-experiment-name-suffix=_16_ASP_nr_nd_sp",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
