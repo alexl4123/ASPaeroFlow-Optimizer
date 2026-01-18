@@ -6,6 +6,7 @@ Simple checker for ASPaeroFlow experiment output.
 
 Usage:
     python checker.py experiment_output/0005233_SEED11904657
+    python checker.py experiment_output/0005233_SEED11904657 --original_data_dir original_input_folder/
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ import argparse
 import sys
 from pathlib import Path
 import math
+import csv
+from collections import defaultdict
 
 import numpy as np
 
@@ -40,6 +43,135 @@ def load_csv_as_array(path: Path) -> np.ndarray:
     if arr.size == 0:
         raise SystemExit(f"Error: file {path} seems to be empty or unreadable.")
     return arr
+
+def load_flights_csv(path: Path) -> dict[int, list[tuple[int, int]]]:
+    """
+    Load flights.csv into a dict:
+        flight_id -> [(time, position), ...] sorted by time (ascending)
+
+    flights.csv format:
+        Flight_ID,Position,Time
+        0,27,1
+        ...
+    """
+    if not path.is_file():
+        raise SystemExit(f"Error: {path} does not exist.")
+
+    flights: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    with path.open("r", newline="") as f:
+        reader = csv.DictReader(f)
+        required = {"Flight_ID", "Position", "Time"}
+        if reader.fieldnames is None or not required.issubset(set(reader.fieldnames)):
+            raise SystemExit(
+                f"Error: {path} must contain header with columns {sorted(required)}; "
+                f"found {reader.fieldnames}"
+            )
+        for row in reader:
+            try:
+                fid = int(row["Flight_ID"])
+                pos = int(row["Position"])
+                t = int(row["Time"])
+            except Exception as e:
+                raise SystemExit(f"Error parsing {path} row {row}: {e}")
+            flights[fid].append((t, pos))
+
+    # sort + basic sanity
+    for fid, seq in flights.items():
+        seq.sort(key=lambda x: x[0])
+        # check strictly increasing time (common expectation)
+        for i in range(1, len(seq)):
+            if seq[i][0] == seq[i - 1][0]:
+                print(f"[WARN] flights.csv has duplicate time for Flight_ID={fid} at t={seq[i][0]}")
+            if seq[i][0] < seq[i - 1][0]:
+                # should not happen due to sort, but keep the guard
+                raise SystemExit(f"Error: non-monotone time sequence for Flight_ID={fid}")
+
+    return dict(flights)
+
+
+def run_filed_vs_actual_flight_checks(
+    flights_filed: dict[int, list[tuple[int, int]]],
+    converted_navpoint_matrix: np.ndarray,
+) -> None:
+    """
+    Compare filed flights (flights.csv) against the converted_navpoint_matrix (|F|x|T|).
+
+    Checks:
+      (1) Flight existence by row index (= Flight_ID assumption) and matching endpoints:
+          - first/last filed Position must match first/last non -1 in converted_navpoint_matrix[Flight_ID,:]
+      (2) Compute and report delay:
+          delay = actual_arrival_time - filed_arrival_time
+          where actual_arrival_time is the column index of last non -1, converted to the same time base as flights.csv.
+    """
+    print("-- RUN FILED VS ACTUAL FLIGHT CHECKS (flights.csv vs converted_navpoint_matrix) --")
+
+    if not flights_filed:
+        print("[WARN] flights.csv appears empty; skipping filed-vs-actual checks.")
+        return
+
+    # Determine time base from flights.csv (often 1-based, sometimes 0-based)
+    all_times = [t for seq in flights_filed.values() for (t, _) in seq]
+    filed_min_time = 0
+
+    # We map matrix column index -> "time" by: time = index + filed_min_time
+    # This aligns common cases: filed_min_time=1 (sample) => col0 is time=1; filed_min_time=0 => col0 is time=0.
+    missing_rows = 0
+    endpoint_mismatches = 0
+    delays: list[int] = []
+
+    for fid, seq in flights_filed.items():
+        if fid < 0 or fid >= converted_navpoint_matrix.shape[0]:
+            print(f"[ERROR] filed Flight_ID={fid} has no corresponding row in converted_navpoint_matrix.")
+            missing_rows += 1
+            continue
+
+        filed_dep_time, filed_dep_pos = seq[0]
+        filed_arr_time, filed_arr_pos = seq[-1]
+
+        row = converted_navpoint_matrix[fid, :]
+        idxs = np.nonzero(row != -1)[0]
+        if idxs.size == 0:
+            print(f"[ERROR] Flight_ID={fid}: converted_navpoint_matrix row has no flown navpoints (all -1).")
+            endpoint_mismatches += 1
+            continue
+
+        actual_dep_pos = int(row[idxs[0]])
+        actual_arr_pos = int(row[idxs[-1]])
+
+        if actual_dep_pos != filed_dep_pos or actual_arr_pos != filed_arr_pos:
+            endpoint_mismatches += 1
+            print(
+                f"[ERROR] Flight_ID={fid}: endpoint mismatch "
+                f"(filed dep/arr pos={filed_dep_pos}->{filed_arr_pos}, "
+                f"actual dep/arr pos={actual_dep_pos}->{actual_arr_pos})."
+            )
+
+        actual_arr_time = int(idxs[-1]) + filed_min_time
+        delay = actual_arr_time - filed_arr_time
+        delays.append(int(delay))
+
+        # Output per-flight delay line if non-zero (or if endpoint mismatch already reported above)
+        if delay != 0:
+            print(
+                f"[DELAY] Flight_ID={fid}: filed_arr_time={filed_arr_time}, "
+                f"actual_arr_time={actual_arr_time} -> delay={delay}"
+            )
+
+    if delays:
+        d = np.array(delays, dtype=int)
+        print("[SUMMARY] Filed vs actual:")
+        print(f"  filed flights checked:        {len(flights_filed)}")
+        print(f"  missing matrix rows:          {missing_rows}")
+        print(f"  endpoint mismatches:          {endpoint_mismatches}")
+        print(f"  delay stats (time units):     min={int(d.min())}, median={int(np.median(d))}, mean={float(d.mean()):.3f}, max={int(d.max())}")
+        print(f"  flights with delay > 0:       {int((d > 0).sum())}")
+        print(f"  flights with delay < 0:       {int((d < 0).sum())}  (check time-base assumptions if unexpected)")
+        print(f"  total delay (sum over flights): {int(d.sum())}")
+    else:
+        print("[WARN] No delays computed (no valid flights compared).")
+
+    print("[CHECK] -> FILED VS ACTUAL FLIGHT CHECKS DONE")
+
 
 
 def run_checks(
@@ -247,6 +379,16 @@ def parse_args() -> argparse.Namespace:
         help="Path to experiment output directory "
              "(e.g., experiment_output/0005233_SEED11904657)",
     )
+    parser.add_argument(
+        "--original_data_dir",
+        type=Path,
+        default=None,
+        help=(
+            "Optional: path to original input data folder containing flights.csv "
+            "(e.g., folder with flights.csv, airports.csv, graph_edges.csv, ...). "
+            "If provided, runs filed-vs-actual flight checks."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -285,6 +427,16 @@ def main() -> None:
         navaid_sector_time_assignment,
         converted_navpoint_matrix,
     )
+
+    # Optional: compare against original filed flights (flights.csv)
+    if args.original_data_dir is not None:
+        flights_path = args.original_data_dir / "flights.csv"
+        try:
+            flights_filed = load_flights_csv(flights_path)
+        except SystemExit:
+            raise
+        run_filed_vs_actual_flight_checks(flights_filed, converted_navpoint_matrix)
+ 
 
 
 if __name__ == "__main__":

@@ -6,6 +6,8 @@ import pandas as pd
 import numpy as np
 import networkx as nx
 import math
+import time
+import json
 
 LINEAR = "linear"
 TRIANGULAR = "triangular"
@@ -21,7 +23,7 @@ def _save_csv(path: Path, arr):
 
 class MIPModel:
 
-    def __init__(self, sectors, airport_vertices, max_time, max_explored_vertices, seed, timestep_granularity, verbosity, number_threads, navaid_sector_lookup, composite_sector_function, sector_capacity_factor):
+    def __init__(self, sectors, airport_vertices, max_time, max_explored_vertices, seed, timestep_granularity, verbosity, number_threads, navaid_sector_lookup, composite_sector_function, sector_capacity_factor, original_converted_instance_matrix, navaid_sector_time_assignment, old_navaid_sector_time_assignment, start_time):
         
         self.sectors = sectors
         self.airport_vertices = airport_vertices
@@ -31,6 +33,11 @@ class MIPModel:
         self._timestep_granularity = timestep_granularity
         self._composite_sector_function = composite_sector_function
         self._sector_capacity_factor = sector_capacity_factor
+
+        self.original_converted_instance_matrix = original_converted_instance_matrix
+        self.navaid_sector_time_assignment = navaid_sector_time_assignment
+        self.old_navaid_sector_time_assignment = old_navaid_sector_time_assignment
+        self.start_time = start_time
 
         self._max_number_threads = number_threads
         self.navaid_sector_lookup = navaid_sector_lookup
@@ -42,6 +49,8 @@ class MIPModel:
         if verbosity == 0:
             self.env.setParam("OutputFlag", 0)
 
+        self.report_every_s = float(1)
+        self.progress = [] 
 
         self.env.start()
 
@@ -90,14 +99,14 @@ class MIPModel:
             converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
         """
 
-        delay_time_window = 1
+        delay_time_window = 2
 
         while solution is None:
 
             model = gp.Model(env=self.env, name="toy")
             model.Params.Threads = self._max_number_threads
 
-            flight_variables_pd, sector_variables_pd, next_sectors, previous_sectors, max_effective_delay, all_flights_navpoints = self.add_variables(model, converted_instance_matrix, unit_graphs, airplanes, delay_time_window, filed_flights, airplane_flight)
+            flight_variables_pd, sector_variables_pd, next_sectors, previous_sectors, max_effective_delay, all_flights_navpoints = self.add_variables(model, converted_instance_matrix, capacity_time_matrix, unit_graphs, airplanes, delay_time_window, filed_flights, airplane_flight)
 
             model.update()
 
@@ -118,25 +127,82 @@ class MIPModel:
 
             optimization_variables = self.construct_objective_function(flight_variables_pd, converted_instance_matrix, planned_arrival_times)
 
-            self.optimize(model, optimization_variables)
+            self.optimize(model, optimization_variables, flight_variables_pd, sector_variables_pd, converted_instance_matrix, max_delay, all_flights_navpoints)
 
             converted_instance_matrix_tmp, converted_navpoint_matrix_tmp = self.reconstruct_solution(model, flight_variables_pd, sector_variables_pd,
                                                                                              converted_instance_matrix, max_delay, all_flights_navpoints)
 
+
             mask = converted_instance_matrix_tmp != -1                                        # same shape as arr
 
-            if not np.any(mask, where=True):
+            new_round = False
+            if np.any(mask, where=True):
+                # -----------------------------------------------------------------------------
+                t_init  = self.last_valid_pos(self.original_converted_instance_matrix)      # last non--1 in the *initial* schedule
+                t_final = self.last_valid_pos(converted_instance_matrix_tmp)     # last non--1 in the *final* schedule
+                
+                diff_tmp = converted_instance_matrix_tmp.shape[1] - self.old_navaid_sector_time_assignment.shape[1]
+                if diff_tmp > 0:
+                    self.old_navaid_sector_time_assignment = np.hstack([self.old_navaid_sector_time_assignment, np.repeat(self.old_navaid_sector_time_assignment[:, [-1]], diff_tmp, axis=1)])
+
+                diff_tmp = converted_instance_matrix_tmp.shape[1] - self.navaid_sector_time_assignment.shape[1]
+                if diff_tmp > 0:
+                    self.navaid_sector_time_assignment = np.hstack([self.navaid_sector_time_assignment, np.repeat(self.navaid_sector_time_assignment[:, [-1]], diff_tmp, axis=1)])
+
+                delay = np.where(t_init >= 0, t_final - t_init, 0)          # shape (|I|,)
+                system_loads = MIPModel.bucket_histogram(converted_instance_matrix_tmp, self.sectors, self.sectors.shape[0], converted_instance_matrix_tmp.shape[1], self._timestep_granularity)
+                capacity_time_matrix = MIPModel.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, self.navaid_sector_time_assignment, z = self._sector_capacity_factor, composite_sector_function=self._composite_sector_function)
+                capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+                capacity_overload_mask = capacity_demand_diff_matrix < 0
+                number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
+                total_delay  = delay.sum()
+                number_sectors = self.compute_total_number_sectors(self.navaid_sector_time_assignment)
+                sector_diff = np.count_nonzero(self.navaid_sector_time_assignment[:, 1:] != self.navaid_sector_time_assignment[:, :-1])
+                original_max_time_converted = self.original_converted_instance_matrix.shape[1]  # original_max_time
+                rerouted_mask = np.any(converted_instance_matrix_tmp[:, :original_max_time_converted] != self.original_converted_instance_matrix, axis=1)     # True if flight differs anywhere
+                number_reroutes = int(np.count_nonzero(rerouted_mask))
+                number_sector_reconfigurations = np.count_nonzero(self.navaid_sector_time_assignment != self.old_navaid_sector_time_assignment)
+
+                current_time = time.time() - self.start_time
+                output_dict = {}
+                output_dict["OVERLOAD"] = int(number_of_conflicts)
+                output_dict["ARRIVAL-DELAY"] = int(total_delay)
+                output_dict["SECTOR-NUMBER"] = int(number_sectors)
+                output_dict["SECTOR-DIFF"] = int(sector_diff)
+                output_dict["REROUTE"] = int(number_reroutes)
+                output_dict["RECONFIG"] = int(number_sector_reconfigurations)
+                output_dict["TOTAL-TIME-TO-THIS-POINT"] =  int(current_time)
+                output_dict["COMPUTATION-FINISHED"] = False
+                output_string = json.dumps(output_dict)
+                print(output_string)
+
+                if number_of_conflicts > 0:
+                    new_round = True
+            else:
+                new_round = True
+
+            if new_round is True:
                 solution = None
-                max_delay = max_delay + 1
-                self._max_time = + 1
+                #max_delay = max_delay + 1
+                self._max_time = converted_instance_matrix_tmp.shape[1]
                 delay_time_window += self._timestep_granularity
 
+                #navaid_sector_time_assignment = self.navaid_sector_time_assignment
+
+                #navaid_sector_time_assignment = self.navaid_sector_lookup
+                #converted_instance_matrix = converted_instance_matrix_tmp
+                #converted_navpoint_matrix = converted_navpoint_matrix_tmp
+                #system_loads = system_loads
+                #capacity_time_matrix = capacity_time_matrix
+
                 in_units = 1
-                number_new_cols = in_units * self._timestep_granularity
+                #number_new_cols = in_units * self._timestep_granularity
+                number_new_cols = self._max_time - converted_instance_matrix.shape[1] + in_units * self._timestep_granularity
 
                 # 0.) Handle Sector Assignments:
                 new_cols = np.repeat(navaid_sector_time_assignment[:,[-1]], number_new_cols, axis=1)  # shape (N,k)
                 navaid_sector_time_assignment = np.concatenate([navaid_sector_time_assignment, new_cols], axis=1)
+                #navaid_sector_time_assignment = np.hstack([navaid_sector_time_assignment, np.repeat(navaid_sector_time_assignment[:, [-1]], number_new_cols, axis=1)])
                 # 1.) Handle Instance Matrix:
                 extra_col = -1 * np.ones((converted_instance_matrix.shape[0], number_new_cols), dtype=int)
                 converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
@@ -152,9 +218,10 @@ class MIPModel:
                 # 4.) Subtract demand from capacity (|R|x|T|):
                 capacity_demand_diff_matrix = capacity_time_matrix - system_loads
             else:
-                converted_instance_matrix = converted_instance_matrix_tmp
-                converted_navpoint_matrix = converted_navpoint_matrix_tmp
-                solution = converted_instance_matrix
+                solution = model
+
+        converted_instance_matrix = converted_instance_matrix_tmp
+        converted_navpoint_matrix = converted_navpoint_matrix_tmp
 
         return converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix
     
@@ -313,12 +380,12 @@ class MIPModel:
         return traj
  
 
-    def add_variables(self, model, converted_instance_matrix, unit_graphs, airplanes, time_window, filed_flights, airplane_flight, fill_value = -1):
+    def add_variables(self, model, converted_instance_matrix, capacity_time_matrix,  unit_graphs, airplanes, time_window, filed_flights, airplane_flight, fill_value = -1):
 
         # |F|x|D|x|T|x|V|
         # F=flights, D=possible-delays, T=time, V=vertices
         flight_variables_pd = pd.DataFrame(columns=["F","D","T","V","obj"])
-        sector_variables_pd = pd.DataFrame(columns=["F","D","T","V","obj"])
+        sector_variables_pd = pd.DataFrame(columns=["T","S","obj"])
         considered_vertices = set()
 
         max_effective_delay = 0
@@ -328,7 +395,7 @@ class MIPModel:
 
         #max_delay = max_delay + 1
         self.nearest_neighbors_lookup = {}
-        k = 6
+        k = self._max_explored_vertices
 
         all_flight_navpoints_dict = {}
 
@@ -380,6 +447,8 @@ class MIPModel:
             path_number = 0
 
             all_variables_dict = {}
+
+            max_time_generation = 0
 
 
             for path in paths:
@@ -497,6 +566,9 @@ class MIPModel:
                             if navaid not in all_flight_navpoints_dict[flight_affected_index][delay_number]:
                                 all_flight_navpoints_dict[flight_affected_index][delay_number][navaid] = current_time - 1
 
+                        if max_time_generation < current_time:
+                            max_time_generation = current_time
+
                 #actual_arrival_time_instance.append(f"actualArrivalTime({airplane_id},{current_time - 1},{path_number}).")
                 # path_numbers = #PATHS * #DELAYS
                 path_number += 1
@@ -505,13 +577,26 @@ class MIPModel:
         #print(considered_variables)
         #quit()
 
+        for time in range(max_time_generation):
+            for sector in range(capacity_time_matrix.shape[0]):
+                capacity_variable = model.addVar(vtype=GRB.INTEGER, name=f"y[{time},{sector}]")
+
+                entry = pd.DataFrame.from_dict({
+                    "T": [time],
+                    "S": [sector],
+                    "obj": [capacity_variable]
+                })
+                sector_variables_pd = pd.concat([sector_variables_pd, entry], ignore_index = True)
+
+
         return flight_variables_pd, sector_variables_pd, next_sector, previous_sectors, max_effective_delay, all_flight_navpoints_dict
 
 
-    def add_capacity_constraint(self, model: gp.Model, flight_variables_pd, sector_variables_pd, capacity_time_matrix, unit_graphs, converted_instance_matrix, fill_value = -1 ):
+    def add_capacity_constraint(self, model: gp.Model, flight_variables_pd, sector_variables_pd, capacity_time_matrix, unit_graphs, converted_instance_matrix, fill_value = -1 , relaxed_version = True):
         """
         Add capacity constraint 
         """
+        all_sector_vars = []
 
         capacity_computed_first_reached = False
 
@@ -549,7 +634,26 @@ class MIPModel:
 
                 if len(sector_variables) > 0:
                     #print(f"{['+'.join([var.VarName for var in sector_variables])]} <= {capacity_time_matrix[sector, time]}") 
-                    model.addConstr(gp.quicksum(sector_variables) <= capacity_time_matrix[sector, time])
+
+                    if time < capacity_time_matrix.shape[1]:
+                        cap_value = capacity_time_matrix[sector,time]
+                    else:
+                        cap_value = capacity_time_matrix[sector,0]
+
+                    if relaxed_version is True:
+                        considered_sector_rows = sector_variables_pd.loc[(sector_variables_pd["S"]==sector)&(sector_variables_pd['T']==time)]
+                        if considered_sector_rows.shape[0] > 0:
+                            for _, considered_sector_row in considered_sector_rows.iterrows():
+                                model.addConstr(gp.quicksum(sector_variables) - cap_value <= considered_sector_row['obj'])
+                                model.addConstr(0 <= considered_sector_row['obj'])
+
+                                all_sector_vars.append(considered_sector_row['obj'])
+                    else: 
+                        model.addConstr(gp.quicksum(sector_variables) <= cap_value)
+
+        if relaxed_version is True:  
+           model.setObjectiveN(gp.quicksum(all_sector_vars),index=0,priority = 20)
+
 
     def add_flight_constraints_get_optimization_variables(self, model, flight_variables_pd, converted_instance_matrix,
                                                           edge_distances, max_delay, next_sectors, previous_sectors,
@@ -742,22 +846,207 @@ class MIPModel:
                     model.addConstr(gp.quicksum(vertices_anti_chain_variables) <= 1)
                                
 
+    """
     def optimize(self, model, optimization_variables):
             
         model.setObjective(gp.quicksum(optimization_variables), GRB.MINIMIZE)
         model.optimize()
+    """
 
-    def reconstruct_solution(self, model, flight_variables_pd, sector_variables_pd, converted_instance_matrix,
-                             max_delay, all_flight_navpoint_dict, fill_value = -1):
+    def optimize(self, model: gp.Model, arrival_delay_optimization_variables, flight_variables_pd, sector_variables_pd, converted_instance_matrix, max_delay, all_flight_navpoint_dict):
+
+
+        model.setObjectiveN(gp.quicksum(arrival_delay_optimization_variables), index=1, priority=10)
+
+
+
+        last_t = {"t": -1e100}
+
+
+        def cb(m: gp.Model, where: int):
+            if where == GRB.Callback.MIP:
+                t = m.cbGet(GRB.Callback.RUNTIME)
+                if t - last_t["t"] < self.report_every_s:
+                    return
+                last_t["t"] = t
+
+
+                best  = m.cbGet(GRB.Callback.MIP_OBJBST)  
+                bound = m.cbGet(GRB.Callback.MIP_OBJBND)  
+                nodes = m.cbGet(GRB.Callback.MIP_NODCNT)
+                sols  = m.cbGet(GRB.Callback.MIP_SOLCNT)
+
+                # Compute a robust relative gap (if incumbent exists)
+                if best >= GRB.INFINITY or best <= -GRB.INFINITY:
+                    gap = None  # no incumbent yet
+                else:
+                    denom = abs(best) + 1e-10   # avoids divide-by-zero if best == 0
+                    gap = abs(best - bound) / denom
+
+                gap_str = "n/a" if gap is None else f"{gap:.4%}"
+                #print(f"[{t:8.1f}s] best={best:g}  bound={bound:g}  gap={gap_str}  nodes={nodes:.0f}  sols={sols}")
+
+            elif where == GRB.Callback.MIPSOL:
+                # Optional: called when a new solution is found :contentReference[oaicite:4]{index=4}
+                t = m.cbGet(GRB.Callback.RUNTIME)
+                obj = m.cbGet(GRB.Callback.MIPSOL_OBJ)
+                converted_instance_matrix_tmp, converted_navpoint_matrix_tmp = self.reconstruct_solution_cb(m, flight_variables_pd, sector_variables_pd, converted_instance_matrix, max_delay, all_flight_navpoint_dict)
+
+                # -----------------------------------------------------------------------------
+                t_init  = self.last_valid_pos(self.original_converted_instance_matrix)      # last non--1 in the *initial* schedule
+                t_final = self.last_valid_pos(converted_instance_matrix_tmp)     # last non--1 in the *final* schedule
+                
+                diff_tmp = converted_instance_matrix_tmp.shape[1] - self.old_navaid_sector_time_assignment.shape[1]
+                if diff_tmp > 0:
+                    self.old_navaid_sector_time_assignment = np.hstack([self.old_navaid_sector_time_assignment, np.repeat(self.old_navaid_sector_time_assignment[:, [-1]], diff_tmp, axis=1)])
+
+                diff_tmp = converted_instance_matrix_tmp.shape[1] - self.navaid_sector_time_assignment.shape[1]
+                if diff_tmp > 0:
+                    self.navaid_sector_time_assignment = np.hstack([self.navaid_sector_time_assignment, np.repeat(self.navaid_sector_time_assignment[:, [-1]], diff_tmp, axis=1)])
+
+                delay = np.where(t_init >= 0, t_final - t_init, 0)          # shape (|I|,)
+                system_loads = MIPModel.bucket_histogram(converted_instance_matrix_tmp, self.sectors, self.sectors.shape[0], converted_instance_matrix_tmp.shape[1], self._timestep_granularity)
+                capacity_time_matrix = MIPModel.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, self.navaid_sector_time_assignment, z = self._sector_capacity_factor, composite_sector_function=self._composite_sector_function)
+                capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+                capacity_overload_mask = capacity_demand_diff_matrix < 0
+                number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
+                total_delay  = delay.sum()
+                number_sectors = self.compute_total_number_sectors(self.navaid_sector_time_assignment)
+                sector_diff = np.count_nonzero(self.navaid_sector_time_assignment[:, 1:] != self.navaid_sector_time_assignment[:, :-1])
+                original_max_time_converted = self.original_converted_instance_matrix.shape[1]  # original_max_time
+                rerouted_mask = np.any(converted_instance_matrix_tmp[:, :original_max_time_converted] != self.original_converted_instance_matrix, axis=1)     # True if flight differs anywhere
+                number_reroutes = int(np.count_nonzero(rerouted_mask))
+                number_sector_reconfigurations = np.count_nonzero(self.navaid_sector_time_assignment != self.old_navaid_sector_time_assignment)
+
+                current_time = time.time() - self.start_time
+                output_dict = {}
+                output_dict["OVERLOAD"] = int(number_of_conflicts)
+                output_dict["ARRIVAL-DELAY"] = int(total_delay)
+                output_dict["SECTOR-NUMBER"] = int(number_sectors)
+                output_dict["SECTOR-DIFF"] = int(sector_diff)
+                output_dict["REROUTE"] = int(number_reroutes)
+                output_dict["RECONFIG"] = int(number_sector_reconfigurations)
+                output_dict["TOTAL-TIME-TO-THIS-POINT"] =  int(current_time)
+                output_dict["COMPUTATION-FINISHED"] = False
+                output_string = json.dumps(output_dict)
+                print(output_string)
+
+
+                #print(converted_instance_matrix_tmp)
+                #print(converted_navpoint_matrix_tmp)
+
+
+        model.optimize(cb)
+        return self.progress
+ 
+    def compute_total_number_sectors(self, navaid_sector_time_assignment):
+
+        if navaid_sector_time_assignment.shape[0] == 0:
+            number_sectors = 0
+        else:
+            S = np.sort(navaid_sector_time_assignment, axis=0)                       # sort within each column
+            changes = (S[1:, :] != S[:-1, :])            # True where a new value starts
+            uniq_per_col = 1 + changes.sum(axis=0)       # unique count per column
+        number_sectors = int(uniq_per_col.sum())     # sum over all columns
+
+        return number_sectors
+
+    def last_valid_pos(self, arr: np.ndarray) -> np.ndarray:
+        """
+        Return a 1-D array with, for every row in `arr`, the **last** column index
+        whose value is not -1.  If a row is all -1, we return -1 for that flight.
+        """
+        # True where value ≠ -1
+        mask = arr != -1                                        # same shape as arr
+
+        if not np.any(mask, where=True):
+            return None
+
+        # Reverse columns so that the *first* True along axis=1 is really the last
+        # in the original orientation
+        reversed_first = np.argmax(mask[:, ::-1], axis=1)
+
+        # If the whole row was False, argmax returns 0.  Detect that case:
+        no_valid = ~mask.any(axis=1)                            # shape (|I|,)
+
+        # Convert “position in reversed array” back to real column index
+        last_pos = arr.shape[1] - 1 - reversed_first            # shape (|I|,)
+        last_pos[no_valid] = -1                                 # sentinel value
+
+        return last_pos.astype(np.int64)
+
+
+
+
+
+    def reconstruct_solution_cb(self, model, flight_variables_pd, sector_variables_pd, converted_instance_matrix,
+                             max_delay, all_flight_navpoint_dict, fill_value = -1, tmp_output = False):
 
         result_matrix = -1 * np.ones((converted_instance_matrix.shape[0], converted_instance_matrix.shape[1] + max_delay), dtype=int)
 
         converted_navpoint_matrix = -1 * np.ones((converted_instance_matrix.shape[0], converted_instance_matrix.shape[1] + max_delay), dtype=int)
 
-        solution_count = model.getAttr("SolCount")
+        for flight in range(converted_instance_matrix.shape[0]):
 
-        if solution_count == 0:
-            return result_matrix, None
+            flight_affected = converted_instance_matrix[flight,:]
+            flight_affected = flight_affected[flight_affected != fill_value]
+
+            if len(flight_affected) == 0:
+                continue
+
+            origin = flight_affected[0]
+            destination = flight_affected[-1]
+
+            #considered_rows_tmp = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd['V']==origin)]
+            #start_time = min(list(considered_rows_tmp['T']))
+            #considered_rows_tmp = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd['V']==origin)&(flight_variables_pd['T']==start_time)]
+            #print(considered_rows_tmp)
+
+            considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["V"]==destination)]
+            actual_delay = max_delay
+
+            for _,row in considered_rows.iterrows():
+
+                #print(row["obj"])
+                #print(model.cbGetSolution(row["obj"]))
+
+                if model.cbGetSolution(row["obj"]) >= 1:
+                    actual_delay = row["D"]
+
+            for navaid, current_time in all_flight_navpoint_dict[flight][actual_delay].items():
+                converted_navpoint_matrix[flight,current_time] = navaid
+        
+            considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]==actual_delay)]
+
+            for _,row in considered_rows.iterrows():
+
+                if model.cbGetSolution(row["obj"]) >= 1:
+                    result_matrix[flight,row["T"]] = row["V"]
+
+            """
+            considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["V"]==origin)&(flight_variables_pd["D"]<actual_delay)]
+
+            for _,row in considered_rows.iterrows():
+                if row["obj"].X >= 1:
+                    result_matrix[flight,row["T"]] = row["V"]
+            """
+
+        return result_matrix, converted_navpoint_matrix
+
+
+
+    def reconstruct_solution(self, model, flight_variables_pd, sector_variables_pd, converted_instance_matrix,
+                             max_delay, all_flight_navpoint_dict, fill_value = -1, tmp_output = False):
+
+        result_matrix = -1 * np.ones((converted_instance_matrix.shape[0], converted_instance_matrix.shape[1] + max_delay), dtype=int)
+
+        converted_navpoint_matrix = -1 * np.ones((converted_instance_matrix.shape[0], converted_instance_matrix.shape[1] + max_delay), dtype=int)
+
+        if tmp_output is False:
+            solution_count = model.getAttr("SolCount")
+
+            if solution_count == 0:
+                return result_matrix, None
 
 
         for flight in range(converted_instance_matrix.shape[0]):

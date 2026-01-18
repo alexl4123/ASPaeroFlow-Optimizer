@@ -273,7 +273,7 @@ class Main:
 
 
         # START COMPUTATION:
-        converted_instance_matrix, converted_navpoint_matrix, _ = self.build_MIP_model(self.unit_graphs, converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix, planned_arrival_times, self.airplane_flight, navaid_sector_time_assignment)
+        converted_instance_matrix, converted_navpoint_matrix, _ = self.build_MIP_model(self.unit_graphs, converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix, planned_arrival_times, self.airplane_flight, navaid_sector_time_assignment, original_converted_instance_matrix, old_navaid_sector_time_assignment, start_time)
 
         # -----------------------------------------------------------------------------
         t_init  = self.last_valid_pos(original_converted_instance_matrix)      # last non--1 in the *initial* schedule
@@ -356,7 +356,7 @@ class Main:
                 capacity_time_matrix: np.ndarray,
                 planned_arrival_times,
                 airplane_flight,
-                navaid_sector_time_assignment,
+                navaid_sector_time_assignment,original_converted_instance_matrix, old_navaid_sector_time_assignment, start_time
                 ):
         """
         Split the candidate rows into *n_proc* equally‑sized chunks
@@ -371,7 +371,7 @@ class Main:
 
         max_delay = 24
 
-        mipModel = MIPModel(self.sectors, self.airports, max_time, self._max_explored_vertices, self._seed, self._timestep_granularity, self.verbosity, self._number_threads, navaid_sector_lookup, self._composite_sector_function, self._sector_capacity_factor)
+        mipModel = MIPModel(self.sectors, self.airports, max_time, self._max_explored_vertices, self._seed, self._timestep_granularity, self.verbosity, self._number_threads, navaid_sector_lookup, self._composite_sector_function, self._sector_capacity_factor,original_converted_instance_matrix, navaid_sector_time_assignment, old_navaid_sector_time_assignment, start_time)
 
         converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix = mipModel.create_model(converted_instance_matrix, capacity_time_matrix, unit_graphs, self.airplanes, max_delay, planned_arrival_times, airplane_flight, self.flights, navaid_sector_time_assignment, converted_navpoint_matrix)
 
