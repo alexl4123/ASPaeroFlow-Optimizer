@@ -19,22 +19,26 @@ initial_sector(SEC) :- navpoint_sector(_,SEC,0), regulation_restricted_dynamic_s
 navpoint_sector(NAV1,SEC1,T) :- navpoint_sector_decision(SEC,DEC,T), navpoint_sector_restricted_sector_allocation(SEC,DEC,NAV1,SEC1), regulation_restricted_dynamic_sector_allocation.
 navpoint_sector(NAV,SEC,T) :- time(T), navpoint_sector(NAV,SEC,0), -regulation_dynamic_sector_allocation.
 
-reconfig(NAV,T) :- navpoint_sector(NAV,SEC,0), navpoint_sector(NAV,SEC2,T), SEC != SEC2, T > 0.
 
 
 :- navpoint_sector(NAV,SEC1,T), navpoint_sector(NAV,SEC2,T), SEC1 != SEC2.
 :- navpoint_sector(NAV,SEC,T), not airport(NAV), airport(SEC).
+:- navpoint_sector(NAV,SEC,T), airport(NAV), not airport(SEC).
 :- navpoint_sector(NAV1,SEC,T), NAV1 !=SEC, not navpoint_sector(SEC,SEC,T).
+
+% MINIMIZE SECTOR-NUMBER:
+sector_len(SEC,T,CAP_LEN) :- time(T), navpoint(SEC), CAP_LEN = #count{NAV:navpoint_sector(NAV,SEC,T)}.
+sector(SEC,T,0) :- sector_len(SEC,T,CAP_LEN), CAP_LEN = 0. 
+sector(SEC,T,C) :- time(T), navpoint(SEC), C = #max{C',NAV:navpoint_sector(NAV,SEC,T),atomic_sector(NAV,C',T)}, sector_len(SEC,T,CAP_LEN), CAP_LEN > 0.
+sector_number(T,NUM) :- time(T), NUM = #count{SEC:sector(SEC,T,C), C > 0}.
 
 % MINIMIZE NAVPOINT-SECTOR ASSIGNMENT CHANGES:
 navpoint_changed(NAV,T,1) :- navpoint_sector(NAV,SEC0,T), navpoint_sector(NAV,SEC1,T+1), SEC0 != SEC1.
 navpoint_changed(NAV,T,0) :- navpoint_sector(NAV,SEC0,T), navpoint_sector(NAV,SEC0,T+1).
 sector_diff(T,DIFF) :- time(T), DIFF = #sum{V,NAV: navpoint_changed(NAV,T,V)}.
 
-sector_len(SEC,T,CAP_LEN) :- time(T), navpoint(SEC), CAP_LEN = #count{NAV:navpoint_sector(NAV,SEC,T)}.
-sector(SEC,T,0) :- sector_len(SEC,T,CAP_LEN), CAP_LEN = 0. 
-sector(SEC,T,C) :- time(T), navpoint(SEC), C = #max{C',NAV:navpoint_sector(NAV,SEC,T),atomic_sector(NAV,C',T)}, sector_len(SEC,T,CAP_LEN), CAP_LEN > 0.
-sector_number(T,NUM) :- time(T), NUM = #count{SEC:sector(SEC,T,C), C > 0}.
+% MINIMIZE RECONFIG:
+reconfig(NAV,T) :- navpoint_sector(NAV,SEC,0), navpoint_sector(NAV,SEC2,T), SEC != SEC2, T > 0.
 
 % GET ALL AIRPLANE SPEEDS
 aircraft_speed(S) :- aircraft(_,S).
