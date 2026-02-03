@@ -127,13 +127,13 @@ class TranslateCSVtoLogicProgram:
 
         if navaid_sector_time_assignment.shape != (N, n_times):
             raise ValueError(
-                f"navaid_sector_time_assignment must be shape (N, n_times) = ({N}, {n_times})"
+                f"navpoint_sector_time_assignment must be shape (N, n_times) = ({N}, {n_times})"
             )
 
         S = navaid_sector_time_assignment.astype(np.int64, copy=False)
         if S.min() < 0 or S.max() >= N:
             print(S)
-            raise ValueError("Sector ids in navaid_sector_time_assignment must be in [0, N-1].")
+            raise ValueError("Sector ids in navpoint_sector_time_assignment must be in [0, N-1].")
 
         # ---- 1) Sum atomic per-block caps and contributor counts per (sector,time)
         atomic_block_cap = np.asarray(cap[:, 1], dtype=np.int64)  # length N
@@ -219,7 +219,7 @@ class TranslateCSVtoLogicProgram:
         airplane_instance = []
 
         for row_index in range(airplanes.shape[0]):
-            airplane_instance.append(f"airplane({airplanes[row_index,0]},{airplanes[row_index,1]}).")
+            airplane_instance.append(f"aircraft({airplanes[row_index,0]},{airplanes[row_index,1]}).")
 
         return airplane_instance
 
@@ -229,7 +229,7 @@ class TranslateCSVtoLogicProgram:
         airplane_flight_instance = []
 
         for row_index in range(airplane_flight.shape[0]):
-            airplane_flight_instance.append(f"airplane_flight({airplane_flight[row_index,0]},{airplane_flight[row_index,1]}).")
+            airplane_flight_instance.append(f"aircraft_flight({airplane_flight[row_index,0]},{airplane_flight[row_index,1]}).")
 
         return airplane_flight_instance
 
@@ -239,7 +239,7 @@ class TranslateCSVtoLogicProgram:
         navaid_sector_instance = []
 
         for row_index in range(navaid_sector.shape[0]):
-            navaid_sector_instance.append(f"navaid_sector({navaid_sector[row_index,0]},{navaid_sector[row_index,1]},0).")
+            navaid_sector_instance.append(f"navpoint_sector({navaid_sector[row_index,0]},{navaid_sector[row_index,1]},0).")
 
         # Build per-sector navpoint lists
         from collections import defaultdict, deque
@@ -318,7 +318,7 @@ class TranslateCSVtoLogicProgram:
             for nav in sorted(nav_to_sec1.keys(), key=str):
                 sec1 = nav_to_sec1[nav]
                 navaid_sector_instance.append(
-                    f"navaid_sector_restricted_sector_allocation({sec},{dec},{nav},{sec1})."
+                    f"navpoint_sector_restricted_sector_allocation({sec},{dec},{nav},{sec1})."
                 )
 
         # For each sector: offer DEC in {0,1,2,3}

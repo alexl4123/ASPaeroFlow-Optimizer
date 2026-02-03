@@ -411,7 +411,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         encoding = open(encoding_path, "r").read()
 
-        open("20251223_instance.lp","w").write(instance_asp_atoms)
+        #open("20251223_instance.lp","w").write(instance_asp_atoms)
         
         solver: Model = Solver(encoding, instance_asp_atoms, seed=seed, wandb_log = wandb_log)
         model = solver.solve()
