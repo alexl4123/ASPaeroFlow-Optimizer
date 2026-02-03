@@ -1,39 +1,106 @@
 from __future__ import annotations
 
 import time
+import math
 
 import numpy as np
+import networkx as nx
+from itertools import islice
 
 from solver import Solver, Model
 
-    
+from networkx.algorithms.boundary import node_boundary
+from sympy import bell
+
+from itertools import product
+from typing import Dict, Iterable, List, Tuple, Union, Iterator
+
+PathDict = Dict[Union[int, str], Union[Dict[Union[int, str], object], List[object], Tuple[object, ...]]]
+Config = List[Tuple[Union[int, str], Union[int, str]]]
+import multiprocessing
+
+# pip install more-itertools
+from more_itertools import set_partitions
+from itertools import islice
+from functools import partial
+from collections import deque
+
+
+LINEAR = "linear"
+TRIANGULAR = "triangular"
+MAX = "max"
+
 class OptimizeFlights:
 
     def __init__(self,
                  encoding, capacity, graph, airport_vertices,
-                 flights_affected, rows, edge_distances,
-                 converted_instance_matrix, time_index, bucket_index,
+                 problematic_flight_indices, 
+                 all_potentially_problematic_flight_indices,
+                 converted_instance_matrix, converted_navpoint_matrix,
+                 time_index, sector_index,
                  capacity_time_matrix, capacity_demand_diff_matrix,
                  additional_time_increase,
+                 networkx_graph,
+                 unit_graphs,
+                 planned_arrival_times,
+                 airplane_flight,
+                 airplanes,
+                 problematic_flights,
+                 navaid_sector_time_assignment,
+                 nearest_neighbors_lookup,
+                 sector_capacity_factor,
+                 filed_flights,
+                 problematic_airplane_flight_map,
                  fill_value = -1,
                  timestep_granularity = 1,
                  seed = 11904657,
                  max_vertices_cutoff_value = 6,
                  max_delay_parameter = 4,
                  original_max_time = 24,
+                 iteration = 0,
+                 verbosity = 0,
+                 number_configs = 6,
+                 capacity_management_enabled = False,
+                 composite_sector_function  = MAX,
+                 optimizer = "ASP",
+                 max_number_sectors = -1,
+                 convex_sectors = 0,
                  ):
+
+        self.capacity_management_enabled = capacity_management_enabled
+        self.number_configs = number_configs
+        self._convex_sectors = convex_sectors
+
+        self.max_number_sectors = max_number_sectors
+        self._optimizer = optimizer
 
         self.encoding = encoding
         self.capacity = capacity
         self.graph = graph
         self.airport_vertices = airport_vertices
+        self.networkx_graph = networkx_graph
+        self.unit_graphs = unit_graphs
+        self.planned_arrival_times = planned_arrival_times
+        self.airplane_flight = airplane_flight
+        self.problematic_flights = problematic_flights
+        self.all_potentially_problematic_flights = all_potentially_problematic_flight_indices
+        self.navaid_sector_time_assignment = navaid_sector_time_assignment
+        self.airplanes = airplanes
+        self.nearest_neighbors_lookup = nearest_neighbors_lookup
 
-        self.flights_affected = flights_affected
-        self.rows = rows
-        self.edge_distances = edge_distances
+        self.composite_sector_function = composite_sector_function
+
+        self.filed_flights = filed_flights
+        self.sector_capacity_factor = sector_capacity_factor
+        
+        self.problematic_airplane_flight_map = problematic_airplane_flight_map
+        self.problematic_flight_indices = problematic_flight_indices
+
         self.converted_instance_matrix = converted_instance_matrix
+        self.converted_navpoint_matrix = converted_navpoint_matrix
+
         self.time_index = time_index
-        self.bucket_index = bucket_index
+        self.sector_index = sector_index
         self.capacity_time_matrix = capacity_time_matrix
         self.capacity_demand_diff_matrix = capacity_demand_diff_matrix
         self.additional_time_increase = additional_time_increase
@@ -41,116 +108,1343 @@ class OptimizeFlights:
         self.timestep_granularity = timestep_granularity
         self.seed = seed
 
+        self.verbosity = verbosity
+        self.iteration = iteration
+
         self.max_vertices_cutoff_value = max_vertices_cutoff_value
         self.max_delay_parameter = max_delay_parameter
         self.original_max_time = original_max_time
  
     def start(self):
 
-        flights_affected = self.flights_affected
-        rows = self.rows
-        edge_distances = self.edge_distances
+
+        capacity_management_enabled = self.capacity_management_enabled
+        number_configs = self.number_configs
+
+        timestep_granularity = self.timestep_granularity
+        problematic_flights = self.problematic_flight_indices
         converted_instance_matrix = self.converted_instance_matrix
         time_index = self.time_index
-        bucket_index = self.bucket_index
+        sector_index = self.sector_index
         capacity_time_matrix = self.capacity_time_matrix
         capacity_demand_diff_matrix = self.capacity_demand_diff_matrix
         additional_time_increase = self.additional_time_increase
         fill_value = self.fill_value
+        networkx_graph = self.networkx_graph
+        unit_graphs = self.unit_graphs
+        flights_affected = self.problematic_flights
 
         max_vertices_cutoff_value = self.max_vertices_cutoff_value
         max_delay_parameter = self.max_delay_parameter
 
-        flight_sector_instances = []
+        flight_navpoint_instance = []
         flight_times_instance = []
-        timed_capacities = []
+        
+        needed_capacities_for_navpoint = {}
 
-        considered_vertices = set()
+        if self._optimizer == "Enumerate":
+            flight_path_dict = {}
 
+        sector_instance = {}
+        path_fact_instances = []
+
+        planned_departure_time_instance = []
+        actual_departure_time_instance = []
+        planned_arrival_time_instance = []
+        actual_arrival_time_instance = []
+
+        time_window = max_delay_parameter
+        k = max_vertices_cutoff_value
+
+        largest_considered_time = 0
 
         for flight_affected_index in range(flights_affected.shape[0]):
 
-            flight_index = rows[flight_affected_index]
+
+            flight_index = int(problematic_flights[flight_affected_index])
+
+            airplane_id = (self.airplane_flight[self.airplane_flight[:,1] == flight_index])[0,0]
+            airplane_speed_kts = self.airplanes[airplane_id,1]
+            #current_flight = self.flights[self.flights[:,0] == flight_index]
 
             flight_affected = flights_affected[flight_affected_index,:]
 
-            start_time = np.flatnonzero(flight_affected != fill_value)
-            start_time = start_time[0] if start_time.size else 0
+            filed_flight_path = self.filed_flights[self.filed_flights[:,0] == flight_index,:]
+
+            potentially_affected_flights = self.problematic_airplane_flight_map[airplane_id]
+
+            potentially_affected_flights_tmp = []
+            for flight_affected_index_ in potentially_affected_flights:
+                if flight_index != flight_affected_index_:
+                    potentially_affected_flights_tmp.append(flight_affected_index_)
+
+            potentially_affected_flights = potentially_affected_flights_tmp
+
+
+
+            #actual_arrival_time = (flight_affected >= 0).argmax() - 1
+            actual_arrival_time = np.flatnonzero(flight_affected >= 0)[-1] 
+
+            planned_arrival_time = self.planned_arrival_times[flight_index]
+            actual_delay = actual_arrival_time - planned_arrival_time
+
+            # TURNAROUND TIME:
+            # If a flight needs more than 1 timestep to prepare for departure they coincide; otherwise different
+            actual_flight_operations_start_time = np.flatnonzero(flight_affected != fill_value)[0]
+            actual_flight_departure_time = np.flatnonzero(flight_affected != fill_value)[1] - 1
+            if actual_flight_departure_time < 0:
+                raise Exception("planned_flight_departure_time < 0 => Must never happen")
+
+            #actual_flight_departure_time = planned_flight_departure_time + actual_delay
             
             flight_affected = flight_affected[flight_affected != fill_value]
 
             origin = flight_affected[0]
             destination = flight_affected[-1]
 
-            delay, flight_sector_instances, flight_times_instance = self.handle_delay(flight_sector_instances, flight_times_instance, flight_index, flight_affected, origin)
+            # WITH A FILED FLIGHT PATH WE GET PATH NUMBER = 0
+            paths = self.k_diverse_near_shortest_paths(unit_graphs[airplane_speed_kts], origin, destination, self.nearest_neighbors_lookup[airplane_speed_kts],
+                                                k=k, eps=0.1, jaccard_max=0.6, penalty_scale=0.1, max_tries=50, weight_key="weight",
+                                                filed_path=list(filed_flight_path[:,1]))
+            
 
-            origin_to_destination_time = edge_distances[origin,destination]
+            path_number = 0
 
-            considered_vertices = considered_vertices.union(set([origin,destination]))
+            #actual_departure_time_instance.append(f"actualDepartureTime({airplane_id},{start_time}).")
+            planned_arrival_time_instance.append(f"planned_arrival_time({flight_index},{planned_arrival_time}).")
 
-            timed_capacities += self.handle_origin_sector_instance_generation(capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, origin, delay)
+            if self._optimizer == "Enumerate":
+                flight_path_dict[flight_index] = {}
+
+            for path in paths:
+
+                navpoint_trajectory = self.get_flight_navpoint_trajectory(flights_affected, networkx_graph, flight_index, actual_flight_departure_time, airplane_speed_kts, path, timestep_granularity)
+
+                for delay in range(additional_time_increase * time_window,time_window * (additional_time_increase + 1)):
+                    
+                    if self._optimizer == "Enumerate":
+                        flight_path_dict[flight_index][path_number] = {
+                            "navpoint_flight" : [],
+                            "planned_arrival_time": planned_arrival_time,
+                            "actual_arrival_time": planned_arrival_time,
+                            "potential_flights_affected": {}
+                        }
+
+                    flight_time = actual_flight_departure_time - actual_flight_operations_start_time
+                    current_time = actual_flight_operations_start_time
+
+                    navaid = navpoint_trajectory[0][1]
+                    flight_navpoint_instance.append(f"next_pos({flight_index},{path_number},{navaid},{0},{navaid},{flight_time}).")
+
+                    for flight_hop_index in range(len(navpoint_trajectory)):
+
+                        navaid = navpoint_trajectory[flight_hop_index][1]
+                        time = navpoint_trajectory[flight_hop_index][2]
+                        #sector = (self.navaid_sector[self.navaid_sector[:,0] == navaid])[0,1]
+                        #sector = self.navaid_sector_lookup[navaid]
+
+                        if flight_hop_index == 0:
+
+                            #flight_navpoint_instance.append(f"next_pos({flight_index},{path_number},{navaid},{flight_time},{navaid},{flight_time+delay}).")
+
+                            if navaid not in needed_capacities_for_navpoint:
+                                needed_capacities_for_navpoint[navaid] = [current_time, current_time+delay]
+                            if current_time < needed_capacities_for_navpoint[navaid][0]:
+                                needed_capacities_for_navpoint[navaid][0] = current_time
+                            if current_time + delay > needed_capacities_for_navpoint[navaid][1]:
+                                needed_capacities_for_navpoint[navaid][1] = current_time + delay
+
+                            current_time += delay
+                            #flight_time += delay                            
+                            
+                            planned_departure_time_instance.append(f"actual_flight_operations_start_time({flight_index},{current_time},{path_number}).")
+
+                            if self._optimizer == "Enumerate":
+                                flight_path_dict[flight_index][path_number]["navpoint_flight"].append((navaid,current_time))
+
+                        else:
+
+                            prev_navaid = navpoint_trajectory[flight_hop_index-1][1]
+                            prev_time = navpoint_trajectory[flight_hop_index-1][2]
+                            #prev_sector = (self.navaid_sector[self.navaid_sector[:,0] == prev_navaid])[0,1]
+                            #prev_sector = self.navaid_sector_lookup[prev_navaid]
 
 
-            prev_vertices = None
+                            time_delta = time - prev_time
+                            flight_navpoint_instance.append(f"next_pos({flight_index},{path_number},{prev_navaid},{flight_time},{navaid},{flight_time+time_delta}).")
 
-            for from_origin_time in range(1,origin_to_destination_time + 1): # The +1 means that we add the destination airport
-                
-                time_to_destination_diff = origin_to_destination_time - from_origin_time
+                            if navaid not in needed_capacities_for_navpoint:
+                                # Approximate time_delta/2 to be on the safe side:
+                                needed_capacities_for_navpoint[navaid] = [max(current_time-time_delta,0), current_time+time_delta]
 
-                origin_vertices = edge_distances[origin,:] == from_origin_time
-                destination_vertices = edge_distances[destination,:] == time_to_destination_diff
+                                if current_time+time_delta > largest_considered_time:
+                                    largest_considered_time = current_time+time_delta
 
-                matching_vertices = origin_vertices & destination_vertices
+                            if current_time-time_delta < needed_capacities_for_navpoint[navaid][0]:
+                                needed_capacities_for_navpoint[navaid][0] = max(current_time-time_delta,0)
 
-                vertex_ids = np.where(matching_vertices)[0]
-                vertex_ids = self.restrict_max_vertices(prev_vertices, vertex_ids, matching_vertices, flight_affected, from_origin_time, delay)
+                                if current_time-time_delta > largest_considered_time:
+                                    largest_considered_time = current_time-time_delta
 
-                prev_vertices = list(vertex_ids)
+                            if current_time + time_delta > needed_capacities_for_navpoint[navaid][1]:
+                                needed_capacities_for_navpoint[navaid][1] = current_time + time_delta
 
-                vertex_instances = [f"sectorFlight({flight_index},{from_origin_time + delay},{vertex_id})." for vertex_id in vertex_ids]
+                                if current_time+time_delta > largest_considered_time:
+                                    largest_considered_time = current_time+time_delta
 
-                considered_vertices = considered_vertices.union(set(vertex_ids))
+                            if current_time-time_delta < needed_capacities_for_navpoint[prev_navaid][0]:
+                                # This should not happen, but if it does it is no problem:
+                                needed_capacities_for_navpoint[prev_navaid][0] = max(current_time-time_delta,0)
 
-                flight_times_instance.append(f"flightTime({flight_index},{from_origin_time + delay}).")
+                                if current_time+time_delta > largest_considered_time:
+                                    largest_considered_time = current_time-time_delta
 
-                flight_sector_instances += vertex_instances
+                            if current_time + time_delta > needed_capacities_for_navpoint[prev_navaid][1]:
+                                needed_capacities_for_navpoint[prev_navaid][1] = current_time + time_delta
 
-                timed_capacities += self.handle_sectors_instance_generation(capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, delay, from_origin_time, vertex_ids, flight_index)
+                                if current_time+time_delta > largest_considered_time:
+                                    largest_considered_time = current_time+time_delta
+                            
 
-        flight_sector_instances = "\n".join(flight_sector_instances)
+                            current_time += time_delta
+                            flight_time += time_delta
+
+                            if self._optimizer == "Enumerate":
+                                flight_path_dict[flight_index][path_number]["navpoint_flight"].append((navaid,current_time))
+
+                    actual_arrival_time_instance.append(f"actual_arrival_time({flight_index},{current_time},{path_number}).")
+
+                    if self._optimizer == "Enumerate":
+                        flight_path_dict[flight_index][path_number]["actual_arrival_time"] = current_time
+
+
+                    landing_time_previous_lag = current_time
+
+                    #print(f"LANDING_TIME:{landing_time_previous_lag}")
+                    #print(potentially_affected_flights)
+                    #print(flight_index)
+                    
+                    if current_time >= largest_considered_time:
+                        largest_considered_time = current_time
+
+                    for potentially_affected_flight in potentially_affected_flights:
+
+                            
+                        
+                        #print(f"Potentially Affected Flight: {potentially_affected_flight}")
+
+                        potentially_actual_flight_operations_start_time = np.flatnonzero(converted_instance_matrix[potentially_affected_flight,:] != fill_value)[0]
+
+                        if potentially_actual_flight_operations_start_time <= landing_time_previous_lag:
+                            #print(f"--> IS ACTUALLY AFFECTED: {potentially_affected_flight}")
+                            # NEED TO COMPUTE MINIMUM DELAY OF AFFECTED FLIGHTS
+                            #minimum_induced_rotary_delay = landing_time_previous_lag - actual_flight_operations_start_time + 1
+                            potentially_actual_flight_operations_start_time = landing_time_previous_lag + 1
+
+                        current_time = potentially_actual_flight_operations_start_time
+
+
+                        planned_departure_time_instance.append(f"actual_flight_operations_start_time({potentially_affected_flight},{potentially_actual_flight_operations_start_time},{path_number}).")
+
+                        potentially_planned_arrival_time = self.planned_arrival_times[potentially_affected_flight]
+
+                        planned_arrival_time_instance.append(f"planned_arrival_time({potentially_affected_flight},{potentially_planned_arrival_time}).")
+
+                        if self._optimizer == "Enumerate":
+                            flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight] = {
+                                "navpoint_flight" : [],
+                                "planned_arrival_time" : potentially_planned_arrival_time,
+                                "actual_arrival_time" : potentially_planned_arrival_time
+                            }
+
+
+                        potentially_affected_flight_path_indices = np.flatnonzero(self.converted_navpoint_matrix[potentially_affected_flight,:] != fill_value)
+
+                        #if potentially_affected_flight == 83:
+                        #    print("<<<>>>>")
+                        #    print(np.flatnonzero(self.converted_navpoint_matrix[potentially_affected_flight,:] != fill_value))
+                        #    print(potentially_affected_flight_path_indices)
+
+                        flight_time = 0
+
+
+                        if len(potentially_affected_flight_path_indices) == 1:
+                            hop_index = 0
+
+                            cur_navpoint = self.converted_navpoint_matrix[potentially_affected_flight,potentially_affected_flight_path_indices[hop_index]]
+
+                            if self._optimizer == "Enumerate":
+                                flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight]["navpoint_flight"].append((cur_navpoint,current_time))
+
+
+                            flight_navpoint_instance.append(f"single_pos({potentially_affected_flight},{path_number},{cur_navpoint},{flight_time}).")
+                            
+                            if cur_navpoint not in needed_capacities_for_navpoint:
+                                # Approximate time_delta/2 to be on the safe side:
+                                needed_capacities_for_navpoint[cur_navpoint] = [max(current_time-1,0), current_time+1]
+
+                                if current_time+1 > largest_considered_time:
+                                    largest_considered_time = current_time+1
+
+                            if current_time-1 < needed_capacities_for_navpoint[cur_navpoint][0]:
+                                needed_capacities_for_navpoint[cur_navpoint][0] = max(current_time-1,0)
+
+                                if current_time-1 > largest_considered_time:
+                                    largest_considered_time = current_time-1
+
+                            if current_time + 1 > needed_capacities_for_navpoint[cur_navpoint][1]:
+                                needed_capacities_for_navpoint[cur_navpoint][1] = current_time + 1
+
+                                if current_time+1 > largest_considered_time:
+                                    largest_considered_time = current_time+1
+
+                            flight_time = 1
+
+
+                        for hop_index in range(1,len(potentially_affected_flight_path_indices)):
+
+                            prev_navpoint = self.converted_navpoint_matrix[potentially_affected_flight,potentially_affected_flight_path_indices[hop_index - 1]]
+                            cur_navpoint = self.converted_navpoint_matrix[potentially_affected_flight,potentially_affected_flight_path_indices[hop_index]]
+
+                            if hop_index == 1:
+                                if self._optimizer == "Enumerate":
+                                    flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight]["navpoint_flight"].append((prev_navpoint,current_time))
+
+                            time_delta = potentially_affected_flight_path_indices[hop_index] - potentially_affected_flight_path_indices[hop_index - 1]
+                            current_time += time_delta
+
+                            if self._optimizer == "Enumerate":
+                                flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight]["navpoint_flight"].append((cur_navpoint,current_time))
+
+                            flight_navpoint_instance.append(f"next_pos({potentially_affected_flight},{path_number},{prev_navpoint},{flight_time},{cur_navpoint},{flight_time+time_delta}).")
+                            
+                            flight_time += time_delta
+
+                            if cur_navpoint not in needed_capacities_for_navpoint:
+                                # Approximate time_delta/2 to be on the safe side:
+                                needed_capacities_for_navpoint[cur_navpoint] = [max(current_time-time_delta,0), current_time+time_delta]
+
+                                if current_time+time_delta > largest_considered_time:
+                                    largest_considered_time = current_time+time_delta
+
+                            if current_time-time_delta < needed_capacities_for_navpoint[cur_navpoint][0]:
+                                needed_capacities_for_navpoint[cur_navpoint][0] = max(current_time-time_delta,0)
+
+                                if current_time-time_delta > largest_considered_time:
+                                    largest_considered_time = current_time-time_delta
+
+                            if current_time + time_delta > needed_capacities_for_navpoint[cur_navpoint][1]:
+                                needed_capacities_for_navpoint[cur_navpoint][1] = current_time + time_delta
+
+                                if current_time+time_delta > largest_considered_time:
+                                    largest_considered_time = current_time+time_delta
+
+
+
+                            if prev_navpoint not in needed_capacities_for_navpoint:
+                                # Approximate time_delta/2 to be on the safe side:
+                                needed_capacities_for_navpoint[prev_navpoint] = [max(current_time-time_delta,0), current_time+time_delta]
+
+                                if current_time+time_delta > largest_considered_time:
+                                    largest_considered_time = current_time+time_delta
+
+
+
+                            if current_time-time_delta < needed_capacities_for_navpoint[prev_navpoint][0]:
+                                needed_capacities_for_navpoint[prev_navpoint][0] = max(current_time-time_delta,0)
+
+                                if current_time-time_delta > largest_considered_time:
+                                    largest_considered_time = current_time-time_delta
+
+                            if current_time + time_delta > needed_capacities_for_navpoint[prev_navpoint][1]:
+                                needed_capacities_for_navpoint[prev_navpoint][1] = current_time + time_delta
+
+                                if current_time+time_delta > largest_considered_time:
+                                    largest_considered_time = current_time+time_delta
+
+
+                            
+
+
+                        current_time = potentially_actual_flight_operations_start_time + flight_time
+                        landing_time_previous_lag = current_time
+
+                        if self._optimizer == "Enumerate":
+                            flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight]["actual_arrival_time"] = current_time
+                        actual_arrival_time_instance.append(f"actual_arrival_time({potentially_affected_flight},{current_time},{path_number}).")
+                        path_fact_instances.append(f"chosen_path({potentially_affected_flight},{path_number}) :- chosen_path({flight_index},{path_number}).")
+
+                    # path_numbers = #PATHS * #DELAYS
+                    path_number += 1
+
+            path_fact_instances.append(f"paths({flight_index},0..{path_number - 1}).")
+
+
+        # 1.) Get config for sector sector_index and time_index
+        #   a.) Check out what we can do with this sector
+        #   b.) Create alternatives!
+        
+        if largest_considered_time >= self.navaid_sector_time_assignment.shape[1]:
+            # INCREASE MATRIX SIZE (TIME) AUTOMATICALLY
+            diff = (largest_considered_time - self.navaid_sector_time_assignment.shape[1]) + 1
+
+            in_units = math.ceil(diff / timestep_granularity)
+            number_new_cols = in_units * timestep_granularity
+
+            # 0.) Handle Sector Assignments:
+            new_cols = np.repeat(self.navaid_sector_time_assignment[:,[-1]], number_new_cols, axis=1)  # shape (N,k)
+            self.navaid_sector_time_assignment = np.concatenate([self.navaid_sector_time_assignment, new_cols], axis=1)
+            # 1.) Handle Instance Matrix:
+            extra_col = -1 * np.ones((converted_instance_matrix.shape[0], number_new_cols), dtype=int)
+            converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+
+            extra_col = -1 * np.ones((self.converted_navpoint_matrix.shape[0], number_new_cols), dtype=int)
+            self.converted_navpoint_matrix = np.hstack((self.converted_navpoint_matrix, extra_col)) 
+
+            # 2.) Create demand matrix (|R|x|T|):
+            system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.capacity, self.capacity.shape[0], converted_instance_matrix.shape[1], timestep_granularity)
+            # 3.) Create capacity matrix (|R|x|T|):
+            capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.capacity, system_loads.shape[1], timestep_granularity, self.navaid_sector_time_assignment, z = self.sector_capacity_factor, composite_sector_function=self.composite_sector_function)
+
+            # 4.) Subtract demand from capacity (|R|x|T|):
+            capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+
+            self.capacity_time_matrix = capacity_time_matrix
+            self.capacity_demand_diff_matrix = capacity_demand_diff_matrix
+
+        #number_configs = 7
+        config_restore_dict = {}
+
+        sector_config_instance = []
+        sector_capacity_instance = []
+        navpoint_sector_assignment_instance = []
+
+        # CONFIG = 0
+        current_config = 0
+
+        capacity_overload_mask = capacity_demand_diff_matrix < 0
+        number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
+
+        sector_config_instance.append(f"config_number_sectors({current_config},{np.unique(self.navaid_sector_time_assignment[:,time_index]).size}).")
+
+        for navpoint in needed_capacities_for_navpoint.keys():
+            from_time = needed_capacities_for_navpoint[navpoint][0]
+            until_time = needed_capacities_for_navpoint[navpoint][1]
+
+            for current_time in range(from_time, until_time + 1):
+                #
+                if current_time >= self.navaid_sector_time_assignment.shape[1]:
+                    raise Exception(f"Current time >= navaid-sector-time-shape: {current_time} >= {self.navaid_sector_time_assignment.shape[1]} for navpoint:{navpoint};{current_time}")
+
+                current_sector = self.navaid_sector_time_assignment[navpoint, current_time]
+                navpoint_sector_assignment_instance.append(f"possible_assignment({navpoint},{current_sector},{current_time},{current_config}).")
+
+                current_capacity = self.capacity_demand_diff_matrix[current_sector, current_time]
+                sector_capacity_instance.append(f"possible_sector_capacity({current_sector},{current_capacity},{current_time},{current_config}).")
+
+                if current_capacity < 0:
+                    number_of_conflicts -= abs(current_capacity)
+
+        sector_config_instance.append(f"config({current_config},{number_of_conflicts}).")
+
+        # END CONFIG = 0
+
+        if self._optimizer == "Enumerate":
+            # Brute-force enumeration (preliminary results: do not use)
+            flight_path_config_list = []
+            flight_path_config_list += self.evaluate_flights_for_sector_configuration(flight_path_dict, current_config, self.navaid_sector_time_assignment, self.capacity_demand_diff_matrix)
+        #flight_path_config_list_tmp += self.evaluate_flights_for_sector_configuration_parallel(flight_path_dict, current_config, self.navaid_sector_time_assignment, self.capacity_demand_diff_matrix)
+
+            
+        current_config += 1
+        number_configs -= 1
+
+
+        if capacity_management_enabled:
+
+            navpoints_in_sector = np.nonzero(self.navaid_sector_time_assignment[:,time_index] == sector_index)[0]
+            navpoints_in_sector = list(set(navpoints_in_sector) & set(self.networkx_graph))   # keep only nodes that are actually in G
+            neighbors = set(node_boundary(self.networkx_graph, navpoints_in_sector))  
+
+            if len(navpoints_in_sector) == 0:
+                print(time_index)
+                print(sector_index)
+                print("FOUND 0 NAVPOINTS IN SECTOR -> SHOULD NEVER HAPPEN")
+                quit()
+            #else:
+            #    print(time_index)
+            #    print(sector_index)
+
+            total_partitions = int(bell(len(navpoints_in_sector)))  # all set partitions
+            # exclude trivial one: {whole set}
+            nontrivial_count = max(total_partitions - 1, 0)
+
+            demand_matrix = self.capacity_time_matrix - self.capacity_demand_diff_matrix
+            #self.airport_vertices
+            #self.capacity
+            #self.navaid_sector_time_assignment
+
+            if nontrivial_count > 0:
+
+                composition_navpoints = navpoints_in_sector
+                composition_sectors = self.navaid_sector_time_assignment[composition_navpoints, time_index]
+
+                original_demand = demand_matrix[composition_sectors,:].copy()
+                original_capacity = capacity_time_matrix[composition_sectors,:].copy()
+                original_composition = self.navaid_sector_time_assignment[composition_navpoints,:].copy()
+
+                #number_partitions = (number_configs) / 2
+                number_partitions = number_configs
+                number_partitions = min(number_partitions, nontrivial_count)
+
+                #number_compositions = (number_configs) - number_partitions
+                number_compositions = 0
+
+                #parts = self.first_l_nontrivial_partitions(navpoints_in_sector, number_partitions)
+                #parts = self.first_l_nontrivial_partitions(navpoints_in_sector, number_partitions)
+                #print(parts)
+                #if self.verbosity > 1:
+                #    print(f"----> NAVPOINTS IN SECTOR ({nontrivial_count}, {number_partitions}): {navpoints_in_sector}")
+
+                current_number_sectors = len(np.unique_counts(self.navaid_sector_time_assignment[:,time_index]).values)
+
+                if self._convex_sectors == 0:
+                    parts = self.partition_navpoints_connected(navpoints_in_sector, number_partitions)
+                else:
+                    parts = self._partition_connected_convex(navpoints_in_sector, number_partitions)
+
+                self.max_number_sectors 
+
+                #if self.verbosity > 2:
+                #    print(parts)
+
+                for partition in parts:
+
+                    if current_number_sectors + len(partition) - 1 > self.max_number_sectors:
+                        continue
+
+                    
+                    capacity_time_matrix[composition_sectors,time_index:] = 0
+                    partition_sectors = []
+                    all_partition_navpoints = []
+
+                    for partition_navpoints in partition:
+
+                        if sector_index in partition_navpoints:
+                            cur_sector_index = sector_index
+                        else:
+                            cur_sector_index = partition_navpoints[0]
+
+                        partition_sectors.append(cur_sector_index)
+
+                        all_partition_navpoints += partition_navpoints
+                        partition_navpoints = np.array(partition_navpoints)
+
+
+                        self.navaid_sector_time_assignment[partition_navpoints, time_index :] = cur_sector_index
+                        tmp_navaid_sector_time_assignment = np.zeros((len(partition_navpoints),self.navaid_sector_time_assignment.shape[1]))
+
+
+                        tmp_atomic_capacities = []
+                        index = 0
+                        for navaid in partition_navpoints:
+                            tmp_atomic_capacities.append([index,int(self.capacity[navaid,1])])
+                            index += 1
+
+                        tmp_atomic_capacities = np.array(tmp_atomic_capacities)
+                        composite_capacity_time_matrix = OptimizeFlights.capacity_time_matrix(tmp_atomic_capacities, self.navaid_sector_time_assignment.shape[1], self.timestep_granularity, tmp_navaid_sector_time_assignment, z = self.sector_capacity_factor, composite_sector_function=self.composite_sector_function)
+                        capacity_time_matrix[cur_sector_index,time_index:] = composite_capacity_time_matrix[0,time_index:]
+
+                    # All flights that pass through any navpoint in the composite sector
+                    tmp_flights = np.nonzero(np.isin(self.converted_navpoint_matrix[:,:], navpoints_in_sector))[0]
+                    tmp_flights = np.array(list(set(tmp_flights)))
+
+                    # FILTER OUT PROBLEMATIC FLIGHTS (NOT CONSIDERED DUE TO POTENTIALLY ROUTED)
+                    tmp_tmp_flights = []
+                    for flight_index in tmp_flights:
+                        if flight_index not in self.all_potentially_problematic_flights:
+                            tmp_tmp_flights.append(flight_index)
+
+                    all_affected_flights = tmp_flights.copy()
+
+                    tmp_flights = np.array(tmp_tmp_flights)
+                    
+                    triplets = self.time_matrix_to_triplets(self.converted_navpoint_matrix[tmp_flights,time_index:])
+
+                    # FIX INDICES
+                    triplets[:,2] = triplets[:,2] + time_index
+
+                    """
+                    triplets_indices = []
+                    tmp_flights_index = 0
+                    for triplets_index in range(1,triplets.shape[0]):
+
+                        if triplets[triplets_index,0] != triplets[triplets_index-1,0]:
+                            print(f"{triplets[triplets_index,0]} != {triplets[triplets_index-1,0]}")
+                            tmp_flights_index += 1
+
+                        if triplets_index == 1:
+
+                            triplets_indices.append(tmp_flights[0])
+                        triplets_indices.append(tmp_flights[tmp_flights_index])
+
+                    triplets[:,0] = np.array(triplets_indices)                    
+                    """
+
+                    #tmp_airplane_flight = self.airplane_flight[np.isin(self.airplane_flight[:,1],tmp_flights)]
+
+                    airplane_flight_mockup = []
+                    for flight_index in range(len(tmp_flights)):
+                        airplane_flight_mockup.append([flight_index,flight_index])
+
+                    airplane_flight_mockup = np.array(airplane_flight_mockup)
+
+                    converted_instance_matrix, _ = OptimizeFlights.instance_to_matrix(triplets, airplane_flight_mockup, self.navaid_sector_time_assignment.shape[1], self.timestep_granularity, self.navaid_sector_time_assignment)
+                    system_loads_tmp = OptimizeFlights.bucket_histogram(converted_instance_matrix, None, self.capacity_time_matrix.shape[0], converted_instance_matrix.shape[1], self.timestep_granularity)
+
+                    partition_sectors = np.array(partition_sectors)
+
+                    demand_matrix[partition_sectors,time_index:] = system_loads_tmp[partition_sectors,time_index:]
+
+                    capacity_demand_diff_matrix = capacity_time_matrix - demand_matrix
+
+                    capacity_overload_mask = capacity_demand_diff_matrix < 0
+                    number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
+
+
+                    # COMPOSITION CONFIG 
+                    sector_config_instance.append(f"config_number_sectors({current_config},{np.unique(self.navaid_sector_time_assignment[:,time_index]).size}).")
+
+                    for navpoint in needed_capacities_for_navpoint.keys():
+                        from_time = needed_capacities_for_navpoint[navpoint][0]
+                        until_time = needed_capacities_for_navpoint[navpoint][1]
+
+                        for current_time in range(from_time, until_time + 1):
+                            #
+                            current_sector = self.navaid_sector_time_assignment[navpoint, current_time]
+                            navpoint_sector_assignment_instance.append(f"possible_assignment({navpoint},{current_sector},{current_time},{current_config}).")
+
+                            current_capacity = capacity_demand_diff_matrix[current_sector, current_time]
+                            sector_capacity_instance.append(f"possible_sector_capacity({current_sector},{current_capacity},{current_time},{current_config}).")
+                            
+                            if current_capacity < 0:
+                                number_of_conflicts -= abs(current_capacity)
+
+                    sector_config_instance.append(f"config({current_config},{number_of_conflicts}).")
+
+                    # ---------------------------------------------------
+                    if self._optimizer == "Enumerate":
+                        flight_path_config_list += self.evaluate_flights_for_sector_configuration(flight_path_dict, current_config, self.navaid_sector_time_assignment, capacity_demand_diff_matrix)
+                    # ---------------------------------------------------
+                    # COMPOSITION CONFIG
+
+                    #print(f"COMP:{composition_sectors}::PART:{partition_sectors}")
+
+                    config_restore_dict[current_config] = {}
+                    config_restore_dict[current_config]["composition_navpoints"] = all_partition_navpoints.copy()
+                    config_restore_dict[current_config]["composition_sectors"] = partition_sectors.copy()
+                    config_restore_dict[current_config]["affected_flights"] = all_affected_flights.copy()
+                    config_restore_dict[current_config]["composition"] = self.navaid_sector_time_assignment[all_partition_navpoints,:].copy()
+
+                    config_restore_dict[current_config]["demand"] = demand_matrix[partition_sectors,:].copy()
+                    config_restore_dict[current_config]["capacity"] = capacity_time_matrix[partition_sectors,:].copy()
+                    config_restore_dict[current_config]["time_index"] = time_index
+                    config_restore_dict[current_config]["sector_index"] = sector_index
+
+                    # RESTORE ORIGINAL CONFIG:
+                    demand_matrix[partition_sectors,:] = 0
+                    demand_matrix[composition_sectors,:] = original_demand.copy()
+
+                    capacity_time_matrix[partition_sectors,:] = 0
+                    capacity_time_matrix[composition_sectors,:] = original_capacity.copy()
+
+                    self.navaid_sector_time_assignment[composition_navpoints, :] = original_composition.copy()
+
+                    current_config += 1
+
+
+            else:
+                #number_compositions = number_configs
+                number_compositions = 0
+
+
+            composition_number = 0
+
+            if number_compositions > 0:
+                for neighbor in neighbors:
+
+                    if neighbor in self.airport_vertices:
+                        # No Composition with Airports
+                        continue
+
+                    composition_navpoints = [neighbor] + navpoints_in_sector
+                    composition_sectors = self.navaid_sector_time_assignment[composition_navpoints, time_index]
+
+                    original_demand = demand_matrix[composition_sectors,:].copy()
+                    original_capacity = capacity_time_matrix[composition_sectors,:].copy()
+                    original_composition = self.navaid_sector_time_assignment[composition_navpoints,:].copy()
+                    #original_sector_navpoints = navpoints_in_sector
+
+
+                    self.navaid_sector_time_assignment[composition_navpoints, time_index :] = sector_index
+                    tmp_navaid_sector_time_assignment = np.zeros((len(composition_navpoints),self.navaid_sector_time_assignment.shape[1]))
+
+                    tmp_atomic_capacities = []
+                    index = 0
+                    for navaid in composition_navpoints:
+                        tmp_atomic_capacities.append([index,int(self.capacity[navaid,1])])
+                        index += 1
+
+                    tmp_atomic_capacities = np.array(tmp_atomic_capacities)
+
+                    composite_capacity_time_matrix = OptimizeFlights.capacity_time_matrix(tmp_atomic_capacities, self.navaid_sector_time_assignment.shape[1], self.timestep_granularity, tmp_navaid_sector_time_assignment, z = self.sector_capacity_factor, composite_sector_function=self.composite_sector_function)
+
+                    capacity_time_matrix[composition_sectors,time_index:] = 0
+                    capacity_time_matrix[sector_index,time_index:] = composite_capacity_time_matrix[0,time_index:]
+
+                    aggregated_demand = demand_matrix[composition_sectors, time_index:].sum(axis=0)
+                    demand_matrix[composition_sectors, time_index:] = 0
+                    demand_matrix[sector_index, time_index:] = aggregated_demand
+
+                    capacity_demand_diff_matrix = capacity_time_matrix - demand_matrix
+
+                    # COMPOSITION CONFIG 
+                    sector_config_instance.append(f"config({current_config}).")
+                    sector_config_instance.append(f"config_number_sectors({current_config},{np.unique(self.navaid_sector_time_assignment[:,time_index]).size}).")
+
+                    for navpoint in needed_capacities_for_navpoint.keys():
+                        from_time = needed_capacities_for_navpoint[navpoint][0]
+                        until_time = needed_capacities_for_navpoint[navpoint][1]
+
+                        for current_time in range(from_time, until_time + 1):
+                            #
+                            current_sector = self.navaid_sector_time_assignment[navpoint, current_time]
+                            navpoint_sector_assignment_instance.append(f"possible_assignment({navpoint},{current_sector},{current_time},{current_config}).")
+
+                            current_capacity = capacity_demand_diff_matrix[current_sector, current_time]
+                            sector_capacity_instance.append(f"possible_sector_capacity({current_sector},{current_capacity},{current_time},{current_config}).")
+
+                    # ---------------------------------------------------
+                    if self._optimizer == "Enumerate":
+                        flight_path_config_list += self.evaluate_flights_for_sector_configuration(flight_path_dict, current_config, self.navaid_sector_time_assignment, capacity_demand_diff_matrix)
+                    # ---------------------------------------------------
+
+                    # COMPOSITION CONFIG
+
+                    config_restore_dict[current_config] = {}
+                    config_restore_dict[current_config]["composition_navpoints"] = composition_navpoints.copy()
+                    config_restore_dict[current_config]["composition_sectors"] = composition_sectors.copy()
+                    config_restore_dict[current_config]["demand"] = demand_matrix[composition_sectors,:].copy()
+                    config_restore_dict[current_config]["capacity"] = capacity_time_matrix[composition_sectors,:].copy()
+                    config_restore_dict[current_config]["composition"] = self.navaid_sector_time_assignment[composition_navpoints,:].copy()
+                    config_restore_dict[current_config]["time_index"] = time_index
+                    config_restore_dict[current_config]["sector_index"] = sector_index
+
+                    # RESTORE ORIGINAL CONFIG:
+                    demand_matrix[partition_sectors,:] = 0
+                    demand_matrix[composition_sectors,:] = original_demand
+
+                    capacity_time_matrix[partition_sectors,:] = 0
+                    capacity_time_matrix[composition_sectors,:] = original_capacity
+
+                    self.navaid_sector_time_assignment[composition_navpoints, :] = original_composition
+
+                    composition_number += 1
+                    current_config += 1
+                    if composition_number >= number_compositions:
+                        # MORE THAN MAX COMPOSITIONS!
+                        break
+
+        # -----------------------------------------------------------
+
+        #print(flight_path_config_list)
+        if self._optimizer == "Enumerate":
+            sorted_data = min(flight_path_config_list,
+                                key=lambda t: (-t[0],t[1],(t[2] != 0, -t[2]), t[3],))
+
+            return (sorted_data, flight_path_dict), config_restore_dict
+
+
+        # -----------------------------------------------------------
+
+        planned_arrival_time_instance = list(set(planned_arrival_time_instance))
+
+        flight_navpoint_instance = "\n".join(flight_navpoint_instance)
         flight_times_instance = "\n".join(flight_times_instance)
 
-        flight_plan_instance = self.flight_plan_strings(rows, flights_affected)
+        path_fact_instances = "\n".join(path_fact_instances)
+
+        flight_plan_instance = self.flight_plan_strings(problematic_flights, flights_affected)
         flight_plan_instance = "\n".join(flight_plan_instance)
 
-        edges_instance, airport_instance, timed_capacities = self.not_used_airports_removal_from_instance(fill_value, flights_affected, timed_capacities, capacity_demand_diff_matrix, considered_vertices, self.graph)
-        timed_capacities_instance = '\n'.join(timed_capacities)
 
-        time_instance = f"additionalTime({additional_time_increase})."
-        timestep_granularity_instance = f"timestepGranularity({self.timestep_granularity})."
-        instance = edges_instance + "\n" + timed_capacities_instance + "\n" + airport_instance + "\n" + time_instance + "\n" + flight_plan_instance + "\n" + flight_sector_instances + "\n" + flight_times_instance + "\n" + timestep_granularity_instance
+        sector_config_instance = "\n".join(sector_config_instance)
+        sector_capacity_instance = "\n".join(sector_capacity_instance)
+        navpoint_sector_assignment_instance = "\n".join(navpoint_sector_assignment_instance)
 
-        open("test_instance_4.lp","w").write(instance)
+
+        planned_departure_time_instance = "\n".join(planned_departure_time_instance)
+        actual_departure_time_instance = "\n".join(actual_departure_time_instance)
+        planned_arrival_time_instance = "\n".join(planned_arrival_time_instance)
+        actual_arrival_time_instance = "\n".join(actual_arrival_time_instance)
+
+        instance = f"""
+{flight_plan_instance}
+{flight_navpoint_instance}
+{path_fact_instances}
+{planned_departure_time_instance}
+{actual_departure_time_instance}
+{planned_arrival_time_instance}
+{actual_arrival_time_instance}
+{sector_config_instance}
+{sector_capacity_instance}
+{navpoint_sector_assignment_instance}
+        """
+
+        #if time_index == 727 and sector_index == 6 and additional_time_increase > 0:
+        #    quit()
 
         encoding = self.encoding
 
-        start_time = time.time()
+        #open(f"20260116_test_instance_{additional_time_increase}.lp","w").write(instance)
+        #quit()
+
+        if self.verbosity == 3:
+            open(f"20251126_test_instance_{additional_time_increase}.lp","w").write(instance)
+        
+        if self.verbosity > 3:
+            open(f"20251021_test_instance_{additional_time_increase}.lp","w").write(instance)
+            print("WRITTEN TEST INSTANCE - QUITTING")
+            quit()
+            pass
+            #if len(navpoints_in_sector) > 1:
+            #    quit()
+            #quit()
 
         solver: Model = Solver(encoding, instance)
         model = solver.solve()
 
-        end_time = time.time()
-        #print(f">> Elapsed solving time: {end_time - start_time}")
-        #print(model.get_flights())
-        #quit()
+        return model, config_restore_dict
 
-        return model
+    def evaluate_flights_for_sector_configuration(self, flight_path_dict, current_config, navaid_sector_time_assignment, capacity_demand_diff_matrix):
 
-    def handle_sectors_instance_generation(self, capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, delay, from_origin_time, vertex_ids, flight_index):
+        flight_path_config_list = []
+
+        iter_list = self.iter_flight_path_dict_configurations(flight_path_dict)
+
+        for flight_config in iter_list:
+            # SPARSE SECTOR DICT:
+            overload_sector_dict = {}
+
+            delay = 0
+
+            for flight_index, path_number in flight_config:
+                if "sector_flight" not in flight_path_dict[flight_index][path_number]:
+                    flight_path_dict[flight_index][path_number]["sector_flight"] = {}
+
+                if current_config not in flight_path_dict[flight_index][path_number]["sector_flight"]:
+                    flight_path_dict[flight_index][path_number]["sector_flight"][current_config] = []
+                
+                for step_index in range(1, len(flight_path_dict[flight_index][path_number]["navpoint_flight"])):
+                    prev_navpoint, prev_time = flight_path_dict[flight_index][path_number]["navpoint_flight"][step_index - 1]
+                    cur_navpoint, cur_time = flight_path_dict[flight_index][path_number]["navpoint_flight"][step_index]
+
+                    for time_index in range(prev_time, cur_time):
+                        if time_index <= math.floor((cur_time - prev_time)/2 + prev_time):
+                            current_sector = navaid_sector_time_assignment[prev_navpoint, time_index]
+                        else:
+                            current_sector = navaid_sector_time_assignment[cur_navpoint, time_index]
+
+                        flight_path_dict[flight_index][path_number]["sector_flight"][current_config].append((current_sector, time_index))
+
+
+                        if current_sector not in overload_sector_dict:
+                            overload_sector_dict[current_sector] = {}
+
+                        if time_index not in overload_sector_dict[current_sector]:
+                            overload_sector_dict[current_sector][time_index] = capacity_demand_diff_matrix[current_sector, time_index]
+
+                        # DECREASE BY 1:
+                        overload_sector_dict[current_sector][time_index] -= 1
+
+                    if step_index == len(flight_path_dict[flight_index][path_number]["navpoint_flight"]) - 1:
+                        time_index = cur_time
+                        current_sector = navaid_sector_time_assignment[cur_navpoint, time_index]
+
+                        if current_sector not in overload_sector_dict:
+                            overload_sector_dict[current_sector] = {}
+
+                        if time_index not in overload_sector_dict[current_sector]:
+                            overload_sector_dict[current_sector][time_index] = capacity_demand_diff_matrix[current_sector, time_index]
+
+                        # DECREASE BY 1:
+                        overload_sector_dict[current_sector][time_index] -= 1
+
+                planned_arrival_time = flight_path_dict[flight_index][path_number]["planned_arrival_time"]
+                actual_arrival_time = flight_path_dict[flight_index][path_number]["actual_arrival_time"]
+                delay += (actual_arrival_time - planned_arrival_time)
+
+                # Affected flights:
+
+                for potentially_affected_flight in flight_path_dict[flight_index][path_number]["potential_flights_affected"].keys():
+                    if "sector_flight" not in flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight]:
+                        flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight]["sector_flight"] = {}
+
+                    if current_config not in flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight]["sector_flight"]:
+                        flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight]["sector_flight"][current_config] = []
+
+                    for step_index in range(1, len(flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight]["navpoint_flight"])):
+                        prev_navpoint, prev_time = flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight]["navpoint_flight"][step_index - 1]
+                        cur_navpoint, cur_time = flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight]["navpoint_flight"][step_index]
+
+                        for time_index in range(prev_time, cur_time):
+                            if time_index <= math.floor((cur_time - prev_time)/2 + prev_time):
+                                current_sector = navaid_sector_time_assignment[prev_navpoint, time_index]
+                            else:
+                                current_sector = navaid_sector_time_assignment[cur_navpoint, time_index]
+
+                            flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight]["sector_flight"][current_config].append((current_sector, time_index))
+
+
+                            if current_sector not in overload_sector_dict:
+                                overload_sector_dict[current_sector] = {}
+
+                            if time_index not in overload_sector_dict[current_sector]:
+                                overload_sector_dict[current_sector][time_index] = capacity_demand_diff_matrix[current_sector, time_index]
+
+                            # DECREASE BY 1:
+                            overload_sector_dict[current_sector][time_index] -= 1
+
+                        if step_index == len(flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight]["navpoint_flight"]) - 1:
+                            time_index = cur_time
+                            current_sector = navaid_sector_time_assignment[cur_navpoint, time_index]
+
+                            if current_sector not in overload_sector_dict:
+                                overload_sector_dict[current_sector] = {}
+
+                            if time_index not in overload_sector_dict[current_sector]:
+                                overload_sector_dict[current_sector][time_index] = capacity_demand_diff_matrix[current_sector, time_index]
+
+                            # DECREASE BY 1:
+                            overload_sector_dict[current_sector][time_index] -= 1
+
+                    planned_arrival_time = flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight]["planned_arrival_time"]
+                    actual_arrival_time = flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight]["actual_arrival_time"]
+                    delay += (actual_arrival_time - planned_arrival_time)
+
+                
+            capacity_sum = 0
+            for overload_sector_key in overload_sector_dict.keys():
+                for overload_time_key in overload_sector_dict[overload_sector_key].keys():
+                    if overload_sector_dict[overload_sector_key][overload_time_key] < 0:
+                        capacity_sum += overload_sector_dict[overload_sector_key][overload_time_key]
+
+            flight_path_config_list.append((capacity_sum,delay,current_config,flight_config))
+
+        return flight_path_config_list 
+    
+    def iter_flight_path_dict_configurations(self, flight_path_dict: PathDict, order: str = "sorted") -> Iterator[Config]:
+        """
+        Yields configurations as [(f0, p0), (f1, p1), ...], one per combination.
+        - flight_path_dict[f] can be:
+            * a dict {path_id: path_data}, or
+            * a list/tuple of paths (selected by index 0..len-1).
+        - order: "sorted" (default) or "insertion" for flight ordering.
+        """
+        # Choose flight order (stable configs)
+        flights = sorted(flight_path_dict) if order == "sorted" else list(flight_path_dict)
+
+        # Collect selectable keys for each flight
+        path_key_lists: List[List[Union[int, str]]] = []
+        for f in flights:
+            paths = flight_path_dict[f]
+            if isinstance(paths, dict):
+                keys = list(paths.keys())
+            else:  # sequence: use indices as path identifiers
+                keys = list(range(len(paths)))
+            if not keys:   # if any flight has 0 paths, there are no configs
+                return
+            path_key_lists.append(keys)
+
+        # Yield all combinations lazily
+        configurations = []
+        for combo in product(*path_key_lists):
+             configurations.append(list(zip(flights, combo)))
+
+        return configurations
+    
+
+    def split_component_into_k(self, G_comp, nodes, k):
+        """
+        Split a (connected) component G_comp induced by 'nodes' into k
+        connected parts via seeded multi-source BFS.
+
+        Returns a list of sets of nodes; each set is connected in G_comp.
+        """
+        nodes = list(nodes)
+        n = len(nodes)
+        if k <= 1 or n <= 1:
+            return [set(nodes)]
+
+        # Never ask for more parts than nodes
+        k = min(k, n)
+
+        # --- choose seeds using a greedy "farthest-point" heuristic ---
+        seeds = []
+        # first seed: arbitrary
+        seeds.append(nodes[0])
+
+        # distance-to-nearest-seed map
+        dist_to_nearest = {u: float("inf") for u in nodes}
+        lengths = nx.single_source_shortest_path_length(G_comp, seeds[0])
+        for u in nodes:
+            dist_to_nearest[u] = min(dist_to_nearest[u], lengths.get(u, float("inf")))
+
+        while len(seeds) < k:
+            # pick node farthest from any already chosen seed
+            candidate = max(nodes, key=lambda u: dist_to_nearest[u])
+            if candidate in seeds:
+                # pathological case: all distances 0 -> just pick any unused node
+                for u in nodes:
+                    if u not in seeds:
+                        candidate = u
+                        break
+            seeds.append(candidate)
+            lengths = nx.single_source_shortest_path_length(G_comp, candidate)
+            for u in nodes:
+                d = lengths.get(u, float("inf"))
+                if d < dist_to_nearest[u]:
+                    dist_to_nearest[u] = d
+
+        # --- multi-source BFS growth from all seeds at once ---
+        owner = {}
+        q = deque()
+        for cid, seed in enumerate(seeds):
+            owner[seed] = cid
+            q.append(seed)
+
+        while q:
+            v = q.popleft()
+            cid = owner[v]
+            for nbr in G_comp.neighbors(v):
+                if nbr in owner:
+                    continue
+                owner[nbr] = cid
+                q.append(nbr)
+
+        # Build clusters from ownership
+        clusters = [set() for _ in range(k)]
+        for u, cid in owner.items():
+            clusters[cid].add(u)
+
+        # In a connected component every node should have an owner; be defensive though.
+        unassigned = set(nodes) - set(owner.keys())
+        if unassigned:
+            # If something slipped through, assign to nearest seed
+            seed_dists = {
+                seed: nx.single_source_shortest_path_length(G_comp, seed)
+                for seed in seeds
+            }
+            for u in unassigned:
+                best_cid = None
+                best_dist = float("inf")
+                for cid, seed in enumerate(seeds):
+                    d = seed_dists[seed].get(u, float("inf"))
+                    if d < best_dist:
+                        best_dist = d
+                        best_cid = cid
+                if best_cid is None:
+                    # totally isolated node (should not happen); put into smallest cluster
+                    best_cid = min(range(k), key=lambda i: len(clusters[i]))
+                clusters[best_cid].add(u)
+
+        # Remove any empty clusters (only possible if k > |nodes|, which we prevented)
+        clusters = [c for c in clusters if c]
+
+        return clusters
+
+    
+    def partition_navpoints_connected(self, navpoints, number_partitions):
+        # Partition navpoints in approximately equally sized connected subgraphs
+        # Induced subgraph on the given navpoints
+        G_sub = self.networkx_graph.subgraph(navpoints).copy()
+
+        # Connected components of induced subgraph
+        components = [set(c) for c in nx.connected_components(G_sub)]
+
+        partition_sizes = [i+2 for i in range(number_partitions)]
+
+        # --- actually partition each component and collect all parts ---
+        partitions = []
+        for k in partition_sizes:
+
+            if k > len(navpoints):
+                break
+
+
+            if k <= len(components):
+                total_len = 0 
+                for comp in components:
+                    total_len += len(comp)
+
+
+                new_size = math.ceil(total_len / k)
+
+                comp_parts = []
+
+                component_index = 0
+
+                for i0 in range(k):
+                    
+                    sector = []
+                    while len(sector) < new_size:
+
+                        if component_index >= len(components):
+                            break
+
+                        for vertex in components[component_index]:
+                            sector.append(vertex)
+
+                        component_index += 1
+
+                    comp_parts.append(sector)
+
+                tmp_parts = [tuple(comp_part) for comp_part in comp_parts]
+                partitions.append(tuple(tmp_parts))
+
+            else: # k > len(components)
+
+                all_comps = []
+                for component in components:
+                    for vertex in component:
+                        all_comps.append(vertex)
+                
+                G_comp = G_sub.subgraph(all_comps).copy()
+                comp_parts = self.split_component_into_k(G_comp, all_comps, k)
+
+                tmp_parts = [tuple(part) for part in comp_parts]
+                partitions.append(tuple(tmp_parts))
+        
+        return partitions
+
+
+    def _partition_connected_convex(self, navpoints, number_partitions):
+        # Partition navpoints in approximately equally sized connected subgraphs
+        # Induced subgraph on the given navpoints
+        G_sub = self.networkx_graph.subgraph(navpoints).copy()
+
+        # Connected components of induced subgraph
+        components = [set(c) for c in nx.connected_components(G_sub)]
+
+        partition_sizes = [i+2 for i in range(number_partitions)]
+
+        navpoints_dict = {}
+        for navpoint in navpoints:
+            navpoints_dict[navpoint] = True
+
+        partitions = []
+        for k in partition_sizes:
+
+            sectors = []
+
+            n = max(int(math.ceil(len(navpoints) / k)),1)
+
+            unmarked = navpoints_dict.copy()
+
+            while len(list(unmarked.keys())) > 0:
+                for key in unmarked.keys():
+                    seed = key
+                    break
+
+                queue = [seed]
+                sector = {}
+
+                #iter = 0
+                while len(sector) < n and len(queue) > 0:
+
+                    v = queue.pop(0)
+                    sector[v] = True
+
+                    S, convexity_possible = self._convexity(G_sub, sector, v, unmarked)
+
+                    if convexity_possible is True:
+                        
+                        neighbors = []
+                        for v_prim in S:
+                            sector[v_prim] = True
+                            unmarked.pop(v_prim)
+                            neighbors += G_sub.neighbors(v_prim)
+
+                            if v_prim in queue:
+                                queue.remove(v_prim)
+
+                        unmarked.pop(v)
+                        neighbors += G_sub.neighbors(v)
+
+                        for neighbor in neighbors:
+                            if neighbor not in queue and neighbor not in sector and neighbor in unmarked:
+                                queue.append(neighbor)
+
+                    else:
+                        del sector[v]
+                
+                sectors.append(tuple(list(sector.keys())))
+
+            partitions.append(tuple(sectors))
+            
+        return partitions
+
+    def _convexity(self, G, sector, v, unmarked):
+        S = []
+        for v_prim in sector:
+            if v == v_prim:
+                continue
+
+            paths = nx.all_shortest_paths(G,source= v, target=v_prim, weight="weight")
+            for path in paths:
+                for v_prim_prim in path:
+                    if v_prim_prim not in unmarked and v_prim_prim not in sector:
+                        return [], False
+
+                    if v_prim_prim not in sector:
+                        S.append(v_prim_prim)
+
+        S = list(set(S))
+
+        return S, True
+
+    
+    def first_l_nontrivial_partitions(self, items, l):
+        l = int(l)
+        xs = list(items)
+        n = len(xs)
+
+        # yields partitions of sizes 2..n-1, skipping {all} and {singletons}
+        it = (tuple(map(tuple, p)) for p in set_partitions(xs) if 1 < len(p) <= n)
+        return list(islice(it, l))
+    
+    def get_flight_navpoint_trajectory(self, flights_affected, networkx_graph, flight_index, start_time, airplane_speed_kts, path, timestep_granularity):
+
+        traj = []
+        current_time = start_time
+        for hop, vertex in enumerate(path):
+            if hop == 0:
+                # Origin
+                t_slot = current_time
+
+                if t_slot >= flights_affected.shape[1]:
+                    raise Exception("In optimize_flights max time exceeded current allowed time.")
+
+            else:
+                # En-route/destination
+                prev_vertex = path[hop -1]
+                #print(f"prev_vertex:{prev_vertex},vertex:{vertex}")
+                distance = networkx_graph[prev_vertex][vertex]["weight"]
+
+                # CONVERT SPEED TO m/s
+                airplane_speed_ms = airplane_speed_kts * 0.51444
+
+                # Compute duration from prev to vertex in unit time:
+                duration_in_seconds = distance/airplane_speed_ms
+                factor_to_unit_standard = 3600.00 / float(timestep_granularity)
+                duration_in_unit_standards = math.ceil(duration_in_seconds / factor_to_unit_standard)
+
+                if duration_in_unit_standards == 0:
+                    duration_in_unit_standards = 1
+
+                current_time = current_time + duration_in_unit_standards
+
+                t_slot=current_time
+
+                if t_slot >= flights_affected.shape[1]:
+                    raise Exception("In optimize_flights max time exceeded current allowed time.")
+
+            traj.append((flight_index, vertex, t_slot))
+
+        return traj
+    
+    def k_diverse_near_shortest_paths(
+        self,
+        G, s, t, nearest_neighbors_lookup, k=5, eps=0.10, jaccard_max=0.6,
+        penalty_scale=0.5, max_tries=200, weight_key="weight",
+        filed_path = []
+    ):
+        
+        s_t_length, _ = nx.bidirectional_dijkstra(G, s, t, weight=weight_key)
+
+        allowed = (1.0 + eps) * s_t_length
+
+        # 1) shortest length & prune to a small corridor: ds[u]+dt[u] ≤ (1+eps)*L0
+        #
+        if s not in nearest_neighbors_lookup:
+            ds = nx.single_source_dijkstra_path_length(G, s, weight=weight_key)
+            nearest_neighbors_lookup[s] = ds
+        else:
+            ds = nearest_neighbors_lookup[s]
+
+        if t not in nearest_neighbors_lookup:
+            dt = nx.single_source_dijkstra_path_length(G, t, weight=weight_key)
+            nearest_neighbors_lookup[t] = dt
+        else:
+            dt = nearest_neighbors_lookup[t]
+
+        keep = {u for u in G if u in ds and u in dt and ds[u] + dt[u] <= allowed}
+
+        H = G.subgraph(keep).copy()
+
+        # Edge-penalties (undirected key)
+        def ekey(u, v):
+            return (u, v) if u <= v else (v, u)
+        penalties = {}
+
+        # Penalized weight function
+        def w(u, v, d):
+            base = d.get(weight_key, 1.0)
+            pen = penalties.get(ekey(u, v), 0.0)
+            return base + pen
+
+        paths, edge_sets, tries = [], [], 0
+
+        if len(filed_path) > 0:
+            E = {ekey(u, v) for u, v in zip(filed_path, filed_path[1:])}
+            paths.append(filed_path)
+            edge_sets.append(E)
+
+        while len(paths) < k and tries < max_tries:
+            tries += 1
+            try:
+                p = nx.shortest_path(H, s, t, weight=w)
+            except nx.NetworkXNoPath:
+                break
+            
+            # Evaluate real (unpenalized) length
+            L = nx.path_weight(G, p, weight=weight_key)
+            if L > allowed:
+                break  # can’t find more within slack
+
+            # Edge-set and diversity check (Jaccard on edges)
+            E = {ekey(u, v) for u, v in zip(p, p[1:])}
+            similar = any(len(E & Es) / len(E | Es) > jaccard_max for Es in edge_sets)
+
+            # Always penalize current path to push the next one away
+            avg_edge = L / max(1, len(E))
+            for e in E:
+                penalties[e] = penalties.get(e, 0.0) + penalty_scale * avg_edge
+
+            if similar:
+                continue  # reject, keep searching
+
+            paths.append(p)
+            edge_sets.append(E)
+
+        return paths
+
+
+    def handle_sectors_instance_generation(self, capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, delay, from_origin_time, vertex_ids, flight_index, time_window):
 
         timed_capacities = []
 
-        for additional_time in range(-self.timestep_granularity,self.timestep_granularity * (additional_time_increase + max_delay_parameter + delay)):
+        for additional_time in range(-time_window,time_window * (additional_time_increase + max_delay_parameter + delay)):
             current_time = start_time + additional_time + from_origin_time
             if current_time >= self.timestep_granularity * (self.original_max_time + additional_time_increase):
                 break
@@ -169,11 +1463,11 @@ class OptimizeFlights:
             timed_capacities += sector_times
         return timed_capacities
 
-    def handle_origin_sector_instance_generation(self, capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, origin, delay):
+    def handle_origin_sector_instance_generation(self, capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, origin, delay, time_window):
 
         timed_capacities = []
 
-        for additional_time in range(-self.timestep_granularity,self.timestep_granularity * (additional_time_increase + max_delay_parameter + delay)):
+        for additional_time in range(-time_window,time_window * (additional_time_increase + max_delay_parameter) + delay):
             current_time = start_time + additional_time
             if current_time >= self.timestep_granularity * (self.original_max_time + additional_time_increase):
                 break
@@ -191,19 +1485,26 @@ class OptimizeFlights:
 
         return timed_capacities
 
-    def handle_delay(self, flight_sector_instances, flight_times_instance, flight_index, flight_affected, origin):
-        delay = 0
+    def create_filed_flight_plan_atoms(self, flight_sector_instance, flight_times_instance, sector_instance, graph_instance, flight_index, flight_affected, capacity_demand_diff_matrix, start_time, default_filed_path_number = 0):
 
-        for tmp_index in range(1,flight_affected.shape[0]):
-            flight_sector_instances.append(f"sectorFlight({flight_index},{delay},{origin}).")
-            flight_times_instance.append(f"flightTime({flight_index},{delay}).")
+        for tmp_index in range(0,flight_affected.shape[0]):
 
-            if flight_affected[tmp_index] != origin:
-                break
-            
-            delay += 1
+            current_sector = flight_affected[tmp_index]
 
-        return delay, flight_sector_instances, flight_times_instance
+            flight_sector_instance.append(f"sectorFlight({flight_index},{tmp_index},{current_sector},{default_filed_path_number}).")
+            flight_times_instance.append(f"flightTime({flight_index},{tmp_index}).")
+
+            current_time = tmp_index + start_time
+
+            sector_instance.append(f"sector({current_sector},{current_time},{capacity_demand_diff_matrix[current_sector,current_time]}).")
+
+            if tmp_index > 0:
+                graph_instance.append(f"sectorEdge({flight_affected[tmp_index - 1]},{current_sector}).")
+            else:
+                graph_instance.append(f"sectorEdge({current_sector},{current_sector}).")
+
+
+        return flight_sector_instance, flight_times_instance, sector_instance, graph_instance
     
     def restrict_max_vertices(self, prev_vertices, vertex_ids, matching_vertices, flight_affected, from_origin_time, delay):
 
@@ -454,77 +1755,543 @@ class OptimizeFlights:
         #np.savetxt("test.csv", converted_instance_matrix,delimiter=",",fmt="%i")
         #np.savetxt("test_loads.csv", capacity_demand_diff_matrix,delimiter=",",fmt="%i")
 
+    def time_matrix_to_triplets(self, M, *, row_flights=None,
+                                fill_value=-1, t0=0, sort=True):
+        """
+        M:               (|F| x |T|) matrix with navpoint IDs or fill_value
+        interesting_flights: list/array of flight IDs to extract
+        row_flights:     length-|F| array mapping row index -> flight_id.
+                        If None, assumes row i corresponds to flight_id i.
+        fill_value:      value used for 'no navpoint' in M
+        t0:              time offset (add to column index to reconstruct original time)
+        sort:            sort output by (flight_id, time)
+
+        Returns: (N x 3) int array of [flight_id, navpoint_id, time]
+        """
+        M = np.asarray(M)
+        if row_flights is None:
+            row_flights = np.arange(M.shape[0], dtype=int)
+        row_flights = np.asarray(row_flights)
+
+        """
+        interesting_flights = np.asarray(interesting_flights)
+        row_mask = np.isin(row_flights, interesting_flights)
+        rows_idx = np.nonzero(row_mask)[0]
+        if rows_idx.size == 0:
+            return np.empty((0, 3), dtype=int)
+        """
+
+        sub = M
+        r_local, t = np.where(sub != fill_value)
+        nvals = sub[r_local, t]
+        fids = row_flights[:][r_local]
+        times = t + t0
+
+        triplets = np.column_stack((fids, nvals, times)).astype(int)
+        if sort and triplets.size:
+            order = np.lexsort((triplets[:, 2], triplets[:, 0]))  # sort by (flight, time)
+            triplets = triplets[order]
+        return triplets
+
+
     @classmethod
-    def bucket_histogram(cls, instance_matrix: np.ndarray,
+    def bucket_histogram_reference(cls, instance_matrix: np.ndarray,
+                        sectors: np.ndarray,
                         num_buckets: int,
                         n_times: int,
                         timestep_granularity: int,
                         *,
                         fill_value: int = -1) -> np.ndarray:
-        """
-        Count how many elements occupy each *bucket* at each *time step*.
 
-        Parameters
-        ----------
-        instance_matrix
-            2-D array produced by `instance_to_matrix`  
-            shape = (num_elements, num_time_steps)
-        num_buckets
-            Equals `self.capacity.shape[0]`
-        fill_value
-            The placeholder used for “no assignment” (default −1)
-
-        Returns
-        -------
-        counts : np.ndarray
-            shape = (num_buckets, num_time_steps)  
-            `counts[bucket, t]` is the occupancy of *bucket* at time *t*.
-        """
-        #n_elems, n_times = instance_matrix.shape
-
-        # ------------------------------------------------------------------
-        # 1.  Mask out empty cells (if any)
-        # ------------------------------------------------------------------
-
-        # Generate mask of values that differ from fill_value = -1
         valid_mask = instance_matrix != fill_value
+
+        bucket_histogram = np.zeros((num_buckets, n_times), dtype=int)
         if not np.any(valid_mask):                       
             # Shortcut if all cells empty
-            return np.zeros((num_buckets, n_times), dtype=int)
+            return bucket_histogram
+        
+        for flight_id in range(instance_matrix.shape[0]):
 
-        # ------------------------------------------------------------------
-        # 2.  Gather bucket IDs and their time indices
-        # ------------------------------------------------------------------
-        buckets = instance_matrix[valid_mask]                        # (K,) bucket id
-        # 
 
-        # np.nonzero --> Get indices of non-zero elements of valid_mask (non false)
-        # --> with np.nonzero(valid_mask)[1] we take the time indices
+            for time in range(instance_matrix.shape[1]):
 
-        times   = np.nonzero(valid_mask)[1]              # (K,) time index
+                if instance_matrix[flight_id, time] != fill_value:
 
-        # ------------------------------------------------------------------
-        # 3.  Vectorised scatter using `np.add.at`
-        # ------------------------------------------------------------------
-        counts = np.zeros((num_buckets, n_times), dtype=int)
+                    sector = instance_matrix[flight_id, time]
 
-        # Performs unbuffered in place operation on operand ‘a’ for elements specified by ‘indices’.
-        # ufunc.at(a, indices, b=None, /)
-        # --> Buckets and times specify the indices
-        np.add.at(counts, (buckets, times), 1)
+                    if time == 0:
+                        bucket_histogram[sector, time] += 1
+                    else:
 
-        # Performs a sliding window aggregation according to timestep-granularity
-        # To account for hour/minute/etc. computation
-        axis = 1
+                        prev_sector = instance_matrix[flight_id, time-1]
 
-        pad_width = [(0, 0)] * counts.ndim
-        pad_width[axis] = (0, timestep_granularity - 1)
-        padded = np.pad(counts, pad_width, mode="constant")
+                        if prev_sector != sector:
+                            bucket_histogram[sector, time] += 1
 
-        windows = np.lib.stride_tricks.sliding_window_view(padded,
-                                                    window_shape=timestep_granularity,
-                                                    axis=axis)
-        windows = windows.sum(axis=2)
+        # ONLY FOR DEBUGGING:
+        #np.savetxt("20250819_bucket_histogram_hist.csv", bucket_histogram, delimiter=",",fmt="%i")
 
-        return windows
+        return bucket_histogram
+    
+    @classmethod
+    def bucket_histogram(cls, instance_matrix: np.ndarray,
+                         sectors: np.ndarray,                # unused, kept for signature compat
+                         num_buckets: int,
+                         n_times: int,
+                         timestep_granularity: int,          # unused, kept for signature compat
+                         *,
+                         fill_value: int = -1) -> np.ndarray:
 
+        inst = np.asarray(instance_matrix)
+        if inst.ndim != 2:
+            raise ValueError("instance_matrix must be 2D (flights x time)")
+        F, T = inst.shape
+        if T != n_times:
+            raise ValueError(f"n_times ({n_times}) != instance_matrix.shape[1] ({T})")
+
+        # Early exit if everything is fill_value
+        valid = inst != fill_value
+        if not valid.any():
+            return np.zeros((num_buckets, T), dtype=np.int32)
+
+        # Mark entries (new sector occurrences) at each time:
+        # - t = 0: any valid value
+        # - t > 0: valid and changed vs previous time
+        """
+        # Code for entry/diff demand measure:
+        change = np.zeros_like(valid, dtype=bool)
+        change[:, 0] = valid[:, 0]
+        if T > 1:
+            change[:, 1:] = valid[:, 1:] & (inst[:, 1:] != inst[:, :-1])
+        """
+        change = valid
+
+        # Gather (sector_id, time_idx) pairs where an entry happens
+        sectors_at_entries = inst[change]
+        time_idx = np.nonzero(change)[1]  # column indices where change==True
+
+        # Optional safety: ensure sector ids are in [0, num_buckets)
+        if sectors_at_entries.size:
+            mn = int(sectors_at_entries.min())
+            mx = int(sectors_at_entries.max())
+            if mn < 0 or mx >= num_buckets:
+                raise ValueError(
+                    f"sector id(s) out of range [0, {num_buckets}): found min={mn}, max={mx}"
+                )
+
+        # Scatter-add 1 for each (sector, time) event
+        hist = np.zeros((num_buckets, T), dtype=np.int32)
+        np.add.at(hist, (sectors_at_entries, time_idx), 1)
+
+        #np.savetxt("20251003_histogram.csv", hist, delimiter=",",fmt="%i")
+
+        return hist
+    
+
+    # ---------------------------------------------------------
+    # Vectorized, composite-aware capacity time matrix
+    # ---------------------------------------------------------
+    # ---------------------------------------------------------
+    # Fast remainder distribution lookup (matches reference)
+    # ---------------------------------------------------------
+
+    @classmethod
+    def _remainder_distribution_table(slc, T: int) -> np.ndarray:
+        """
+        Build a (T+1, T) table where row r gives, for remainder r,
+        the number of extra +1 drops that land at each index k∈[0..T-1]
+        when stepping by ceil(T/r) and wrapping mod T, for r steps.
+
+        Row 0 is all zeros (no remainder to distribute).
+        """
+        table = np.zeros((T + 1, T), dtype=np.int64)
+        for r in range(1, T):  # r = remainder, strictly < T
+            step = (T + r - 1) // r  # ceil(T / r)
+            hits = (np.arange(r, dtype=np.int64) * step) % T
+            # count duplicates (they matter!)
+            cnt = np.bincount(hits, minlength=T)
+            table[r, :cnt.size] = cnt
+        return table
+
+    @classmethod 
+    def _triangular_weight_sum_counts(cls, counts: np.ndarray, denom: float) -> np.ndarray:
+        """
+        Vectorized: for each integer count k, compute
+        sum_{i=0}^{m-1} (1 - i/denom),
+        where m = min(k, number of positive weights), see compute_sector_capacity.
+        Returns an array of same shape as counts (float64).
+        """
+        counts = counts.astype(np.int64, copy=False)
+        d = float(denom)
+        if d <= 0:
+            return counts.astype(np.float64)  # no diminishing
+
+        d_floor = np.floor(d)
+        # m_pos = floor(d) if d integer else floor(d)+1
+        m_pos = np.where(np.isclose(d, d_floor), d_floor, d_floor + 1.0)
+        m = np.minimum(counts.astype(np.float64), np.maximum(0.0, m_pos))
+
+        # tri = m - (m-1)m/(2*d)
+        tri = m - (m - 1.0) * m / (2.0 * d)
+        return tri
+
+    @classmethod
+    def capacity_time_matrix(cls,
+                            cap: np.ndarray,
+                            n_times: int,
+                            time_granularity: int,
+                            navaid_sector_time_assignment: np.ndarray,
+                            z=1,
+                            composite_sector_function = MAX
+                            ) -> np.ndarray:
+        """
+        Same I/O and validations as before. Now we:
+        1) scatter-add to get per-(sector,time) SUM and COUNT,
+        2) call cls.compute_sector_capacity(avg, count, z)  <-- explicit rule, vectorized,
+        3) distribute remainder over T slots.
+        """
+        N = cap.shape[0]
+        T = int(time_granularity)
+
+        if n_times % T != 0:
+            raise ValueError("n_times must be a multiple of time_granularity (T).")
+
+        if navaid_sector_time_assignment.shape != (N, n_times):
+            raise ValueError(
+                "navaid_sector_time_assignment must be shape (N, n_times) = (" + str(N) + "," + str(n_times) + ")"
+            )
+
+        S = navaid_sector_time_assignment.astype(np.int64, copy=False)
+        if S.min() < 0 or S.max() >= N:
+            print(S)
+            raise ValueError("Sector ids in navaid_sector_time_assignment must be in [0, N-1].")
+
+        # ---- 1) Sum atomic per-block caps and contributor counts per (sector,time)
+        atomic_block_cap = np.asarray(cap[:, 1], dtype=np.int64)  # length N
+
+        total_atomic_sum = np.zeros((N, n_times), dtype=np.int64)
+        contrib_count    = np.zeros((N, n_times), dtype=np.int64)
+
+        S_flat      = S.ravel(order="C")
+        t_idx_flat  = np.tile(np.arange(n_times, dtype=np.int64), N)
+        cap_rep_flat= np.repeat(atomic_block_cap, n_times)
+
+        np.add.at(total_atomic_sum, (S_flat, t_idx_flat), cap_rep_flat)
+        np.add.at(contrib_count,    (S_flat, t_idx_flat), 1)
+
+
+        max_atomic = None
+        avg = None
+
+        if composite_sector_function == MAX:
+            # Also compute per-(sector,time) MAX for the "max" rule
+            max_atomic = np.full((N, n_times), np.iinfo(np.int64).min, dtype=np.int64)
+            np.maximum.at(max_atomic, (S_flat, t_idx_flat), cap_rep_flat)
+            max_atomic = np.where(contrib_count > 0, max_atomic, 0)
+
+        if composite_sector_function == TRIANGULAR:
+            # Average with safe denom (still useful for triangular & linear rules)
+            avg = total_atomic_sum.astype(np.float64) / np.maximum(1, contrib_count)
+
+        # ---- 2) Explicit, *vectorized* capacity rule
+        # Returns per-block integer capacities
+        total_capacity = cls.compute_sector_capacity(contrib_count, float(z), avg_ = avg,
+                                                            max_ = max_atomic, sum_=total_atomic_sum, function = composite_sector_function)
+
+        # ---- 3) Distribute per-block capacity across T slots (unchanged)
+        base = total_capacity // T
+        rem  = total_capacity - base * T
+
+        rem_table = cls._remainder_distribution_table(T)   # (T+1, T)
+        k_mod     = np.arange(n_times, dtype=np.int64) % T
+
+        extra      = rem_table[rem, k_mod[None, :]]
+        sector_cap = (base + extra).astype(np.int64, copy=False)
+
+        return sector_cap
+    
+
+    @classmethod
+    def compute_sector_capacity(cls,
+                                counts: np.ndarray,
+                                z: float,
+                                avg_ = None,
+                                max_ = None,
+                                sum_ = None,
+                                function = "triangular"
+                                ) -> np.ndarray:
+        """
+        Vectorized capacity rule (edit here to change behavior).
+        Inputs:
+            avg    : (N, n_times) float64, mean atomic per-block capacity for each (sector,time)
+            counts : (N, n_times) int64, number of contributors k per (sector,time)
+            z      : float, rule parameter
+        Returns:
+            int64 (N, n_times) per-block capacities BEFORE remainder distribution.
+        Current rule (matches your earlier piecewise):
+            if k > z:   cap = round(((z+1)/2) * avg)
+            else:       cap = round(avg * triangular_weight_sum(k, z))
+        """
+        
+        empty_mask = (counts == 0)
+
+        if function == LINEAR:
+            if sum_ is None:
+                raise ValueError("compute_sector_capacity(rule='linear') requires sum_.")
+            out = sum_.astype(np.int64, copy=False)
+            out = np.where(empty_mask, 0, out)
+            return out
+        
+        if function == MAX:
+
+            if max_ is None:
+                raise ValueError("compute_sector_capacity(rule='max') requires max_.")
+            out = max_.astype(np.int64, copy=False)
+            out = np.where(empty_mask, 0, out)
+            return out
+        
+        if function == TRIANGULAR:
+
+            counts = counts.astype(np.int64, copy=False)
+            avg    = avg_.astype(np.float64, copy=False)
+
+            tri    = cls._triangular_weight_sum_counts(counts, z)
+
+            out = np.where(
+                counts > z,
+                ((z + 1.0) / 2.0) * avg,
+                avg * tri
+            )
+
+            # Ensure empty groups yield 0 exactly
+            out = np.where(counts == 0, 0.0, out)
+
+            return np.rint(out).astype(np.int64)
+        
+    @classmethod 
+    def instance_to_matrix_vectorized(cls,
+                                    flights: np.ndarray,
+                                    airplane_flight: np.ndarray,
+                                    max_time: int,
+                                    time_granularity: int,
+                                    navaid_sector_time_assignment: np.ndarray,
+                                    *,
+                                    fill_value: int = -1,
+                                    compress: bool = False):
+        """
+        Vectorized/semi-vectorized rewrite.
+        Dynamic sector assignment via navaid_sector_time_assignment (shape N x T):
+        sector_at_event = navaid_sector_time_assignment[navaid_id, time]
+        Assumes IDs are non-negative ints (reasonably dense).
+        """
+
+        # --- ensure integer views without copies where possible
+        flights = flights.astype(np.int64, copy=False)
+        airplane_flight = airplane_flight.astype(np.int64, copy=False)
+
+        # --- build flight -> airplane mapping (array is fastest if IDs are dense)
+        fid_map_max = int(max(flights[:, 0].max(), airplane_flight[:, 1].max()))
+        flight_to_airplane = np.full(fid_map_max + 1, -1, dtype=np.int64)
+        flight_to_airplane[airplane_flight[:, 1]] = airplane_flight[:, 0]
+
+        # --- sort by flight, then time (stable contiguous blocks per flight)
+        order = np.lexsort((flights[:, 2], flights[:, 0]))
+        f_sorted = flights[order]
+
+        fid = f_sorted[:, 0]
+        nav = f_sorted[:, 1]
+        t   = f_sorted[:, 2]
+
+        # --- dynamic navaid -> sector from (N x T) matrix using pairwise advanced indexing
+        N, T = navaid_sector_time_assignment.shape
+        if nav.size:
+            nav_min, nav_max = int(nav.min()), int(nav.max())
+            t_min, t_max     = int(t.min()),   int(t.max())
+            if nav_min < 0 or nav_max >= N:
+                raise ValueError(
+                    f"Navpoint id out of bounds: got range [{nav_min}, {nav_max}], matrix has N={N}."
+                )
+            if t_min < 0 or t_max >= T:
+                raise ValueError(
+                    f"Time index out of bounds: got range [{t_min}, {t_max}], matrix has T={T}."
+                )
+
+        sec = navaid_sector_time_assignment[nav, t]  # 1D array aligned with f_sorted
+
+        # --- output matrix shape (airplane_id rows, time columns)
+        n_rows = int(airplane_flight[:, 1].max()) + 1
+        out = np.full((n_rows, int(max_time)), fill_value, dtype=sec.dtype if sec.size else np.int64)
+
+        # --- group boundaries per flight (contiguous in sorted array)
+        if fid.size == 0:
+            return out, {}
+
+        u, idx_first, counts = np.unique(fid, return_index=True, return_counts=True)
+
+        # planned arrival times = last time per group (vectorized)
+        last_idx = idx_first + counts - 1
+        planned_arrival_times = dict(zip(u.tolist(), t[last_idx].tolist()))
+
+        # --- fill per-flight via slices (no per-timestep inner loops)
+        for g, start in enumerate(idx_first):
+            end = start + counts[g]
+
+            flight_index = g
+
+            if flight_index < 0:
+                # flight has no airplane mapping; skip defensively
+                continue
+
+            times = t[start:end]
+            secs  = sec[start:end]
+
+            if flight_index == 235:
+                print("FLIGHT 235:")
+                print(times)
+                print(secs)
+                print("")
+
+            if flight_index == 331:
+                print("FLIGHT 331:")
+                print(times)
+                print(secs)
+                print("")
+
+            if times.size == 0:
+                continue
+
+            # set the exact event time
+            out[flight_index, times[0]] = secs[0]
+
+            if times.size >= 2:
+                prev_times = times[:-1]
+                next_times = times[1:]
+                prev_secs  = secs[:-1]
+                next_secs  = secs[1:]
+
+                L = next_times - prev_times
+                mids = prev_times + (L // 2)
+
+                # slice-assign per segment
+                for i in range(prev_times.size):
+                    s0 = prev_times[i] + 1       # start (exclusive)
+                    m1 = mids[i] + 1             # first-half end (inclusive) -> slice stop
+                    e1 = next_times[i] + 1       # segment end (inclusive) -> slice stop
+
+                    # first half [prev_time+1, mid]
+                    if m1 > s0:
+                        out[flight_index, s0:m1] = prev_secs[i]
+                    # second half [mid+1, next_time]
+                    if e1 > m1:
+                        out[flight_index, m1:e1] = next_secs[i]
+
+        # Optional: compress width to actually-used time if requested
+        if compress and out.shape[1] > 0:
+            used_cols = np.any(out != fill_value, axis=0)
+            if used_cols.any():
+                last_used = np.flatnonzero(used_cols)[-1] + 1
+                out = outconverted_navpoint_matrix
+        return out, planned_arrival_times
+
+    @classmethod
+    def instance_to_matrix(cls,
+                            flights: np.ndarray,
+                            airplane_flight: np.ndarray,
+                            max_time: int,
+                            time_granularity: int,
+                            navaid_sector_time_assignment: np.ndarray,
+                            *,
+                            fill_value: int = -1,
+                            compress: bool = False):
+
+        vals = flights[:, 1]
+        cols = flights[:, 2].astype(int)
+
+
+        # --- output matrix shape (airplane_id rows, time columns)
+        n_rows = int(airplane_flight[:, 1].max()) + 1
+        out = np.full((n_rows, int(max_time)), fill_value, dtype=np.int64)
+       
+        flight_ids = flights[:,0]
+        flight_ids = np.unique(flight_ids)
+
+        planned_arrival_times = {}
+
+        for flight_id in flight_ids:
+
+            #airplane_id = (airplane_flight[airplane_flight[:,1] == flight_id])[0,0]
+
+            current_flight = flights[flights[:,0] == flight_id]
+
+            for flight_hop_index in range(current_flight.shape[0]):
+
+                navaid = current_flight[flight_hop_index,1]
+                time = current_flight[flight_hop_index,2]
+                #sector = (navaid_sector[navaid_sector[:,0] == navaid])[0,1]
+
+                if flight_hop_index == 0:
+                    sector = navaid_sector_time_assignment[navaid,time]
+                    out[flight_id,time] = sector
+                else:
+
+                    prev_navaid = current_flight[flight_hop_index - 1,1]
+                    prev_time = current_flight[flight_hop_index - 1,2]
+
+                    for time_index in range(1, time-prev_time + 1):
+
+                        if time_index <= math.floor((time - prev_time)/2):
+                            prev_sector = navaid_sector_time_assignment[prev_navaid,prev_time + time_index]
+                            out[flight_id,prev_time + time_index] = prev_sector
+
+                        else:
+                            sector = navaid_sector_time_assignment[navaid,prev_time + time_index]
+                            out[flight_id,prev_time + time_index] = sector
+
+                if flight_id not in planned_arrival_times:
+                    planned_arrival_times[flight_id] = time
+                elif planned_arrival_times[flight_id] < time:
+                    planned_arrival_times[flight_id] = time
+
+        #np.savetxt("20250826_converted_instance.csv", out, delimiter=",",fmt="%i")
+
+        return out, planned_arrival_times
+ 
+
+    @classmethod
+    def instance_computation_after_sector_change(cls,
+                            affected_flights_indices,
+                            converted_navpoint_matrix,
+                            converted_instance_matrix,
+                            navaid_sector_time_assignment: np.ndarray):
+        
+
+        converted_instance_matrix[affected_flights_indices,:] = -1
+
+        for flight_id in affected_flights_indices: 
+
+            time_indices = list(np.nonzero(converted_navpoint_matrix[flight_id,:] != -1)[0])
+
+            for flight_hop_index in range(len(time_indices)):
+
+                time = time_indices[flight_hop_index]                
+                navaid = converted_navpoint_matrix[flight_id, time]
+
+                if flight_hop_index == 0:
+                    sector = navaid_sector_time_assignment[navaid,time]
+                    converted_instance_matrix[flight_id,time] = sector
+                else:
+
+                    prev_time = time_indices[flight_hop_index - 1]                
+                    prev_navaid = converted_navpoint_matrix[flight_id, prev_time]
+
+                    for time_index in range(1, time-prev_time + 1):
+
+                        if time_index <= math.floor((time - prev_time)/2):
+                            prev_sector = navaid_sector_time_assignment[prev_navaid,prev_time + time_index]
+                            converted_instance_matrix[flight_id,prev_time + time_index] = prev_sector
+
+                        else:
+                            sector = navaid_sector_time_assignment[navaid,prev_time + time_index]
+                            converted_instance_matrix[flight_id,prev_time + time_index] = sector
+        
+        return converted_instance_matrix

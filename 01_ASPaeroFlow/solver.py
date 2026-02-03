@@ -12,9 +12,11 @@ import clingo
 from typing import Final
 
 ARRIVAL_DELAY: Final[str] = "arrivalDelay"
-FLIGHT: Final[str] = "flight"
+SECTOR_FLIGHT: Final[str] = "sector_flight"
+NAVPOINT_FLIGHT: Final[str] = "navpoint_flight"
 REROUTED: Final[str] = "reroute"
-SIGNATURES: Final[set[str]] = {ARRIVAL_DELAY, FLIGHT, REROUTED}
+SECTOR_CONFIG: Final[str] = "chosen_config"
+SIGNATURES: Final[set[str]] = {ARRIVAL_DELAY, SECTOR_FLIGHT, NAVPOINT_FLIGHT, REROUTED, SECTOR_CONFIG}
 
 class Solver:
     def __init__(self, encoding, instance):
@@ -65,15 +67,22 @@ class Solver:
         return self.final_model
 
     def on_model(self, model):
-        print("FOUND MODEL")
 
         parsed = [symbol for symbol in model.symbols(atoms=True) if symbol.name in SIGNATURES]
 
         arrival_delays = [symbol for symbol in parsed if symbol.name == ARRIVAL_DELAY]
-        flights = [symbol for symbol in parsed if symbol.name in FLIGHT]
-        reroutes = [symbol for symbol in parsed if symbol.name in REROUTED]
 
-        self.final_model = Model(flights, reroutes, arrival_delays)
+        sector_flights = [symbol for symbol in parsed if symbol.name in SECTOR_FLIGHT]
+        navpoint_flights = [symbol for symbol in parsed if symbol.name in NAVPOINT_FLIGHT]
+
+        reroutes = [symbol for symbol in parsed if symbol.name in REROUTED]
+        sector_configs = [symbol for symbol in parsed if symbol.name in SECTOR_CONFIG]
+
+        if len(sector_configs) > 1:
+            raise Exception("Found multiple sector-config atoms in ASP output - must never happen!")
+        
+        sector_config = sector_configs[0]
+        self.final_model = Model(sector_flights, navpoint_flights, reroutes, arrival_delays, sector_config)
 
 
 class PickleAbleSymbol:
@@ -89,14 +98,22 @@ class PickleAbleSymbol:
 
 class Model:
 
-    def __init__(self, flights, reroutes, atfm_delays):
-        self.flights = [PickleAbleSymbol(flight) for flight in flights]
+    def __init__(self, sector_flights, navpoint_flights, reroutes, atfm_delays, sector_config):
+
+        self.sector_flights = [PickleAbleSymbol(sector_flight) for sector_flight in sector_flights]
+        self.navpoint_flights = [PickleAbleSymbol(navpoint_flight) for navpoint_flight in navpoint_flights]
+
         self.reroutes = [PickleAbleSymbol(reroute) for reroute in reroutes]
         self.atfm_delays = [PickleAbleSymbol(atfm_delay) for atfm_delay in atfm_delays]
+        self.sector_config = PickleAbleSymbol(sector_config)
+
         self.computation_time = -1
 
-    def get_flights(self):
-        return self.flights
+    def get_sector_flights(self):
+        return self.sector_flights
+    
+    def get_navpoint_flights(self):
+        return self.navpoint_flights
 
     def get_total_atfm_delay(self):
 
@@ -112,4 +129,10 @@ class Model:
     
     def set_computation_time(self, runtime):
         self.computation_time = round(runtime,2)
+
+    def get_reroutes(self):
+        return self.reroutes
+    
+    def get_sector_config(self):
+        return self.sector_config
 

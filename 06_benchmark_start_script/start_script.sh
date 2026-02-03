@@ -1,10 +1,18 @@
 #!/bin/bash
-INSTANCE=019_019_TG1_SEED11904657
-FOLDER=20250737
-PROBLEM=${FOLDER}/instances_${INSTANCE}
+TIME_GRANULARITY=60
+SEED=11904657
+FOLDER=20251021
+CPU_RANGE_START=22
+CPU_RANGE_END=23
+GRID_WIDTH=019
+GRID_HEIGHT=019
+#
+
+INSTANCE=0000003_MINI
+PROBLEM=MINI
 
 mkdir -p output/${FOLDER}
 mkdir -p logs/${FOLDER}
 
-nohup taskset --cpu-list 28-29 ./start_benchmark_caller.py ../05_instances/${PROBLEM} --output-dir=output/${FOLDER}/output_${INSTANCE}/ &> logs/${PROBLEM}.log &
+./start_benchmark_caller.py ../05_instances/${PROBLEM} --output-root=output --output-dir=${FOLDER}/output_${INSTANCE}/ --timestep-granularity=${TIME_GRANULARITY} 
 

@@ -4,19 +4,43 @@ from gurobipy import GRB
 
 import pandas as pd
 import numpy as np
+import networkx as nx
+import math
+import time
+import json
+
+LINEAR = "linear"
+TRIANGULAR = "triangular"
+MAX = "max"
+
+from pathlib import Path
+def _save_csv(path: Path, arr):
+    a = np.asarray(arr)
+    fmt = "%d" if a.dtype.kind in ("i","u","b") else "%g"
+    np.savetxt(path, a, fmt=fmt, delimiter=",")
+
 
 
 class MIPModel:
 
-    def __init__(self, airport_vertices, max_time, max_explored_vertices, seed, timestep_granularity, max_threads, capacity, verbosity):
-
+    def __init__(self, sectors, airport_vertices, max_time, max_explored_vertices, seed, timestep_granularity, verbosity, number_threads, navaid_sector_lookup, composite_sector_function, sector_capacity_factor, original_converted_instance_matrix, navaid_sector_time_assignment, old_navaid_sector_time_assignment, start_time):
+        
+        self.sectors = sectors
         self.airport_vertices = airport_vertices
         self._max_time = max_time
         self._max_explored_vertices = max_explored_vertices
         self._seed = seed
         self._timestep_granularity = timestep_granularity
-        self._max_number_threads = max_threads
-        self.capacity = capacity
+        self._composite_sector_function = composite_sector_function
+        self._sector_capacity_factor = sector_capacity_factor
+
+        self.original_converted_instance_matrix = original_converted_instance_matrix
+        self.navaid_sector_time_assignment = navaid_sector_time_assignment
+        self.old_navaid_sector_time_assignment = old_navaid_sector_time_assignment
+        self.start_time = start_time
+
+        self._max_number_threads = number_threads
+        self.navaid_sector_lookup = navaid_sector_lookup
 
         self.env = gp.Env(empty=True)          
         self.env.setParam('OutputFlag', 1)     
@@ -25,391 +49,684 @@ class MIPModel:
         if verbosity == 0:
             self.env.setParam("OutputFlag", 0)
 
+        self.report_every_s = float(1)
+        self.progress = [] 
 
         self.env.start()
 
-    def create_model(self, converted_instance_matrix, capacity_time_matrix, edge_distances, max_delay):
+    def construct_objective_function(self, flight_variables_pd, converted_instance_matrix, planned_arrival_times, fill_value = -1):
 
+        optimization_variables = []
+
+        for flight in range(converted_instance_matrix.shape[0]):
+            considered_flight = converted_instance_matrix[flight,:]
+            considered_flight = considered_flight[considered_flight != fill_value]
+            if len(considered_flight) == 0:
+                continue
+
+            destination = considered_flight[-1]
+
+            planned_arrival_time = planned_arrival_times[flight]
+
+            destination_rows = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd['V']==destination))]
+            for delay in list(destination_rows['D']):
+            
+                final_destination_rows = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd['V']==destination)&(flight_variables_pd['D']==delay))]
+
+                actual_arrival_time = max(list(final_destination_rows['T']))
+
+                actual_arrival_rows = flight_variables_pd[((flight_variables_pd['F']==flight)&(flight_variables_pd['V']==destination)&(flight_variables_pd['D']==delay)&(flight_variables_pd['T']==actual_arrival_time))]
+
+                for _, actual_arrival_row in actual_arrival_rows.iterrows():
+
+                    arrival_variable = actual_arrival_row['obj']
+
+                    real_delay = actual_arrival_time - planned_arrival_time
+
+                    optimization_variables.append(real_delay * arrival_variable)
+
+        return optimization_variables
+
+    def create_model(self, converted_instance_matrix, capacity_time_matrix, unit_graphs, airplanes, max_delay, planned_arrival_times, airplane_flight, filed_flights, navaid_sector_time_assignment, converted_navpoint_matrix):
+        
         solution = None
         self._max_time += max_delay
 
-
+        """
         if converted_instance_matrix.shape[1] < self._max_time:
             diff = self._max_time - converted_instance_matrix.shape[1]
             extra_col = -1 * np.ones((converted_instance_matrix.shape[0], diff), dtype=int)
             converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+        """
 
-        system_loads = self.bucket_histogram(converted_instance_matrix, capacity_time_matrix.shape[0], self._timestep_granularity)
-        capacity_time_matrix = self.capacity_time_matrix(self.capacity,system_loads.shape[1])
+        delay_time_window = 2
 
         while solution is None:
 
             model = gp.Model(env=self.env, name="toy")
             model.Params.Threads = self._max_number_threads
 
-            flight_variables_pd, sector_variables_pd = self.add_variables(model, converted_instance_matrix, edge_distances, max_delay)
+            flight_variables_pd, sector_variables_pd, next_sectors, previous_sectors, max_effective_delay, all_flights_navpoints = self.add_variables(model, converted_instance_matrix, capacity_time_matrix, unit_graphs, airplanes, delay_time_window, filed_flights, airplane_flight)
 
             model.update()
 
-            self.add_capacity_constraint(model, flight_variables_pd, sector_variables_pd, capacity_time_matrix, edge_distances, converted_instance_matrix)
+            self.add_capacity_constraint(model, flight_variables_pd, sector_variables_pd, capacity_time_matrix, unit_graphs, converted_instance_matrix)
+
 
             model.update()
 
-            optimization_variables = self.add_flight_constraints_get_optimization_variables(model, flight_variables_pd, converted_instance_matrix, edge_distances, max_delay)
+            self.add_flight_constraints_get_optimization_variables(model, flight_variables_pd, converted_instance_matrix, unit_graphs, max_delay, next_sectors, previous_sectors)
 
             model.update()
 
-            self.add_valid_inequalities(model, flight_variables_pd, converted_instance_matrix, edge_distances, max_delay)
+            self.add_consecutive_flight_constraints(model, flight_variables_pd, airplanes, airplane_flight, converted_instance_matrix)
 
-            self.optimize(model, optimization_variables)
+            model.update()
 
-            converted_instance_matrix = self.reconstruct_solution(model, flight_variables_pd, sector_variables_pd, converted_instance_matrix, max_delay)
+            #self.add_valid_inequalities(model, flight_variables_pd, converted_instance_matrix, edge_distances, max_delay)
 
-            mask = converted_instance_matrix != -1                                        # same shape as arr
+            optimization_variables = self.construct_objective_function(flight_variables_pd, converted_instance_matrix, planned_arrival_times)
 
-            if not np.any(mask, where=True):
+            self.optimize(model, optimization_variables, flight_variables_pd, sector_variables_pd, converted_instance_matrix, max_delay, all_flights_navpoints)
+
+            converted_instance_matrix_tmp, converted_navpoint_matrix_tmp = self.reconstruct_solution(model, flight_variables_pd, sector_variables_pd,
+                                                                                             converted_instance_matrix, max_delay, all_flights_navpoints)
+
+
+            mask = converted_instance_matrix_tmp != -1                                        # same shape as arr
+
+            new_round = False
+            if np.any(mask, where=True):
+                # -----------------------------------------------------------------------------
+                t_init  = self.last_valid_pos(self.original_converted_instance_matrix)      # last non--1 in the *initial* schedule
+                t_final = self.last_valid_pos(converted_instance_matrix_tmp)     # last non--1 in the *final* schedule
+                
+                diff_tmp = converted_instance_matrix_tmp.shape[1] - self.old_navaid_sector_time_assignment.shape[1]
+                if diff_tmp > 0:
+                    self.old_navaid_sector_time_assignment = np.hstack([self.old_navaid_sector_time_assignment, np.repeat(self.old_navaid_sector_time_assignment[:, [-1]], diff_tmp, axis=1)])
+
+                diff_tmp = converted_instance_matrix_tmp.shape[1] - self.navaid_sector_time_assignment.shape[1]
+                if diff_tmp > 0:
+                    self.navaid_sector_time_assignment = np.hstack([self.navaid_sector_time_assignment, np.repeat(self.navaid_sector_time_assignment[:, [-1]], diff_tmp, axis=1)])
+
+                delay = np.where(t_init >= 0, t_final - t_init, 0)          # shape (|I|,)
+                system_loads = MIPModel.bucket_histogram(converted_instance_matrix_tmp, self.sectors, self.sectors.shape[0], converted_instance_matrix_tmp.shape[1], self._timestep_granularity)
+                capacity_time_matrix = MIPModel.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, self.navaid_sector_time_assignment, z = self._sector_capacity_factor, composite_sector_function=self._composite_sector_function)
+                capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+                capacity_overload_mask = capacity_demand_diff_matrix < 0
+                number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
+                total_delay  = delay.sum()
+                number_sectors = self.compute_total_number_sectors(self.navaid_sector_time_assignment)
+                sector_diff = np.count_nonzero(self.navaid_sector_time_assignment[:, 1:] != self.navaid_sector_time_assignment[:, :-1])
+                original_max_time_converted = self.original_converted_instance_matrix.shape[1]  # original_max_time
+                rerouted_mask = np.any(converted_instance_matrix_tmp[:, :original_max_time_converted] != self.original_converted_instance_matrix, axis=1)     # True if flight differs anywhere
+                number_reroutes = int(np.count_nonzero(rerouted_mask))
+                number_sector_reconfigurations = np.count_nonzero(self.navaid_sector_time_assignment != self.old_navaid_sector_time_assignment)
+
+                current_time = time.time() - self.start_time
+                output_dict = {}
+                output_dict["OVERLOAD"] = int(number_of_conflicts)
+                output_dict["ARRIVAL-DELAY"] = int(total_delay)
+                output_dict["SECTOR-NUMBER"] = int(number_sectors)
+                output_dict["SECTOR-DIFF"] = int(sector_diff)
+                output_dict["REROUTE"] = int(number_reroutes)
+                output_dict["RECONFIG"] = int(number_sector_reconfigurations)
+                output_dict["TOTAL-TIME-TO-THIS-POINT"] =  int(current_time)
+                output_dict["COMPUTATION-FINISHED"] = False
+                output_string = json.dumps(output_dict)
+                print(output_string)
+
+                if number_of_conflicts > 0:
+                    new_round = True
+            else:
+                new_round = True
+
+            if new_round is True:
                 solution = None
-                max_delay = max_delay + 1
-                self._max_time = + 1
+                #max_delay = max_delay + 1
+                self._max_time = converted_instance_matrix_tmp.shape[1]
+                delay_time_window += self._timestep_granularity
 
-                if converted_instance_matrix.shape[1] < self._max_time:
-                    diff = self._max_time - converted_instance_matrix.shape[1]
-                    extra_col = -1 * np.ones((converted_instance_matrix.shape[0], diff), dtype=int)
-                    converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+                #navaid_sector_time_assignment = self.navaid_sector_time_assignment
 
-                system_loads = self.bucket_histogram(converted_instance_matrix, capacity_time_matrix.shape[0], self._timestep_granularity)
-                capacity_time_matrix = self.capacity_time_matrix(self.capacity,system_loads.shape[1])
+                #navaid_sector_time_assignment = self.navaid_sector_lookup
+                #converted_instance_matrix = converted_instance_matrix_tmp
+                #converted_navpoint_matrix = converted_navpoint_matrix_tmp
+                #system_loads = system_loads
+                #capacity_time_matrix = capacity_time_matrix
 
+                in_units = 1
+                #number_new_cols = in_units * self._timestep_granularity
+                number_new_cols = self._max_time - converted_instance_matrix.shape[1] + in_units * self._timestep_granularity
+
+                # 0.) Handle Sector Assignments:
+                new_cols = np.repeat(navaid_sector_time_assignment[:,[-1]], number_new_cols, axis=1)  # shape (N,k)
+                navaid_sector_time_assignment = np.concatenate([navaid_sector_time_assignment, new_cols], axis=1)
+                #navaid_sector_time_assignment = np.hstack([navaid_sector_time_assignment, np.repeat(navaid_sector_time_assignment[:, [-1]], number_new_cols, axis=1)])
+                # 1.) Handle Instance Matrix:
+                extra_col = -1 * np.ones((converted_instance_matrix.shape[0], number_new_cols), dtype=int)
+                converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+
+                extra_col = -1 * np.ones((converted_navpoint_matrix.shape[0], number_new_cols), dtype=int)
+                converted_navpoint_matrix = np.hstack((converted_navpoint_matrix, extra_col)) 
+
+                # 2.) Create demand matrix (|R|x|T|):
+                system_loads = MIPModel.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+                # 3.) Create capacity matrix (|R|x|T|):
+                capacity_time_matrix = MIPModel.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self._sector_capacity_factor, composite_sector_function=self._composite_sector_function)
+
+                # 4.) Subtract demand from capacity (|R|x|T|):
+                capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+            else:
+                solution = model
+
+        converted_instance_matrix = converted_instance_matrix_tmp
+        converted_navpoint_matrix = converted_navpoint_matrix_tmp
+
+        return converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix
+    
+
+    def add_consecutive_flight_constraints(self, model, flight_variables_pd, airplanes, airplane_flight, converted_instance_matrix):
+        
+        airplanes = list(set(airplane_flight[:,0]))
+
+        for airplane in airplanes:
+
+            flights = airplane_flight[airplane_flight[:,0] == airplane, 1]
+            
+            flight_order = []
+            for flight in flights:
+                starting_time = min(list(np.nonzero(converted_instance_matrix[flight,:] != -1)[0]))
+                flight_order.append((starting_time,flight))
+
+            flight_order.sort()
+
+            for index in range(1,len(flight_order)):
+                flight_index_0 = flight_order[index-1][1]
+                flight_index_1 = flight_order[index][1]
+
+                arrival_time_flight_0 = max(list(np.nonzero(converted_instance_matrix[flight_index_0,:] != -1)[0]))
+                departure_time_flight_1 = min(list(np.nonzero(converted_instance_matrix[flight_index_1,:] != -1)[0]))
+
+
+                considered_flight_rows_0 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight_index_0))]
+                considered_flight_rows_1 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight_index_1))]
+
+
+                for delay_flight_0 in list(set(considered_flight_rows_0['D'])):
+
+                    considered_flight_rows_0_tmp = flight_variables_pd.loc[((flight_variables_pd["F"]==flight_index_0)&(flight_variables_pd["D"]==delay_flight_0))]
+
+                    actual_arrival_time = max(considered_flight_rows_0_tmp["T"])
+
+                    for delay_flight_1 in list(set(considered_flight_rows_1['D'])):
+
+                        considered_flight_rows_1_tmp = flight_variables_pd.loc[((flight_variables_pd["F"]==flight_index_1)&(flight_variables_pd["D"]==delay_flight_1))]
+                        actual_departure_time = min(considered_flight_rows_1_tmp["T"])
+
+                        if actual_arrival_time >= actual_departure_time:
+
+                            considered_0 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight_index_0)&(flight_variables_pd["D"]==delay_flight_0)&(flight_variables_pd["T"]==actual_arrival_time))]
+                            considered_1 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight_index_1)&(flight_variables_pd["D"]==delay_flight_1)&(flight_variables_pd["T"]==actual_departure_time))]
+
+                            for _, considered_0_row in considered_0.iterrows():
+                                for _, considered_1_row in considered_1.iterrows():
+                                    model.addConstr((1 - considered_0_row["obj"]) >= considered_1_row["obj"])
+    
+    def k_diverse_near_shortest_paths(
+        self,
+        G, s, t, nearest_neighbors_lookup, k=5, eps=0.10, jaccard_max=0.6,
+        penalty_scale=0.5, max_tries=200, weight_key="weight",
+        filed_path = []
+    ):
+        
+        s_t_length, _ = nx.bidirectional_dijkstra(G, s, t, weight=weight_key)
+
+        allowed = (1.0 + eps) * s_t_length
+
+        # 1) shortest length & prune to a small corridor: ds[u]+dt[u] ≤ (1+eps)*L0
+        #
+        if s not in nearest_neighbors_lookup:
+            ds = nx.single_source_dijkstra_path_length(G, s, weight=weight_key)
+            nearest_neighbors_lookup[s] = ds
+        else:
+            ds = nearest_neighbors_lookup[s]
+
+        if t not in nearest_neighbors_lookup:
+            dt = nx.single_source_dijkstra_path_length(G, t, weight=weight_key)
+            nearest_neighbors_lookup[t] = dt
+        else:
+            dt = nearest_neighbors_lookup[t]
+
+        keep = {u for u in G if u in ds and u in dt and ds[u] + dt[u] <= allowed}
+
+        H = G.subgraph(keep).copy()
+
+        # Edge-penalties (undirected key)
+        def ekey(u, v):
+            return (u, v) if u <= v else (v, u)
+        penalties = {}
+
+        # Penalized weight function
+        def w(u, v, d):
+            base = d.get(weight_key, 1.0)
+            pen = penalties.get(ekey(u, v), 0.0)
+            return base + pen
+
+        paths, edge_sets, tries = [], [], 0
+
+        if len(filed_path) > 0:
+            E = {ekey(u, v) for u, v in zip(filed_path, filed_path[1:])}
+            paths.append(filed_path)
+            if len(E) > 0:
+                edge_sets.append(E)
+
+        while len(paths) < k and tries < max_tries:
+            tries += 1
+            try:
+                p = nx.shortest_path(H, s, t, weight=w)
+            except nx.NetworkXNoPath:
+                break
+
+            # Evaluate real (unpenalized) length
+            L = nx.path_weight(G, p, weight=weight_key)
+            if L > allowed:
+                break  # can’t find more within slack
+
+            # Edge-set and diversity check (Jaccard on edges)
+            E = {ekey(u, v) for u, v in zip(p, p[1:])}
+            similar = any(len(E & Es) / len(E | Es) > jaccard_max for Es in edge_sets)
+
+            # Always penalize current path to push the next one away
+            avg_edge = L / max(1, len(E))
+            for e in E:
+                penalties[e] = penalties.get(e, 0.0) + penalty_scale * avg_edge
+
+            if similar:
+                continue  # reject, keep searching
+
+            paths.append(p)
+            if len(E) > 0:
+                edge_sets.append(E)
+
+        return paths    
+    
+    def get_flight_navpoint_trajectory(self, flights_affected, networkx_graph, flight_index, start_time, airplane_speed_kts, path, timestep_granularity):
+
+        traj = []
+        current_time = start_time
+        for hop, vertex in enumerate(path):
+            if hop == 0:
+                # Origin
+                t_slot = current_time
+
+                if t_slot >= flights_affected.shape[1]:
+                    raise Exception("In optimize_flights max time exceeded current allowed time.")
 
             else:
-                solution = converted_instance_matrix
+                # En-route/destination
+                prev_vertex = path[hop -1]
+                duration_in_unit_standards = networkx_graph[prev_vertex][vertex]["weight"]
 
-        return converted_instance_matrix
+                current_time = current_time + duration_in_unit_standards
 
+                t_slot=current_time
 
-    def add_variables(self, model, converted_instance_matrix, edge_distances, max_delay, fill_value = -1):
+                if t_slot >= flights_affected.shape[1]:
+                    raise Exception("In optimize_flights max time exceeded current allowed time.")
+
+            traj.append((flight_index, vertex, t_slot))
+
+        return traj
+ 
+
+    def add_variables(self, model, converted_instance_matrix, capacity_time_matrix,  unit_graphs, airplanes, time_window, filed_flights, airplane_flight, fill_value = -1):
 
         # |F|x|D|x|T|x|V|
         # F=flights, D=possible-delays, T=time, V=vertices
         flight_variables_pd = pd.DataFrame(columns=["F","D","T","V","obj"])
-        sector_variables_pd = pd.DataFrame(columns=["F","D","T","V","obj"])
+        sector_variables_pd = pd.DataFrame(columns=["T","S","obj"])
         considered_vertices = set()
 
+        max_effective_delay = 0
+
+        next_sectors = {}
+        previous_sectors = {}
+
         #max_delay = max_delay + 1
+        self.nearest_neighbors_lookup = {}
+        k = self._max_explored_vertices
+
+        all_flight_navpoints_dict = {}
 
         for flight_affected_index in range(converted_instance_matrix.shape[0]):
 
+            all_flight_navpoints_dict[flight_affected_index] = {}
+
+            next_sectors[flight_affected_index] = {}
+            previous_sectors[flight_affected_index] = {}
+
+
             flight_affected = converted_instance_matrix[flight_affected_index,:]
+            flights_affected = converted_instance_matrix[np.array([flight_affected_index]),:]
+
+            airplane_index = airplane_flight[airplane_flight[:,1] == flight_affected_index][0][0]
+            airplane_speed = airplanes[airplanes[:,0]==airplane_index]
+            airplane_speed = airplane_speed[0][1]
+
+            filed_flight_path = filed_flights[filed_flights[:,0] == flight_affected_index,:]
+
+            if airplane_speed not in self.nearest_neighbors_lookup:
+                self.nearest_neighbors_lookup[airplane_speed] = {}
+
+            unit_graph = unit_graphs[airplane_speed]
+
 
             start_time = np.flatnonzero(flight_affected != fill_value)
             start_time = start_time[0] if start_time.size else 0
             
             flight_affected = flight_affected[flight_affected != fill_value]
 
+            if len(flight_affected) == 0:
+                continue
+
             origin = flight_affected[0]
             destination = flight_affected[-1]
 
-            origin_to_destination_time = edge_distances[origin,destination]
 
-            considered_vertices = considered_vertices.union(set([origin,destination]))
+            paths = self.k_diverse_near_shortest_paths(unit_graph, origin, destination, self.nearest_neighbors_lookup[airplane_speed],
+                                                k=k, eps=0.1, jaccard_max=0.6, penalty_scale=0.1, max_tries=50, weight_key="weight",
+                                                filed_path=list(filed_flight_path[:,1]))
 
-            prev_vertices = None
+            graph_instance = []
+            flight_sector_instances = []
+            flight_times_instance = []
+            sector_instance = [] 
+            actual_arrival_time_instance = []
+            actual_delay = 0
+            path_number = 0
 
-            for possible_start_time in range(start_time, start_time+max_delay+1):
+            all_variables_dict = {}
 
-                delay = possible_start_time - start_time
-                
-                origin_variable = model.addVar(vtype=GRB.BINARY, name=f"x[{flight_affected_index},{delay},{possible_start_time},{origin}]")
+            max_time_generation = 0
 
-                #flight_variables[flight_affected_index][delay][possible_start_time][origin] = origin_variable
 
-                entry = pd.DataFrame.from_dict({
-                    "F": [flight_affected_index],
-                    "D": [delay],
-                    "T": [possible_start_time],
-                    "V": [origin],
-                    "obj": [origin_variable]
-                })
+            for path in paths:
 
-                flight_variables_pd = pd.concat([flight_variables_pd,entry], ignore_index = True)
+                navpoint_trajectory = self.get_flight_navpoint_trajectory(flights_affected, unit_graph, flight_affected_index, start_time, airplane_speed, path, self._timestep_granularity)
 
-                origin_variable = model.addVar(vtype=GRB.BINARY, name=f"y[{flight_affected_index},{delay},{possible_start_time},{origin}]")
-                entry = pd.DataFrame.from_dict({
-                    "F": [flight_affected_index],
-                    "D": [delay],
-                    "T": [possible_start_time],
-                    "V": [origin],
-                    "obj": [origin_variable]
-                })
-                sector_variables_pd = pd.concat([sector_variables_pd,entry], ignore_index = True)
+                for delay in range(time_window):
 
-            for from_origin_time in range(1,origin_to_destination_time + 1): # The +1 means that we add the destination airport
-                
-                time_to_destination_diff = origin_to_destination_time - from_origin_time
+                    current_time = start_time
+                    max_delay_tmp = time_window 
+                    delay_number = (delay) + path_number * max_delay_tmp 
 
-                origin_vertices = edge_distances[origin,:] == from_origin_time
-                destination_vertices = edge_distances[destination,:] == time_to_destination_diff
+                    if max_delay_tmp > max_effective_delay:
+                        # FOR INFERRING DELAY LATER
+                        max_effective_delay = max_delay_tmp
 
-                matching_vertices = origin_vertices & destination_vertices
+                    for flight_hop_index in range(len(navpoint_trajectory)):
 
-                vertex_ids = np.where(matching_vertices)[0]
-                vertex_ids = self.restrict_max_vertices(prev_vertices, vertex_ids, matching_vertices, flight_affected, from_origin_time, edge_distances)
-                prev_vertices = list(vertex_ids)
+                        navaid = navpoint_trajectory[flight_hop_index][1]
+                        time = navpoint_trajectory[flight_hop_index][2]
+                        #sector = (self.navaid_sector[self.navaid_sector[:,0] == navaid])[0,1]
+                        sector = self.navaid_sector_lookup[navaid]
 
-                for vertex_id in vertex_ids:
+                        if sector not in next_sectors[flight_affected_index]:
+                            next_sectors[flight_affected_index][sector] = {}
 
-                    for possible_time in range(start_time + from_origin_time, start_time+max_delay+1+from_origin_time):
+                        if len(navpoint_trajectory) > flight_hop_index + 1:
+                            next_navaid = navpoint_trajectory[flight_hop_index+1][1]
+                            next_sector = self.navaid_sector_lookup[next_navaid]
+                            next_sectors[flight_affected_index][sector][next_sector] = True
                         
-                        delay = possible_time - start_time - from_origin_time
+                        if sector not in previous_sectors[flight_affected_index]:
+                            previous_sectors[flight_affected_index][sector] = {}
 
-                        origin_variable = model.addVar(vtype=GRB.BINARY, name=f"x[{flight_affected_index},{delay},{possible_time},{vertex_id}]")
+                        if flight_hop_index > 0:
+                            prev_navaid = navpoint_trajectory[flight_hop_index-1][1]
+                            prev_sector = self.navaid_sector_lookup[prev_navaid]
+                            previous_sectors[flight_affected_index][sector][prev_sector] = True
 
-                        entry = pd.DataFrame.from_dict({
-                            "F": [flight_affected_index],
-                            "D": [delay],
-                            "T": [possible_time],
-                            "V": [vertex_id],
-                            "obj": [origin_variable]
-                        })
+                        if flight_hop_index == 0:
 
-                        flight_variables_pd = pd.concat([flight_variables_pd,entry], ignore_index = True)
+                            for time_index in range(actual_delay + delay + 1):
 
-                        origin_variable = model.addVar(vtype=GRB.BINARY, name=f"y[{flight_affected_index},{delay},{possible_time},{vertex_id}]")
-                        entry = pd.DataFrame.from_dict({
-                            "F": [flight_affected_index],
-                            "D": [delay],
-                            "T": [possible_time],
-                            "V": [vertex_id],
-                            "obj": [origin_variable]
-                        })
-                        sector_variables_pd = pd.concat([sector_variables_pd,entry], ignore_index = True)
+                                if time_index == actual_delay + delay:
+                                    if f"x[{flight_affected_index},{delay_number},{current_time},{origin}]" not in all_variables_dict:
+                                        all_variables_dict[f"x[{flight_affected_index},{delay_number},{current_time},{origin}]"] = True
 
-        return flight_variables_pd, sector_variables_pd
+                                        origin_variable = model.addVar(vtype=GRB.BINARY, name=f"x[{flight_affected_index},{delay_number},{current_time},{origin}]")
+
+                                        entry = pd.DataFrame.from_dict({
+                                            "F": [flight_affected_index],
+                                            "D": [delay_number],
+                                            "T": [current_time],
+                                            "V": [origin],
+                                            "obj": [origin_variable]
+                                        })
+
+                                        flight_variables_pd = pd.concat([flight_variables_pd,entry], ignore_index = True)
+
+                                current_time += 1
+
+                        else:
+
+                            prev_navaid = navpoint_trajectory[flight_hop_index-1][1]
+                            prev_time = navpoint_trajectory[flight_hop_index-1][2]
+                            prev_sector = self.navaid_sector_lookup[prev_navaid]
+
+                            if delay_number not in all_flight_navpoints_dict[flight_affected_index]:
+                                all_flight_navpoints_dict[flight_affected_index][delay_number] = {}
+
+                            if prev_navaid not in all_flight_navpoints_dict[flight_affected_index][delay_number]:
+                                all_flight_navpoints_dict[flight_affected_index][delay_number][prev_navaid] = current_time - 1
+
+                            #graph_instance[f"sectorEdge({prev_sector},{sector})."] = True
+
+                            for time_index in range(1, time-prev_time + 1):
+                                
+                                #flight_times_instance.append(f"flightTime({flight_index},{flight_time}).")
+
+                                if time_index <= math.floor((time - prev_time)/2):
+
+                                    if f"x[{flight_affected_index},{delay_number},{current_time},{origin}]" not in all_variables_dict:
+                                        all_variables_dict[f"x[{flight_affected_index},{delay_number},{current_time},{origin}]"] = True
+
+                                        origin_variable = model.addVar(vtype=GRB.BINARY, name=f"x[{flight_affected_index},{delay_number},{current_time},{prev_sector}]")
+
+                                        entry = pd.DataFrame.from_dict({
+                                            "F": [flight_affected_index],
+                                            "D": [delay_number],
+                                            "T": [current_time],
+                                            "V": [prev_sector],
+                                            "obj": [origin_variable]
+                                        })
+
+                                        flight_variables_pd = pd.concat([flight_variables_pd,entry], ignore_index = True)
+
+                                else:
+
+                                    if f"x[{flight_affected_index},{delay_number},{current_time},{origin}]" not in all_variables_dict:
+                                        all_variables_dict[f"x[{flight_affected_index},{delay_number},{current_time},{origin}]"] = True
+                                        origin_variable = model.addVar(vtype=GRB.BINARY, name=f"x[{flight_affected_index},{delay_number},{current_time},{sector}]")
+
+                                        entry = pd.DataFrame.from_dict({
+                                            "F": [flight_affected_index],
+                                            "D": [delay_number],
+                                            "T": [current_time],
+                                            "V": [sector],
+                                            "obj": [origin_variable]
+                                        })
+
+                                        flight_variables_pd = pd.concat([flight_variables_pd,entry], ignore_index = True)
+
+                                current_time += 1
+
+                            if navaid not in all_flight_navpoints_dict[flight_affected_index][delay_number]:
+                                all_flight_navpoints_dict[flight_affected_index][delay_number][navaid] = current_time - 1
+
+                        if max_time_generation < current_time:
+                            max_time_generation = current_time
+
+                #actual_arrival_time_instance.append(f"actualArrivalTime({airplane_id},{current_time - 1},{path_number}).")
+                # path_numbers = #PATHS * #DELAYS
+                path_number += 1
+
+        #considered_variables = flight_variables_pd[(flight_variables_pd['F']==2)&(flight_variables_pd['D']==2)]
+        #print(considered_variables)
+        #quit()
+
+        for time in range(max_time_generation):
+            for sector in range(capacity_time_matrix.shape[0]):
+                capacity_variable = model.addVar(vtype=GRB.INTEGER, name=f"y[{time},{sector}]")
+
+                entry = pd.DataFrame.from_dict({
+                    "T": [time],
+                    "S": [sector],
+                    "obj": [capacity_variable]
+                })
+                sector_variables_pd = pd.concat([sector_variables_pd, entry], ignore_index = True)
 
 
-    def add_capacity_constraint(self, model: gp.Model, flight_variables_pd, sector_variables_pd, capacity_time_matrix, edge_distances, converted_instance_matrix, fill_value = -1 ):
+        return flight_variables_pd, sector_variables_pd, next_sector, previous_sectors, max_effective_delay, all_flight_navpoints_dict
 
-        ############################
-        # CONSTRAINTS (1,2,3,4):
+
+    def add_capacity_constraint(self, model: gp.Model, flight_variables_pd, sector_variables_pd, capacity_time_matrix, unit_graphs, converted_instance_matrix, fill_value = -1 , relaxed_version = True):
+        """
+        Add capacity constraint 
+        """
+        all_sector_vars = []
+
+        capacity_computed_first_reached = False
+
         for sector in range(capacity_time_matrix.shape[0]):
 
-            timestep_granularity_window = []
+            for time in range(capacity_time_matrix.shape[1]):
 
-            for time in range(self._max_time):
-
+                sector_variables = []
                 considered_rows = flight_variables_pd.loc[(flight_variables_pd["V"]==sector)&(flight_variables_pd["T"]==time)]
 
-                if considered_rows.shape[0] > 0:
+                for flight in list(set(considered_rows['F'])):
+                    for delay in list(set(considered_rows['D'])):
 
-                    sector_variables = []
+                        if capacity_computed_first_reached is False:
+                            considered_rows_2 = flight_variables_pd.loc[(flight_variables_pd["V"]==sector)&(flight_variables_pd['D']==delay)&(flight_variables_pd['F']==flight)&(flight_variables_pd['T']==time)]
 
-                    for _, row in considered_rows.iterrows():
+                            if considered_rows_2.shape[0] > 0:
+                                for _, considered_row_2 in considered_rows_2.iterrows():
+                                    sector_variables.append(considered_row_2['obj'])
 
-                        flight = row["F"]
-                        delay = row["D"]
+                        else:
+                            considered_rows_2 = flight_variables_pd.loc[(flight_variables_pd["V"]==sector)&(flight_variables_pd['D']==delay)&(flight_variables_pd['F']==flight)]
 
-                        flight_variable = row['obj']
-                        negative_capacity_variables = []
+                            if considered_rows_2.shape[0] > 0:
+                                min_time = min(list(considered_rows_2['T']))
 
-                        next_considered_rows = flight_variables_pd.loc[(flight_variables_pd['F']==flight)&(flight_variables_pd['D']==delay)&(flight_variables_pd["T"]==time+1)]
+                                if min_time != time:
+                                    continue
 
-                        if considered_rows.shape[0] == 0:
-                            continue
+                                considered_rows_3 = flight_variables_pd.loc[(flight_variables_pd["V"]==sector)&(flight_variables_pd['D']==delay)&(flight_variables_pd['F']==flight)&(flight_variables_pd['T']==min_time)]
 
-                        vertices = list(set(next_considered_rows["V"]))
+                                if considered_rows_3.shape[0] > 0:
+                                    for _, considered_row_3 in considered_rows_3.iterrows():
+                                        sector_variables.append(considered_row_3['obj'])
 
-                        for vertex in vertices:
-                            if edge_distances[sector,vertex] == 1:
-                                # VARIABLES AT SAME TIME (==time):
-                                next_considered_rows = flight_variables_pd.loc[(flight_variables_pd['F']==flight)&(flight_variables_pd['V']==vertex)&(flight_variables_pd["T"]==time)]
+                if len(sector_variables) > 0:
+                    #print(f"{['+'.join([var.VarName for var in sector_variables])]} <= {capacity_time_matrix[sector, time]}") 
 
-                                for _,vertex_row in next_considered_rows.iterrows():
-                                    negative_capacity_variables.append(vertex_row["obj"])
+                    if time < capacity_time_matrix.shape[1]:
+                        cap_value = capacity_time_matrix[sector,time]
+                    else:
+                        cap_value = capacity_time_matrix[sector,0]
 
-                        
-                        considered_rows_tmp = sector_variables_pd.loc[(sector_variables_pd["V"]==sector)&(sector_variables_pd["T"]==time)&(sector_variables_pd["F"]==flight)&(sector_variables_pd["D"]==delay)]
-                        for _,row in considered_rows_tmp.iterrows():
-                            sector_variable = row["obj"]
+                    if relaxed_version is True:
+                        considered_sector_rows = sector_variables_pd.loc[(sector_variables_pd["S"]==sector)&(sector_variables_pd['T']==time)]
+                        if considered_sector_rows.shape[0] > 0:
+                            for _, considered_sector_row in considered_sector_rows.iterrows():
+                                model.addConstr(gp.quicksum(sector_variables) - cap_value <= considered_sector_row['obj'])
+                                model.addConstr(0 <= considered_sector_row['obj'])
 
-                        #print(f"{flight_variable.VarName} - ({'+'.join([var.VarName for var in negative_capacity_variables])}) <= {sector_variable.VarName}") 
-                        model.addConstr(flight_variable - gp.quicksum(negative_capacity_variables) <= sector_variable)
-                        model.addConstr(sector_variable <= flight_variable)
+                                all_sector_vars.append(considered_sector_row['obj'])
+                    else: 
+                        model.addConstr(gp.quicksum(sector_variables) <= cap_value)
 
-                        sector_variables.append(sector_variable)
-
-
-                    timestep_granularity_window.append(sector_variables)
-
-                    all_sector_variables = []
-                    for sector_vars in timestep_granularity_window:
-                        all_sector_variables += sector_vars
-
-                    #print(f"{'+'.join([var.VarName for var in all_sector_variables])} <= {capacity_time_matrix[sector, time]}")
-                    model.addConstr(gp.quicksum(all_sector_variables) <= capacity_time_matrix[sector, time]) 
-
-
-                    if len(timestep_granularity_window) >= self._timestep_granularity:
-                        timestep_granularity_window.pop(0)
-
+        if relaxed_version is True:  
+           model.setObjectiveN(gp.quicksum(all_sector_vars),index=0,priority = 20)
 
 
     def add_flight_constraints_get_optimization_variables(self, model, flight_variables_pd, converted_instance_matrix,
-                                                          edge_distances, max_delay, fill_value = -1):
+                                                          edge_distances, max_delay, next_sectors, previous_sectors,
+                                                          fill_value = -1):
 
-
-        optimization_variables = []
 
         for flight in range(converted_instance_matrix.shape[0]):
+            considered_flight = converted_instance_matrix[flight,:]
 
-            considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)]
+            considered_flight_time_rows = flight_variables_pd.loc[((flight_variables_pd["F"]==flight))]
 
-            flight_affected = converted_instance_matrix[flight,:]
-            flight_affected = flight_affected[flight_affected != fill_value]
+            min_flight_time = min(considered_flight_time_rows["T"])
+            max_flight_time = max(considered_flight_time_rows["T"])
 
-            origin = flight_affected[0]
-            destination = flight_affected[-1]
+            considered_flight = considered_flight[considered_flight != fill_value]
+            if len(considered_flight) == 0:
+                continue
 
-            for time in list(set(considered_rows["T"])):
-            
-                considered_rows_2 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["T"]==time))]
+            #for time in range(converted_instance_matrix.shape[1]):
+            for time in range(min_flight_time, max_flight_time + 1):
 
-                for sector in list(set(considered_rows_2["V"])):
+                considered_rows = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["T"]==time))]
 
-                    
-                    considered_rows_constraint_8 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["T"]==time)&(flight_variables_pd["V"]==sector))]
-                    considered_rows_constraint_8_prim = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["T"]==time+1)&(flight_variables_pd["V"]==sector))]
+                if considered_rows.shape[0] > 0:
+                    ## ADD UNIQUE DELAY CONSTRAINT AND SUBSEQUENT SINGLE SECTOR CONSTRAINT
+                    for sector in list(set(considered_rows["V"])):
 
-                    if considered_rows_constraint_8.shape[0] > 0 and considered_rows_constraint_8_prim.shape[0] > 0:
-                        # CONSTRAINT (8)
+                        delay_variables = []
 
-                        for _,variable_1_row in considered_rows_constraint_8.iterrows():
-                            for _,variable_2_row in considered_rows_constraint_8_prim.iterrows():
-                                model.addConstr(variable_1_row["obj"] - variable_2_row["obj"] <= 0)
+                        delay_matrix = considered_rows.loc[((considered_rows["V"]==sector))]
 
+                        for _, delay_row in delay_matrix.iterrows():
+                            delay_variables.append(delay_row['obj'])
+                            delay = delay_row["D"]
+                            #subsequent_variables = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["T"]==time+1)&(flight_variables_pd["V"]==sector)&(flight_variables_pd["D"]==delay))]
+                            subsequent_variables = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["T"]==time+1)&(flight_variables_pd["D"]==delay))]
 
-                    if sector != origin:
-                        # Do not add constraints at origin (Constraint (4))
-                    
-                        considered_rows_3 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["T"]==time)&(flight_variables_pd["V"]==sector))]
+                            if subsequent_variables.shape[0] == 1:
+                                for _, subsequent_delay_variable in subsequent_variables.iterrows():
+                                    # SUBSEQUENT CONSTRAINT
+                                    model.addConstr(delay_row["obj"] <= subsequent_delay_variable["obj"])
 
-                        if considered_rows_3.shape[0] > 0:
-                            for index,row in considered_rows_3.iterrows():
+                        # SINGLE PATH (DELAY) CONSTRAINT
+                        #print(f"{['+'.join([var.VarName for var in delay_variables])]} <= 1") 
+                        model.addConstr(gp.quicksum(delay_variables) <= 1)
 
-                                left_variable = row["obj"]
-                                delay = row["D"]
+                    ## ADD UNIQUE PATH CONSTRAINT:
+                    variables_list = []
 
-                                considered_rows_4 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["T"]==time-1)&(flight_variables_pd["D"]==delay))]
+                    for _, flight_time_row in considered_rows.iterrows():
+                        variables_list.append(flight_time_row['obj'])
 
-                                if considered_rows_4.shape[0] > 0:
-                                    # otherwise at origin
+                    # ADD UNIQUE PATH CONSTRAINT:
+                    #print(f"{['+'.join([var.VarName for var in variables_list])]} <= 1") 
+                    model.addConstr(gp.quicksum(variables_list) <= 1)
 
-                                    vertices = list(set(considered_rows_4["V"]))
-                                    
-                                    right_variables = []
-                                    for vertex in vertices:
-                                        if edge_distances[sector,vertex] == 1:
-                                            considered_rows_5 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["T"]==time-1)&(flight_variables_pd["D"]==delay)&(flight_variables_pd["V"]==vertex))]
+            ## START CONSTRAINT:
+            start_variables = []
+            considered_rows = flight_variables_pd.loc[((flight_variables_pd["F"]==flight))]
+            for delay_number in list(set(considered_rows['D'])):
+                considered_rows = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]==delay_number))]
 
-                                            for _,vertex_row in considered_rows_5.iterrows():
-                                                right_variables.append(vertex_row["obj"])
+                min_time = min(list(set(considered_rows['T'])))
 
-                                    if len(right_variables) > 0:
-                                        # CONSTRAINT (4)
-                                        model.addConstr(left_variable - gp.quicksum(right_variables) <= 0)
+                start_variables_rows = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]== delay_number)&(flight_variables_pd['T']==min_time))]
 
-                # CONSTRAINTS (SELF -> ENFORCE NO EN-ROUTE HOLDING DELAY): 
-                considered_rows_2 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["T"]==time))]
-
-                for sector in list(set(considered_rows_2["V"])):
-                    if sector != origin and sector != destination:
+                for _, start_variable_row in start_variables_rows.iterrows():
+                    start_variables.append(start_variable_row['obj'])
                         
-                        considered_rows_3 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["T"]==time)&(flight_variables_pd["V"]==sector))]
-
-                        for _,row in considered_rows_3.iterrows():
-
-                            left_variable = row["obj"]
-                            right_variables = []
-                            
-                            considered_rows_4 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]==row["D"])&(flight_variables_pd["T"]==time+1))]
-
-                            vertices = list(set(considered_rows_4["V"]))
-
-                            for vertex in vertices:
-
-                                if edge_distances[sector,vertex] == 1:
-                                    considered_rows_5 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]==row["D"])&(flight_variables_pd["T"]==time+1)&(flight_variables_pd["V"]==vertex))]
-
-                                    for _,vertex_row in considered_rows_5.iterrows():
-
-                                        right_variables.append(vertex_row["obj"])
-
-                            # CONSTRAINT (NO EN-ROUTE HOLDING DELAY):
-                            model.addConstr(left_variable - gp.quicksum(right_variables) <= 0)
-    
+            model.addConstr(1 <= gp.quicksum(start_variables))
+            model.addConstr(gp.quicksum(start_variables) <= 1)
 
 
-            # CONSTRAINTS (5)&(6): 
-            considered_rows_2 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]==max_delay))]
-
-            for sector in list(set(considered_rows_2["V"])):
-
-                if sector != destination:
-                    
-                    considered_rows_3 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]==max_delay)&(flight_variables_pd["V"]==sector))]
-
-                    for _,row in considered_rows_3.iterrows():
-
-                        left_variable = row["obj"]
-                        right_variables = []
-                        
-                        considered_rows_4 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]==max_delay)&(flight_variables_pd["T"]==row["T"]+1))]
-
-                        vertices = list(set(considered_rows_4["V"]))
-
-                        for vertex in vertices:
-
-                            if edge_distances[sector,vertex] == 1:
-                                considered_rows_5 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]==max_delay)&(flight_variables_pd["T"]==row["T"]+1)&(flight_variables_pd["V"]==vertex))]
-
-                                for _,vertex_row in considered_rows_5.iterrows():
-
-                                    right_variables.append(vertex_row["obj"])
-
-                        # CONSTRAINT (5):
-                        model.addConstr(left_variable - gp.quicksum(right_variables) <= 0)
-
-                        # CONSTRAINT (6):
-                        model.addConstr(gp.quicksum(right_variables) <= 1) 
-
-                
-            considered_rows_2 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["V"]==origin)&(flight_variables_pd["D"]==0))]
-            
-            variables = []
-            for _,considered_row_2 in considered_rows_2.iterrows():
-                variables.append(considered_row_2["obj"])
-            model.addConstr(gp.quicksum(variables) >= 1)
-
-
-            # OPTIMIZATION VARIABLES FILL:
-
-            considered_rows_2 = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["V"]==destination))]
-
-            arrival_times = list(set(considered_rows_2["T"]))
-            latest_arrival_time = max(arrival_times)
-
-            considered_rows_2_prim = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["V"]==destination)&(flight_variables_pd["T"]==latest_arrival_time))]
-            for _,considered_rows_2_prim_row in considered_rows_2_prim.iterrows():
-                latest_arrival_time_variable = considered_rows_2_prim_row["obj"]
-
-            for arrival_time in arrival_times:
-                considered_rows_2_prim = flight_variables_pd.loc[((flight_variables_pd["F"]==flight)&(flight_variables_pd["V"]==destination)&(flight_variables_pd["T"]==arrival_time))]
-            
-                for _,considered_rows_2_prim_row in considered_rows_2_prim.iterrows():
-                    arrival_time_variable = considered_rows_2_prim_row["obj"]
-
-                optimization_variables.append(latest_arrival_time_variable - arrival_time_variable)
- 
-        return optimization_variables
 
 
     def add_valid_inequalities(self, model: gp.Model, flight_variables_pd, converted_instance_matrix,
@@ -529,20 +846,207 @@ class MIPModel:
                     model.addConstr(gp.quicksum(vertices_anti_chain_variables) <= 1)
                                
 
+    """
     def optimize(self, model, optimization_variables):
             
         model.setObjective(gp.quicksum(optimization_variables), GRB.MINIMIZE)
         model.optimize()
+    """
 
-    def reconstruct_solution(self, model, flight_variables_pd, sector_variables_pd, converted_instance_matrix, max_delay, fill_value = -1):
+    def optimize(self, model: gp.Model, arrival_delay_optimization_variables, flight_variables_pd, sector_variables_pd, converted_instance_matrix, max_delay, all_flight_navpoint_dict):
+
+
+        model.setObjectiveN(gp.quicksum(arrival_delay_optimization_variables), index=1, priority=10)
+
+
+
+        last_t = {"t": -1e100}
+
+
+        def cb(m: gp.Model, where: int):
+            if where == GRB.Callback.MIP:
+                t = m.cbGet(GRB.Callback.RUNTIME)
+                if t - last_t["t"] < self.report_every_s:
+                    return
+                last_t["t"] = t
+
+
+                best  = m.cbGet(GRB.Callback.MIP_OBJBST)  
+                bound = m.cbGet(GRB.Callback.MIP_OBJBND)  
+                nodes = m.cbGet(GRB.Callback.MIP_NODCNT)
+                sols  = m.cbGet(GRB.Callback.MIP_SOLCNT)
+
+                # Compute a robust relative gap (if incumbent exists)
+                if best >= GRB.INFINITY or best <= -GRB.INFINITY:
+                    gap = None  # no incumbent yet
+                else:
+                    denom = abs(best) + 1e-10   # avoids divide-by-zero if best == 0
+                    gap = abs(best - bound) / denom
+
+                gap_str = "n/a" if gap is None else f"{gap:.4%}"
+                #print(f"[{t:8.1f}s] best={best:g}  bound={bound:g}  gap={gap_str}  nodes={nodes:.0f}  sols={sols}")
+
+            elif where == GRB.Callback.MIPSOL:
+                # Optional: called when a new solution is found :contentReference[oaicite:4]{index=4}
+                t = m.cbGet(GRB.Callback.RUNTIME)
+                obj = m.cbGet(GRB.Callback.MIPSOL_OBJ)
+                converted_instance_matrix_tmp, converted_navpoint_matrix_tmp = self.reconstruct_solution_cb(m, flight_variables_pd, sector_variables_pd, converted_instance_matrix, max_delay, all_flight_navpoint_dict)
+
+                # -----------------------------------------------------------------------------
+                t_init  = self.last_valid_pos(self.original_converted_instance_matrix)      # last non--1 in the *initial* schedule
+                t_final = self.last_valid_pos(converted_instance_matrix_tmp)     # last non--1 in the *final* schedule
+                
+                diff_tmp = converted_instance_matrix_tmp.shape[1] - self.old_navaid_sector_time_assignment.shape[1]
+                if diff_tmp > 0:
+                    self.old_navaid_sector_time_assignment = np.hstack([self.old_navaid_sector_time_assignment, np.repeat(self.old_navaid_sector_time_assignment[:, [-1]], diff_tmp, axis=1)])
+
+                diff_tmp = converted_instance_matrix_tmp.shape[1] - self.navaid_sector_time_assignment.shape[1]
+                if diff_tmp > 0:
+                    self.navaid_sector_time_assignment = np.hstack([self.navaid_sector_time_assignment, np.repeat(self.navaid_sector_time_assignment[:, [-1]], diff_tmp, axis=1)])
+
+                delay = np.where(t_init >= 0, t_final - t_init, 0)          # shape (|I|,)
+                system_loads = MIPModel.bucket_histogram(converted_instance_matrix_tmp, self.sectors, self.sectors.shape[0], converted_instance_matrix_tmp.shape[1], self._timestep_granularity)
+                capacity_time_matrix = MIPModel.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, self.navaid_sector_time_assignment, z = self._sector_capacity_factor, composite_sector_function=self._composite_sector_function)
+                capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+                capacity_overload_mask = capacity_demand_diff_matrix < 0
+                number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
+                total_delay  = delay.sum()
+                number_sectors = self.compute_total_number_sectors(self.navaid_sector_time_assignment)
+                sector_diff = np.count_nonzero(self.navaid_sector_time_assignment[:, 1:] != self.navaid_sector_time_assignment[:, :-1])
+                original_max_time_converted = self.original_converted_instance_matrix.shape[1]  # original_max_time
+                rerouted_mask = np.any(converted_instance_matrix_tmp[:, :original_max_time_converted] != self.original_converted_instance_matrix, axis=1)     # True if flight differs anywhere
+                number_reroutes = int(np.count_nonzero(rerouted_mask))
+                number_sector_reconfigurations = np.count_nonzero(self.navaid_sector_time_assignment != self.old_navaid_sector_time_assignment)
+
+                current_time = time.time() - self.start_time
+                output_dict = {}
+                output_dict["OVERLOAD"] = int(number_of_conflicts)
+                output_dict["ARRIVAL-DELAY"] = int(total_delay)
+                output_dict["SECTOR-NUMBER"] = int(number_sectors)
+                output_dict["SECTOR-DIFF"] = int(sector_diff)
+                output_dict["REROUTE"] = int(number_reroutes)
+                output_dict["RECONFIG"] = int(number_sector_reconfigurations)
+                output_dict["TOTAL-TIME-TO-THIS-POINT"] =  int(current_time)
+                output_dict["COMPUTATION-FINISHED"] = False
+                output_string = json.dumps(output_dict)
+                print(output_string)
+
+
+                #print(converted_instance_matrix_tmp)
+                #print(converted_navpoint_matrix_tmp)
+
+
+        model.optimize(cb)
+        return self.progress
  
+    def compute_total_number_sectors(self, navaid_sector_time_assignment):
+
+        if navaid_sector_time_assignment.shape[0] == 0:
+            number_sectors = 0
+        else:
+            S = np.sort(navaid_sector_time_assignment, axis=0)                       # sort within each column
+            changes = (S[1:, :] != S[:-1, :])            # True where a new value starts
+            uniq_per_col = 1 + changes.sum(axis=0)       # unique count per column
+        number_sectors = int(uniq_per_col.sum())     # sum over all columns
+
+        return number_sectors
+
+    def last_valid_pos(self, arr: np.ndarray) -> np.ndarray:
+        """
+        Return a 1-D array with, for every row in `arr`, the **last** column index
+        whose value is not -1.  If a row is all -1, we return -1 for that flight.
+        """
+        # True where value ≠ -1
+        mask = arr != -1                                        # same shape as arr
+
+        if not np.any(mask, where=True):
+            return None
+
+        # Reverse columns so that the *first* True along axis=1 is really the last
+        # in the original orientation
+        reversed_first = np.argmax(mask[:, ::-1], axis=1)
+
+        # If the whole row was False, argmax returns 0.  Detect that case:
+        no_valid = ~mask.any(axis=1)                            # shape (|I|,)
+
+        # Convert “position in reversed array” back to real column index
+        last_pos = arr.shape[1] - 1 - reversed_first            # shape (|I|,)
+        last_pos[no_valid] = -1                                 # sentinel value
+
+        return last_pos.astype(np.int64)
+
+
+
+
+
+    def reconstruct_solution_cb(self, model, flight_variables_pd, sector_variables_pd, converted_instance_matrix,
+                             max_delay, all_flight_navpoint_dict, fill_value = -1, tmp_output = False):
 
         result_matrix = -1 * np.ones((converted_instance_matrix.shape[0], converted_instance_matrix.shape[1] + max_delay), dtype=int)
 
-        solution_count = model.getAttr("SolCount")
+        converted_navpoint_matrix = -1 * np.ones((converted_instance_matrix.shape[0], converted_instance_matrix.shape[1] + max_delay), dtype=int)
 
-        if solution_count == 0:
-            return result_matrix
+        for flight in range(converted_instance_matrix.shape[0]):
+
+            flight_affected = converted_instance_matrix[flight,:]
+            flight_affected = flight_affected[flight_affected != fill_value]
+
+            if len(flight_affected) == 0:
+                continue
+
+            origin = flight_affected[0]
+            destination = flight_affected[-1]
+
+            #considered_rows_tmp = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd['V']==origin)]
+            #start_time = min(list(considered_rows_tmp['T']))
+            #considered_rows_tmp = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd['V']==origin)&(flight_variables_pd['T']==start_time)]
+            #print(considered_rows_tmp)
+
+            considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["V"]==destination)]
+            actual_delay = max_delay
+
+            for _,row in considered_rows.iterrows():
+
+                #print(row["obj"])
+                #print(model.cbGetSolution(row["obj"]))
+
+                if model.cbGetSolution(row["obj"]) >= 1:
+                    actual_delay = row["D"]
+
+            for navaid, current_time in all_flight_navpoint_dict[flight][actual_delay].items():
+                converted_navpoint_matrix[flight,current_time] = navaid
+        
+            considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]==actual_delay)]
+
+            for _,row in considered_rows.iterrows():
+
+                if model.cbGetSolution(row["obj"]) >= 1:
+                    result_matrix[flight,row["T"]] = row["V"]
+
+            """
+            considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["V"]==origin)&(flight_variables_pd["D"]<actual_delay)]
+
+            for _,row in considered_rows.iterrows():
+                if row["obj"].X >= 1:
+                    result_matrix[flight,row["T"]] = row["V"]
+            """
+
+        return result_matrix, converted_navpoint_matrix
+
+
+
+    def reconstruct_solution(self, model, flight_variables_pd, sector_variables_pd, converted_instance_matrix,
+                             max_delay, all_flight_navpoint_dict, fill_value = -1, tmp_output = False):
+
+        result_matrix = -1 * np.ones((converted_instance_matrix.shape[0], converted_instance_matrix.shape[1] + max_delay), dtype=int)
+
+        converted_navpoint_matrix = -1 * np.ones((converted_instance_matrix.shape[0], converted_instance_matrix.shape[1] + max_delay), dtype=int)
+
+        if tmp_output is False:
+            solution_count = model.getAttr("SolCount")
+
+            if solution_count == 0:
+                return result_matrix, None
 
 
         for flight in range(converted_instance_matrix.shape[0]):
@@ -550,18 +1054,28 @@ class MIPModel:
             flight_affected = converted_instance_matrix[flight,:]
             flight_affected = flight_affected[flight_affected != fill_value]
 
+            if len(flight_affected) == 0:
+                continue
+
             origin = flight_affected[0]
             destination = flight_affected[-1]
 
-            considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["V"]==destination)]
+            #considered_rows_tmp = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd['V']==origin)]
+            #start_time = min(list(considered_rows_tmp['T']))
+            #considered_rows_tmp = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd['V']==origin)&(flight_variables_pd['T']==start_time)]
+            #print(considered_rows_tmp)
 
+            considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["V"]==destination)]
             actual_delay = max_delay
 
             for _,row in considered_rows.iterrows():
 
-                if row["obj"].X >= 1 and row["D"] < actual_delay:
+                if row["obj"].X >= 1:
                     actual_delay = row["D"]
 
+            for navaid, current_time in all_flight_navpoint_dict[flight][actual_delay].items():
+                converted_navpoint_matrix[flight,current_time] = navaid
+        
             considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]==actual_delay)]
 
             for _,row in considered_rows.iterrows():
@@ -569,14 +1083,15 @@ class MIPModel:
                 if row["obj"].X >= 1:
                     result_matrix[flight,row["T"]] = row["V"]
 
-
+            """
             considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["V"]==origin)&(flight_variables_pd["D"]<actual_delay)]
 
             for _,row in considered_rows.iterrows():
                 if row["obj"].X >= 1:
                     result_matrix[flight,row["T"]] = row["V"]
+            """
 
-        return result_matrix
+        return result_matrix, converted_navpoint_matrix
 
  
     def restrict_max_vertices(self, prev_vertices, vertex_ids, matching_vertices, flight_affected, from_origin_time, edge_distances):
@@ -623,113 +1138,293 @@ class MIPModel:
 
         return vertex_ids
         
+    @classmethod
+    def bucket_histogram(cls, instance_matrix: np.ndarray,
+                         sectors: np.ndarray,                # unused, kept for signature compat
+                         num_buckets: int,
+                         n_times: int,
+                         timestep_granularity: int,          # unused, kept for signature compat
+                         *,
+                         fill_value: int = -1) -> np.ndarray:
 
-    def bucket_histogram(self, instance_matrix: np.ndarray,
-                        num_buckets: int,
-                        timestep_granularity: int,
-                        *,
-                        fill_value: int = -1) -> np.ndarray:
+        inst = np.asarray(instance_matrix)
+        if inst.ndim != 2:
+            raise ValueError("instance_matrix must be 2D (flights x time)")
+        F, T = inst.shape
+        if T != n_times:
+            raise ValueError(f"n_times ({n_times}) != instance_matrix.shape[1] ({T})")
+
+        # Early exit if everything is fill_value
+        valid = inst != fill_value
+        if not valid.any():
+            return np.zeros((num_buckets, T), dtype=np.int32)
+
+        # Mark entries (new sector occurrences) at each time:
+        # - t = 0: any valid value
+        # - t > 0: valid and changed vs previous time
         """
-        Count how many elements occupy each *bucket* at each *time step*.
-
-        Parameters
-        ----------
-        instance_matrix
-            2-D array produced by `instance_to_matrix`  
-            shape = (num_elements, num_time_steps)
-        num_buckets
-            Equals `self.capacity.shape[0]`
-        fill_value
-            The placeholder used for “no assignment” (default −1)
-
-        Returns
-        -------
-        counts : np.ndarray
-            shape = (num_buckets, num_time_steps)  
-            `counts[bucket, t]` is the occupancy of *bucket* at time *t*.
+        # Code for entry/diff demand measure:
+        change = np.zeros_like(valid, dtype=bool)
+        change[:, 0] = valid[:, 0]
+        if T > 1:
+            change[:, 1:] = valid[:, 1:] & (inst[:, 1:] != inst[:, :-1])
         """
-        n_elems, n_times = instance_matrix.shape
+        change = valid
 
-        # ------------------------------------------------------------------
-        # 1.  Mask out empty cells (if any)
-        # ------------------------------------------------------------------
+        # Gather (sector_id, time_idx) pairs where an entry happens
+        sectors_at_entries = inst[change]
+        time_idx = np.nonzero(change)[1]  # column indices where change==True
 
-        # Generate mask of values that differ from fill_value = -1
-        valid_mask = instance_matrix != fill_value
-        if not np.any(valid_mask):                       
-            # Shortcut if all cells empty
-            return np.zeros((num_buckets, n_times), dtype=int)
+        # Optional safety: ensure sector ids are in [0, num_buckets)
+        if sectors_at_entries.size:
+            mn = int(sectors_at_entries.min())
+            mx = int(sectors_at_entries.max())
+            if mn < 0 or mx >= num_buckets:
+                raise ValueError(
+                    f"sector id(s) out of range [0, {num_buckets}): found min={mn}, max={mx}"
+                )
 
-        # ------------------------------------------------------------------
-        # 2.  Gather bucket IDs and their time indices
-        # ------------------------------------------------------------------
-        buckets = instance_matrix[valid_mask]                        # (K,) bucket id
-        # 
+        # Scatter-add 1 for each (sector, time) event
+        hist = np.zeros((num_buckets, T), dtype=np.int32)
+        np.add.at(hist, (sectors_at_entries, time_idx), 1)
 
-        # np.nonzero --> Get indices of non-zero elements of valid_mask (non false)
-        # --> with np.nonzero(valid_mask)[1] we take the time indices
+        #np.savetxt("20251003_histogram.csv", hist, delimiter=",",fmt="%i")
 
-        times   = np.nonzero(valid_mask)[1]              # (K,) time index
-
-        # ------------------------------------------------------------------
-        # 3.  Vectorised scatter using `np.add.at`
-        # ------------------------------------------------------------------
-        counts = np.zeros((num_buckets, n_times), dtype=int)
-
-        # Performs unbuffered in place operation on operand ‘a’ for elements specified by ‘indices’.
-        # ufunc.at(a, indices, b=None, /)
-        # --> Buckets and times specify the indices
-        np.add.at(counts, (buckets, times), 1)
-
-        # Performs a sliding window aggregation according to timestep-granularity
-        # To account for hour/minute/etc. computation
-        axis = 1
-
-        pad_width = [(0, 0)] * counts.ndim
-        pad_width[axis] = (0, timestep_granularity - 1)
-        padded = np.pad(counts, pad_width, mode="constant")
-
-        windows = np.lib.stride_tricks.sliding_window_view(padded,
-                                                    window_shape=timestep_granularity,
-                                                    axis=axis)
-        windows = windows.sum(axis=2)
-
-        return windows
-
-    def capacity_time_matrix(self, cap: np.ndarray,
-                            n_times: int,
-                            *,
-                            sort_by_bucket: bool = False) -> np.ndarray:
-        """
-        Expand the per-bucket capacity vector to shape (|B|, n_times).
-
-        Parameters
-        ----------
-        cap
-            2-column array ``[bucket_id, capacity_value]`` with shape (|B|, 2).
-        n_times
-            Number of time steps (usually ``counts.shape[1]``).
-        sort_by_bucket
-            If *True* (default) the rows are first sorted by *bucket_id*
-            so that row *i* corresponds to bucket *i* (0 … |B|–1).
-
-        Returns
-        -------
-        cap_mat : np.ndarray
-            Shape (|B|, n_times) where every row is the bucket’s capacity.
-        """
-        if sort_by_bucket:
-            cap = cap[np.argsort(cap[:, 0])]
-
-        # Extract the capacity column → shape (|B|,)
-        cap_vals = cap[:, 1]
-
-        # Broadcast to (|B|, n_times) without an explicit loop
-        cap_mat = np.broadcast_to(cap_vals[:, None], (cap_vals.size, n_times))
-        # cap_mat = cap_mat.copy()
-
-        return cap_mat
+        return hist
     
+
+    @classmethod
+    def capacity_time_matrix(cls,
+                            cap: np.ndarray,
+                            n_times: int,
+                            time_granularity: int,
+                            navaid_sector_time_assignment: np.ndarray,
+                            z=1,
+                            composite_sector_function = MAX
+                            ) -> np.ndarray:
+        """
+        Same I/O and validations as before. Now we:
+        1) scatter-add to get per-(sector,time) SUM and COUNT,
+        2) call cls.compute_sector_capacity(avg, count, z)  <-- explicit rule, vectorized,
+        3) distribute remainder over T slots.
+        """
+        N = cap.shape[0]
+        T = int(time_granularity)
+
+        if n_times % T != 0:
+            raise ValueError("n_times must be a multiple of time_granularity (T).")
+
+        if navaid_sector_time_assignment.shape != (N, n_times):
+            raise ValueError(
+                f"navaid_sector_time_assignment must be shape (N, n_times) = ({N}, {n_times})"
+            )
+
+        S = navaid_sector_time_assignment.astype(np.int64, copy=False)
+        if S.min() < 0 or S.max() >= N:
+            print(S)
+            raise ValueError("Sector ids in navaid_sector_time_assignment must be in [0, N-1].")
+
+        # ---- 1) Sum atomic per-block caps and contributor counts per (sector,time)
+        atomic_block_cap = np.asarray(cap[:, 1], dtype=np.int64)  # length N
+
+        total_atomic_sum = np.zeros((N, n_times), dtype=np.int64)
+        contrib_count    = np.zeros((N, n_times), dtype=np.int64)
+
+        S_flat      = S.ravel(order="C")
+        t_idx_flat  = np.tile(np.arange(n_times, dtype=np.int64), N)
+        cap_rep_flat= np.repeat(atomic_block_cap, n_times)
+
+        np.add.at(total_atomic_sum, (S_flat, t_idx_flat), cap_rep_flat)
+        np.add.at(contrib_count,    (S_flat, t_idx_flat), 1)
+
+
+        max_atomic = None
+        avg = None
+
+        if composite_sector_function == MAX:
+            # Also compute per-(sector,time) MAX for the "max" rule
+            max_atomic = np.full((N, n_times), np.iinfo(np.int64).min, dtype=np.int64)
+            np.maximum.at(max_atomic, (S_flat, t_idx_flat), cap_rep_flat)
+            max_atomic = np.where(contrib_count > 0, max_atomic, 0)
+
+        if composite_sector_function == TRIANGULAR:
+            # Average with safe denom (still useful for triangular & linear rules)
+            avg = total_atomic_sum.astype(np.float64) / np.maximum(1, contrib_count)
+
+        # ---- 2) Explicit, *vectorized* capacity rule
+        # Returns per-block integer capacities
+        total_capacity = cls.compute_sector_capacity(contrib_count, float(z), avg_ = avg,
+                                                            max_ = max_atomic, sum_=total_atomic_sum, function = composite_sector_function)
+
+        # ---- 3) Distribute per-block capacity across T slots (unchanged)
+        base = total_capacity // T
+        rem  = total_capacity - base * T
+
+        rem_table = cls._remainder_distribution_table(T)   # (T+1, T)
+        k_mod     = np.arange(n_times, dtype=np.int64) % T
+
+        extra      = rem_table[rem, k_mod[None, :]]
+        sector_cap = (base + extra).astype(np.int64, copy=False)
+
+        return sector_cap
+
+    @classmethod
+    def create_initial_navpoint_sector_assignment(cls,
+                                    flights: np.ndarray,
+                                    airplane_flight: np.ndarray,
+                                    navaid_sector: np.ndarray,
+                                    max_time: int,
+                                    time_granularity: int,
+                                    *,
+                                    fill_value: int = -1,
+                                    compress: bool = False):
+        """
+        Vectorized/semi-vectorized rewrite instance_to_matrix.
+        Assumes IDs are non-negative ints (reasonably dense).
+        """
+
+        # --- ensure integer views without copies where possible
+        flights = flights.astype(np.int64, copy=False)
+        airplane_flight = airplane_flight.astype(np.int64, copy=False)
+
+        # --- build flight -> airplane mapping (array is fastest if IDs are dense)
+        fid_map_max = int(max(flights[:,0].max(), airplane_flight[:,1].max()))
+        flight_to_airplane = np.full(fid_map_max + 1, -1, dtype=np.int64)
+        flight_to_airplane[airplane_flight[:,1]] = airplane_flight[:,0]
+
+        # --- sort by flight, then time (stable contiguous blocks per flight)
+        order = np.lexsort((flights[:,2], flights[:,0]))
+        f_sorted = flights[order]
+
+        t   = f_sorted[:,2]
+
+        # --- output matrix shape (airplane_id rows, time columns)
+        max_time_dim = int(max(t.max() + 1, (max_time + 1) * time_granularity))
+
+        if max_time_dim % time_granularity != 0:
+            remainder = max_time_dim % time_granularity
+            max_time_dim += time_granularity - remainder
+
+            if max_time_dim % time_granularity != 0:
+                print("[ERROR] - Should never occur - failure in maths")
+                raise Exception("[ERROR IN COMPUTATION]")
+
+        sectors = navaid_sector[:, 1]                      # shape (N,)
+
+        largest_navaid = navaid_sector[navaid_sector.shape[0]-1,0]
+
+        output = np.ones((largest_navaid+1, max_time_dim), dtype=int)  * (-1)
+
+        for index in range(navaid_sector.shape[0]):
+            output_index = navaid_sector[index,0]
+            output[output_index,:] = navaid_sector[index,1]
+
+        for index in range(output.shape[0]):
+
+            if output[index,0] == -1:
+                output[index,:] = index
+
+        return output
+        #np.repeat(sectors[:, None], max_time_dim, axis=1)  # shape (N, T)
+     
+
+    @classmethod
+    def compute_sector_capacity(cls,
+                                counts: np.ndarray,
+                                z: float,
+                                avg_ = None,
+                                max_ = None,
+                                sum_ = None,
+                                function = "triangular"
+                                ) -> np.ndarray:
+        """
+        Vectorized capacity rule (edit here to change behavior).
+        Inputs:
+            avg    : (N, n_times) float64, mean atomic per-block capacity for each (sector,time)
+            counts : (N, n_times) int64, number of contributors k per (sector,time)
+            z      : float, rule parameter
+        Returns:
+            int64 (N, n_times) per-block capacities BEFORE remainder distribution.
+        Current rule (matches your earlier piecewise):
+            if k > z:   cap = round(((z+1)/2) * avg)
+            else:       cap = round(avg * triangular_weight_sum(k, z))
+        """
+        
+        empty_mask = (counts == 0)
+
+        if function == LINEAR:
+            if sum_ is None:
+                raise ValueError("compute_sector_capacity(rule='linear') requires sum_.")
+            out = sum_.astype(np.int64, copy=False)
+            out = np.where(empty_mask, 0, out)
+            return out
+        
+        if function == MAX:
+
+            if max_ is None:
+                raise ValueError("compute_sector_capacity(rule='max') requires max_.")
+            out = max_.astype(np.int64, copy=False)
+            out = np.where(empty_mask, 0, out)
+            return out
+        
+        if function == TRIANGULAR:
+
+            counts = counts.astype(np.int64, copy=False)
+            avg    = avg_.astype(np.float64, copy=False)
+
+            tri    = cls._triangular_weight_sum_counts(counts, z)
+
+            out = np.where(
+                counts > z,
+                ((z + 1.0) / 2.0) * avg,
+                avg * tri
+            )
+
+            # Ensure empty groups yield 0 exactly
+            out = np.where(counts == 0, 0.0, out)
+
+            return np.rint(out).astype(np.int64)
+ 
+    @classmethod 
+    def _triangular_weight_sum_counts(cls, counts: np.ndarray, denom: float) -> np.ndarray:
+        """
+        Vectorized: for each integer count k, compute
+        sum_{i=0}^{m-1} (1 - i/denom),
+        where m = min(k, number of positive weights), see compute_sector_capacity.
+        Returns an array of same shape as counts (float64).
+        """
+        counts = counts.astype(np.int64, copy=False)
+        d = float(denom)
+        if d <= 0:
+            return counts.astype(np.float64)  # no diminishing
+
+        d_floor = np.floor(d)
+        # m_pos = floor(d) if d integer else floor(d)+1
+        m_pos = np.where(np.isclose(d, d_floor), d_floor, d_floor + 1.0)
+        m = np.minimum(counts.astype(np.float64), np.maximum(0.0, m_pos))
+
+        # tri = m - (m-1)m/(2*d)
+        tri = m - (m - 1.0) * m / (2.0 * d)
+        return tri
+
+    @classmethod
+    def _remainder_distribution_table(slc, T: int) -> np.ndarray:
+        """
+        Build a (T+1, T) table where row r gives, for remainder r,
+        the number of extra +1 drops that land at each index k∈[0..T-1]
+        when stepping by ceil(T/r) and wrapping mod T, for r steps.
+
+        Row 0 is all zeros (no remainder to distribute).
+        """
+        table = np.zeros((T + 1, T), dtype=np.int64)
+        for r in range(1, T):  # r = remainder, strictly < T
+            step = (T + r - 1) // r  # ceil(T / r)
+            hits = (np.arange(r, dtype=np.int64) * step) % T
+            # count duplicates (they matter!)
+            cnt = np.bincount(hits, minlength=T)
+            table[r, :cnt.size] = cnt
+        return table
+
 
 
 
