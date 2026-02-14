@@ -382,6 +382,164 @@ class TranslateCSVtoLogicProgram:
         with open(encoding_path, "r") as file:
             self.encoding = file.read()
 
+
+    def get_bounded_choice_routes(self, flights, airplane_flight, airplanes, navaid_sector, max_time, timestep_granularity,navaid_sector_time_assignment, unit_graphs, networkx_graph):
+
+        #converted_navpoint_matrix, _ = TranslateCSVtoLogicProgram.instance_navpoint_matrix(self.flights, navaid_sector_time_assignment.shape[1], fill_value=-1)
+        converted_instance_matrix, planned_arrival_times = TranslateCSVtoLogicProgram.instance_to_matrix(flights, airplane_flight, navaid_sector_time_assignment.shape[1], timestep_granularity, navaid_sector_time_assignment)
+
+        flights_affected = converted_instance_matrix
+        problematic_flights = converted_instance_matrix
+        converted_instance_matrix = converted_instance_matrix
+
+        flight_navpoint_instance = []
+        flight_times_instance = []
+        
+        needed_capacities_for_navpoint = {}
+
+        sector_instance = {}
+        path_fact_instances = []
+
+        planned_departure_time_instance = []
+        actual_departure_time_instance = []
+        planned_arrival_time_instance = []
+        actual_arrival_time_instance = []
+
+        fill_value = -1
+        k = 4
+        largest_considered_time = 0
+
+        regulation_restricted_rerouting_instance = []
+
+
+        for flight_affected_index in range(flights_affected.shape[0]):
+
+
+            #flight_index = int(problematic_flights[flight_affected_index])
+            flight_index = flight_affected_index
+
+            airplane_id = (airplane_flight[airplane_flight[:,1] == flight_index])[0,0]
+            airplane_speed_kts = airplanes[airplane_id,1]
+            #current_flight = self.flights[self.flights[:,0] == flight_index]
+
+            flight_affected = flights_affected[flight_affected_index,:]
+
+            filed_flight_path = flights[flights[:,0] == flight_index,:]
+
+            #actual_arrival_time = (flight_affected >= 0).argmax() - 1
+            actual_arrival_time = np.flatnonzero(flight_affected >= 0)[-1] 
+
+            # TURNAROUND TIME:
+            # If a flight needs more than 1 timestep to prepare for departure they coincide; otherwise different
+            actual_flight_departure_time = 0
+
+            #actual_flight_departure_time = planned_flight_departure_time + actual_delay
+            
+            flight_affected = flight_affected[flight_affected != fill_value]
+
+            origin = flight_affected[0]
+            destination = flight_affected[-1]
+
+            # WITH A FILED FLIGHT PATH WE GET PATH NUMBER = 0
+            paths = self.k_diverse_near_shortest_paths(unit_graphs[airplane_speed_kts], origin, destination, {},
+                                                k=k, eps=0.1, jaccard_max=0.6, penalty_scale=0.1, max_tries=50, weight_key="weight",
+                                                filed_path=list(filed_flight_path[:,1]))
+
+
+            path_id = 0
+
+            for path in paths:
+                navpoint_trajectory = self.get_flight_navpoint_trajectory(flights_affected, networkx_graph, flight_index, actual_flight_departure_time, airplane_speed_kts, path, timestep_granularity)
+
+
+                for flight_id, flight_navpoint, flight_time in navpoint_trajectory:
+                    regulation_restricted_rerouting_instance.append(f"regulation_restricted_rerouting_paths({flight_index},{flight_navpoint},{flight_time},{path_id}).")
+
+                path_id += 1
+
+
+        return regulation_restricted_rerouting_instance
+            
+    
+    def k_diverse_near_shortest_paths(
+        self,
+        G, s, t, nearest_neighbors_lookup, k=5, eps=0.10, jaccard_max=0.6,
+        penalty_scale=0.5, max_tries=200, weight_key="weight",
+        filed_path = []
+    ):
+        
+        s_t_length, _ = nx.bidirectional_dijkstra(G, s, t, weight=weight_key)
+
+        allowed = (1.0 + eps) * s_t_length
+
+        # 1) shortest length & prune to a small corridor: ds[u]+dt[u] ≤ (1+eps)*L0
+        #
+        if s not in nearest_neighbors_lookup:
+            ds = nx.single_source_dijkstra_path_length(G, s, weight=weight_key)
+            nearest_neighbors_lookup[s] = ds
+        else:
+            ds = nearest_neighbors_lookup[s]
+
+        if t not in nearest_neighbors_lookup:
+            dt = nx.single_source_dijkstra_path_length(G, t, weight=weight_key)
+            nearest_neighbors_lookup[t] = dt
+        else:
+            dt = nearest_neighbors_lookup[t]
+
+        keep = {u for u in G if u in ds and u in dt and ds[u] + dt[u] <= allowed}
+
+        H = G.subgraph(keep).copy()
+
+        # Edge-penalties (undirected key)
+        def ekey(u, v):
+            return (u, v) if u <= v else (v, u)
+        penalties = {}
+
+        # Penalized weight function
+        def w(u, v, d):
+            base = d.get(weight_key, 1.0)
+            pen = penalties.get(ekey(u, v), 0.0)
+            return base + pen
+
+        paths, edge_sets, tries = [], [], 0
+
+        if len(filed_path) > 0:
+            E = {ekey(u, v) for u, v in zip(filed_path, filed_path[1:])}
+            paths.append(filed_path)
+            edge_sets.append(E)
+
+        while len(paths) < k and tries < max_tries:
+            tries += 1
+            try:
+                p = nx.shortest_path(H, s, t, weight=w)
+            except nx.NetworkXNoPath:
+                break
+            
+            # Evaluate real (unpenalized) length
+            L = nx.path_weight(G, p, weight=weight_key)
+            if L > allowed:
+                break  # can’t find more within slack
+
+            # Edge-set and diversity check (Jaccard on edges)
+            E = {ekey(u, v) for u, v in zip(p, p[1:])}
+            similar = any(len(E & Es) / len(E | Es) > jaccard_max for Es in edge_sets)
+
+            # Always penalize current path to push the next one away
+            avg_edge = L / max(1, len(E))
+            for e in E:
+                penalties[e] = penalties.get(e, 0.0) + penalty_scale * avg_edge
+
+            if similar:
+                continue  # reject, keep searching
+
+            paths.append(p)
+            edge_sets.append(E)
+
+        return paths
+
+
+           
+
     def main(self, graph_path: str, flights_path: str, sectors_path: str, airports_path: str, airplanes_path, airplane_flight_path,
              navaid_sector_path, encoding_path, timestep_granularity: int, max_time,
              sector_capactiy_factor,
@@ -431,6 +589,10 @@ class TranslateCSVtoLogicProgram:
 
         graph_instance = self.convert_graph(self.unit_graphs)
         flights_instance, max_time_flights = self.convert_flights(self.flights)
+        regulation_restricted_rerouting_trajectories = []
+        if regulation_rerouting_active == 1:
+            regulation_restricted_rerouting_trajectories = self.get_bounded_choice_routes(self.flights, self.airplane_flight, self.airplanes, self.navaid_sector, max_time, timestep_granularity,navaid_sector_time_assignment, self.unit_graphs, self.networkx_navpoint_graph)
+
         sectors_instance = self.convert_sectors(self.sectors, timestep_granularity, max_time, max_time_flights, navaid_sector_time_assignment)
         airports_instance = self.convert_airports(self.airports)
         airplanes_instance = self.convert_airplanes(self.airplanes)
@@ -444,15 +606,20 @@ class TranslateCSVtoLogicProgram:
 
         regulation_instance = []
 
-        if regulation_ground_delay_active is True:
-            regulation_instance.append("regulation_delaying.")
-        else:
+        if regulation_ground_delay_active == 0:
             regulation_instance.append("-regulation_delaying.")
+        elif regulation_ground_delay_active == 1:
+            regulation_instance.append("regulation_restricted_delaying.")
+            regulation_instance.append("restricted_delaying_max_delay(4).")
+        elif regulation_ground_delay_active == 2:
+            regulation_instance.append("regulation_delaying.")
 
-        if regulation_rerouting_active is True:
-            regulation_instance.append("regulation_rerouting.")
-        else:
+        if regulation_rerouting_active == 0:
             regulation_instance.append("-regulation_rerouting.")
+        elif regulation_rerouting_active == 1:
+            regulation_instance.append("regulation_restricted_rerouting.")
+        elif regulation_rerouting_active == 2:
+            regulation_instance.append("regulation_rerouting.")
 
         if regulation_dynamic_sectorization_active == 0:
             regulation_instance.append("-regulation_dynamic_sector_allocation.")
@@ -461,10 +628,12 @@ class TranslateCSVtoLogicProgram:
         elif regulation_dynamic_sectorization_active == 2:
             regulation_instance.append("regulation_dynamic_sector_allocation.")
 
+
         instance = graph_instance + flights_instance + sectors_instance + airplanes_instance +\
             airports_instance + airplane_flight_instance + navaid_sector_instance +\
             timestep_granularity_instance + max_time_instance+\
-            sector_capactiy_factor_instance + regulation_instance
+            sector_capactiy_factor_instance + regulation_instance+\
+            regulation_restricted_rerouting_trajectories
     
         return instance
 
@@ -625,3 +794,132 @@ class TranslateCSVtoLogicProgram:
         return table
 
 
+
+    @classmethod
+    def instance_to_matrix(cls,
+                            flights: np.ndarray,
+                            airplane_flight: np.ndarray,
+                            max_time: int,
+                            time_granularity: int,
+                            navaid_sector_time_assignment: np.ndarray,
+                            *,
+                            fill_value: int = -1,
+                            compress: bool = False):
+
+        vals = flights[:, 1]
+        cols = flights[:, 2].astype(int)
+
+
+        # --- output matrix shape (airplane_id rows, time columns)
+        n_rows = int(airplane_flight[:, 1].max()) + 1
+        out = np.full((n_rows, int(max_time)), fill_value, dtype=np.int64)
+       
+        flight_ids = flights[:,0]
+        flight_ids = np.unique(flight_ids)
+
+        planned_arrival_times = {}
+
+        for flight_id in flight_ids:
+
+            #airplane_id = (airplane_flight[airplane_flight[:,1] == flight_id])[0,0]
+
+            current_flight = flights[flights[:,0] == flight_id]
+
+            for flight_hop_index in range(current_flight.shape[0]):
+
+                navaid = current_flight[flight_hop_index,1]
+                time = current_flight[flight_hop_index,2]
+                #sector = (navaid_sector[navaid_sector[:,0] == navaid])[0,1]
+
+                if flight_hop_index == 0:
+                    sector = navaid_sector_time_assignment[navaid,time]
+                    out[flight_id,time] = sector
+                else:
+
+                    prev_navaid = current_flight[flight_hop_index - 1,1]
+                    prev_time = current_flight[flight_hop_index - 1,2]
+
+                    for time_index in range(1, time-prev_time + 1):
+
+                        if time_index <= math.floor((time - prev_time)/2):
+                            prev_sector = navaid_sector_time_assignment[prev_navaid,prev_time + time_index]
+                            out[flight_id,prev_time + time_index] = prev_sector
+
+                        else:
+                            sector = navaid_sector_time_assignment[navaid,prev_time + time_index]
+                            out[flight_id,prev_time + time_index] = sector
+
+                if flight_id not in planned_arrival_times:
+                    planned_arrival_times[flight_id] = time
+                elif planned_arrival_times[flight_id] < time:
+                    planned_arrival_times[flight_id] = time
+
+        #np.savetxt("20250826_converted_instance.csv", out, delimiter=",",fmt="%i")
+
+        return out, planned_arrival_times
+    
+    @classmethod
+    def instance_navpoint_matrix(cls, triplets, max_time, *, t0=0, fill_value=-1):
+        """
+        triplets: (N x 3) array-like of [flight_id, navpoint_id, time_first_reached]
+        max_time: largest time index to include (inclusive)
+        t0:       optional time offset (use t0=min_time if your times don't start at 0)
+        """
+        a = np.asarray(triplets, dtype=int)
+        f = a[:, 0]
+        n = a[:, 1]
+        t = a[:, 2] - t0  # shift if needed so time starts at 0
+
+        # Map possibly non-contiguous flight IDs to row indices
+        flights, f_idx = np.unique(f, return_inverse=True)
+        F = flights.size
+        T = max_time - t0  # inclusive of max_time
+
+        out = np.full((F, T), fill_value, dtype=int)
+
+        # keep only times that land inside [0, T-1]
+        m = (t >= 0) & (t < T)
+        out[f_idx[m], t[m]] = n[m]  # last write wins if duplicates
+
+        return out, flights  # 'flights' tells you which row corresponds to which flight_id
+
+    def get_flight_navpoint_trajectory(self, flights_affected, networkx_graph, flight_index, start_time, airplane_speed_kts, path, timestep_granularity):
+
+        traj = []
+        current_time = start_time
+        for hop, vertex in enumerate(path):
+            if hop == 0:
+                # Origin
+                t_slot = current_time
+
+                if t_slot >= flights_affected.shape[1]:
+                    raise Exception("In optimize_flights max time exceeded current allowed time.")
+
+            else:
+                # En-route/destination
+                prev_vertex = path[hop -1]
+                #print(f"prev_vertex:{prev_vertex},vertex:{vertex}")
+                distance = networkx_graph[prev_vertex][vertex]["weight"]
+
+                # CONVERT SPEED TO m/s
+                airplane_speed_ms = airplane_speed_kts * 0.51444
+
+                # Compute duration from prev to vertex in unit time:
+                duration_in_seconds = distance/airplane_speed_ms
+                factor_to_unit_standard = 3600.00 / float(timestep_granularity)
+                duration_in_unit_standards = math.ceil(duration_in_seconds / factor_to_unit_standard)
+
+                if duration_in_unit_standards == 0:
+                    duration_in_unit_standards = 1
+
+                current_time = current_time + duration_in_unit_standards
+
+                t_slot=current_time
+
+                if t_slot >= flights_affected.shape[1]:
+                    raise Exception("In optimize_flights max time exceeded current allowed time.")
+
+            traj.append((flight_index, vertex, t_slot))
+
+        return traj
+    

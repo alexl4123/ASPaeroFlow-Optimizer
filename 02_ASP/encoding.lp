@@ -76,6 +76,8 @@ overload(X,T,LOAD-C) :- sector(X,T,C), #count{ID:flight(ID,X,T)} = LOAD, LOAD > 
 reroute(ID) :- planned_departure_time(ID,T), actual_departure_time(ID,T'), T' > T.
 {navpoint_flight(ID,X,T):navpoint(X)}1 :- reroute(ID), time(T), actual_departure_time(ID,T'), T >= T', regulation_rerouting.
 navpoint_flight(ID,X,T + TT) :- navpoint_flight_plan(ID,X,T), actual_departure_time(ID,TACT),planned_departure_time(ID,TPLAN), TT = TACT - TPLAN, -regulation_rerouting.
+1{navpoint_flight_chosen_path(ID,P):regulation_restricted_rerouting_paths(ID,_,_,P)}1 :- reroute(ID), regulation_restricted_rerouting.
+navpoint_flight(ID,X,T+T_DELTA) :- regulation_restricted_rerouting_paths(ID,X,T_DELTA,P), reroute(ID), actual_departure_time(ID,T), navpoint_flight_chosen_path(ID,P), regulation_restricted_rerouting.
 
 
 % ----------------- ONLY FOR REROUTED PLANES --------------------
@@ -119,6 +121,7 @@ flightOccurs(ID) :- navpoint_flight(ID,_,_).
 
 % HELPER PREDS:
 1{actual_departure_time(ID,T):time(T), T >= TP}1 :- planned_departure_time(ID,TP), regulation_delaying.
+1{actual_departure_time(ID,T):time(T), T >= TP, T <= TP + MD}1 :- planned_departure_time(ID,TP), restricted_delaying_max_delay(MD), regulation_restricted_delaying.
 actual_departure_time(ID,TP) :- planned_departure_time(ID,TP), -regulation_delaying.
 
 planned_arrival_time(ID,T) :- flightID(ID), T = #max{T':navpoint_flight_plan(ID,_,T')}.
