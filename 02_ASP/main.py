@@ -149,10 +149,10 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
                         help="Weights & Biases entity (username or team/organization). Leave empty to use your default entity.")
     
     # REGULATIONS ACTIVE:
-    parser.add_argument("--regulation-ground-delay-active", type=str, default=str(C("regulation-ground-delay-active", "true")),
-                        help="true/false: Enable ground delays of aircraft.")
-    parser.add_argument("--regulation-rerouting-active", type=str, default=str(C("regulation-rerouting-active", "true")),
-                        help="true/false: Enable rerouting of aircraft.")
+    parser.add_argument("--regulation-ground-delay-active", type=int, default=str(C("regulation-ground-delay-active", 2)),
+                        help="0=no ground delay, 1=restricted ground delay, 2=full dynamic delaying")
+    parser.add_argument("--regulation-rerouting-active", type=int, default=str(C("regulation-rerouting-active", 2)),
+                        help="0=no rerouting, 1=restricted rerouting, 2=full dynamic rerouting")
     parser.add_argument("--regulation-dynamic-sectorization", type=int, default=str(C("regulation-dynamic-sectorization", 2)),
                         help="0=no dynamic sectorization, 1=restricted dynamic sectorization, 2=full dynamic sectorization.")
     parser.add_argument("--allow-overloads", type=str, default=str(C("allow-overloads", "false")),
@@ -234,8 +234,8 @@ def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
     args.save_results = _str2bool(args.save_results)
     args.wandb_enabled = _str2bool(args.wandb_enabled)
     
-    args.regulation_ground_delay_active = _str2bool(args.regulation_ground_delay_active)
-    args.regulation_rerouting_active = _str2bool(args.regulation_rerouting_active)
+    #args.regulation_ground_delay_active = _str2bool(args.regulation_ground_delay_active)
+    #args.regulation_rerouting_active = _str2bool(args.regulation_rerouting_active)
     args.allow_overloads = _str2bool(args.allow_overloads)
 
     return args
@@ -411,7 +411,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         encoding = open(encoding_path, "r").read()
 
-        #open("20251223_instance.lp","w").write(instance_asp_atoms)
+        open("20260214_instance.lp","w").write(instance_asp_atoms)
         
         solver: Model = Solver(encoding, instance_asp_atoms, seed=seed, wandb_log = wandb_log)
         model = solver.solve()
@@ -426,12 +426,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             """)
 
         #quit()
-
         if model.get_total_overload() > 0 and allow_overloads is False:
-            max_time += 1
-            model = None
-
-
+            if regulation_ground_delay_active == 2:
+                max_time += 1
+                model = None
 
     if verbosity > 0:
         print(f"""
@@ -459,8 +457,8 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     for flight in flights:
         flight_id = int(str(flight.arguments[0]))
-        flight_time = int(str(flight.arguments[1]))
-        flight_sector = int(str(flight.arguments[2]))
+        flight_sector = int(str(flight.arguments[1]))
+        flight_time = int(str(flight.arguments[2]))
 
         converted_instance_matrix[flight_id, flight_time] = flight_sector
 
@@ -468,8 +466,8 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     for navpoint_flight in model.get_navpoint_flights():
         flight_id = int(str(navpoint_flight.arguments[0]))
-        flight_time = int(str(navpoint_flight.arguments[1]))
-        flight_navaid = int(str(navpoint_flight.arguments[2]))
+        flight_navaid = int(str(navpoint_flight.arguments[1]))
+        flight_time = int(str(navpoint_flight.arguments[2]))
 
         converted_navpoint_matrix[flight_id, flight_time] = flight_navaid
 
