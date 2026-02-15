@@ -668,11 +668,30 @@ class OptimizeFlights:
                     all_affected_flights = tmp_flights.copy()
 
                     tmp_flights = np.array(tmp_tmp_flights)
-                    
-                    triplets = self.time_matrix_to_triplets(self.converted_navpoint_matrix[tmp_flights,time_index:])
+                   
+                    if len(tmp_flights) > 0:
+                        triplets = self.time_matrix_to_triplets(self.converted_navpoint_matrix[tmp_flights,time_index:])
+                        # FIX INDICES
+                        triplets[:,2] = triplets[:,2] + time_index
 
-                    # FIX INDICES
-                    triplets[:,2] = triplets[:,2] + time_index
+                        airplane_flight_mockup = []
+                        for flight_index in range(len(tmp_flights)):
+                            airplane_flight_mockup.append([flight_index,flight_index])
+
+                        airplane_flight_mockup = np.array(airplane_flight_mockup)
+
+                        converted_instance_matrix, _ = OptimizeFlights.instance_to_matrix(triplets, airplane_flight_mockup, self.navaid_sector_time_assignment.shape[1], self.timestep_granularity, self.navaid_sector_time_assignment)
+                        system_loads_tmp = OptimizeFlights.bucket_histogram(converted_instance_matrix, None, self.capacity_time_matrix.shape[0], converted_instance_matrix.shape[1], self.timestep_granularity)
+
+                        partition_sectors = np.array(partition_sectors)
+
+                        demand_matrix[partition_sectors,time_index:] = system_loads_tmp[partition_sectors,time_index:]
+
+                        capacity_demand_diff_matrix = capacity_time_matrix - demand_matrix
+                    else:
+                        capacity_demand_diff_matrix = capacity_time_matrix 
+                        demand_matrix = np.zeros(capacity_demand_diff_matrix.shape)
+
 
                     """
                     triplets_indices = []
@@ -693,20 +712,6 @@ class OptimizeFlights:
 
                     #tmp_airplane_flight = self.airplane_flight[np.isin(self.airplane_flight[:,1],tmp_flights)]
 
-                    airplane_flight_mockup = []
-                    for flight_index in range(len(tmp_flights)):
-                        airplane_flight_mockup.append([flight_index,flight_index])
-
-                    airplane_flight_mockup = np.array(airplane_flight_mockup)
-
-                    converted_instance_matrix, _ = OptimizeFlights.instance_to_matrix(triplets, airplane_flight_mockup, self.navaid_sector_time_assignment.shape[1], self.timestep_granularity, self.navaid_sector_time_assignment)
-                    system_loads_tmp = OptimizeFlights.bucket_histogram(converted_instance_matrix, None, self.capacity_time_matrix.shape[0], converted_instance_matrix.shape[1], self.timestep_granularity)
-
-                    partition_sectors = np.array(partition_sectors)
-
-                    demand_matrix[partition_sectors,time_index:] = system_loads_tmp[partition_sectors,time_index:]
-
-                    capacity_demand_diff_matrix = capacity_time_matrix - demand_matrix
 
                     capacity_overload_mask = capacity_demand_diff_matrix < 0
                     number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
