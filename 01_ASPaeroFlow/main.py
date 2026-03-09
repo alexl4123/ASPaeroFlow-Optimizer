@@ -453,7 +453,7 @@ class Main:
         global_t_start = 1
         time_bucket_updated = 0
 
-        paused = False
+        paused = True
 
         while np.any(capacity_overload_mask, where=True):
 
@@ -469,16 +469,21 @@ class Main:
                     paused = False
                     print("[CONTROL->OPTIMIZER]: START")
                     self._control_ctrl_socket.send_string("TELEMETRY: [STATUS] RESUMED")
+                elif command.startswith("<LOAD>"):
+                    return "<LOAD>", command[6:]
                     
             # B. Blocking Wait Loop (halts heuristic progression)
             if paused:
                 # poller.poll() with None blocks indefinitely until I/O occurs
                 events = dict(self._control_poller.poll(timeout=None))
                 if self._control_ctrl_socket in events:
-                    if self._control_ctrl_socket.recv_string() == "START":
+                    command = self._control_ctrl_socket.recv_string()
+                    if command == "START":
                         print("[CONTROL->OPTIMIZER]: START")
                         paused = False
                         self._control_ctrl_socket.send_string("TELEMETRY: [STATUS] RESUMED")
+                    elif command.startswith("<LOAD>"):
+                        return "<LOAD>", command[6:]
                 continue
 
             if self.verbosity > 0:
@@ -1077,6 +1082,8 @@ class Main:
 
         if self.verbosity > 1:
             np.savetxt("20250826_final_matrix.csv", converted_instance_matrix, delimiter=",", fmt="%i") 
+
+        return "fin","fin"
 
     def get_total_atfm_delay(self):
         return self.total_atfm_delay
@@ -2177,11 +2184,15 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
 
     return parser
 
-def _apply_data_dir_defaults(args: argparse.Namespace) -> argparse.Namespace:
+def _apply_data_dir_defaults(args: argparse.Namespace, folder=None) -> argparse.Namespace:
     """For any missing *-path, use data_dir / default_filename."""
-    if not args.data_dir:
-        return args
-    base = args.data_dir
+
+    if folder is None:
+        if not args.data_dir:
+            return args
+        base = args.data_dir
+    else:
+        base = folder
 
     def fill(cur: Optional[Path], fname_key: str) -> Path:
         return cur if cur else (base / DEFAULT_FILENAMES[fname_key])
@@ -2214,6 +2225,7 @@ def _validate_inputs(args: argparse.Namespace):
 
 def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
     """Parse CLI with priority: CLI > config > built-in defaults."""
+
     # 1) preparse to get --config
     pre, _ = _preparse(argv)
     cfg = {}
@@ -2230,19 +2242,6 @@ def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
     # 2) build the full parser with cfg-derived defaults
     parser = _build_arg_parser(cfg)
     args = parser.parse_args(argv)
-
-    # Keep the config path in args for traceability
-    if args.config is None and pre.config:
-        args.config = pre.config
-
-    # 3) If data-dir provided (CLI or config), auto-fill missing file paths
-    if args.data_dir is None and pre.data_dir:
-        args.data_dir = pre.data_dir
-    args = _apply_data_dir_defaults(args)
-
-    # 4) Final validation
-    _validate_inputs(args)
-
     # normalize booleans
     def _str2bool(v):
         if isinstance(v, bool): return v
@@ -2254,8 +2253,21 @@ def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
     args.minimize_number_sectors = _str2bool(args.minimize_number_sectors_enabled)
 
     args.controller_enabled = _str2bool(args.controller_enabled)
-    args.controller_control_socket_port = _str2bool(args.controller_control_socket_port)
-    args.controller_data_socket_port = _str2bool(args.controller_data_socket_port)
+
+
+    # Keep the config path in args for traceability
+    if args.config is None and pre.config:
+        args.config = pre.config
+
+    # 3) If data-dir provided (CLI or config), auto-fill missing file paths
+    if args.data_dir is None and pre.data_dir:
+        args.data_dir = pre.data_dir
+    args = _apply_data_dir_defaults(args)
+
+    if args.controller_enabled is False:
+        # 4) Final validation
+        _validate_inputs(args)
+
 
     return args
 
@@ -2350,7 +2362,88 @@ def _save_results(args: argparse.Namespace, app) -> None:
 def main(argv: Optional[List[str]] = None) -> None:
     """Script entry-point compatible with both `python -m` and `poetry run`."""
     args = parse_cli(argv)
-    
+
+    if args.controller_enabled is True:
+
+        control_context = zmq.Context()
+        
+        control_socket_port = args.controller_control_socket_port 
+        data_socket_port = args.controller_data_socket_port
+        
+        # 1. Control Channel (PAIR)
+        control_ctrl_socket = control_context.socket(zmq.PAIR)
+        control_ctrl_socket.connect(f"tcp://127.0.0.1:{control_socket_port}")
+        
+        # 2. Telemetry Channel (PUB)
+        control_pub_socket = control_context.socket(zmq.PUB)
+        control_pub_socket.bind(f"tcp://127.0.0.1:{data_socket_port}")
+        
+        # Non-blocking I/O setup for the Control Channel
+        control_poller = zmq.Poller()
+        control_poller.register(control_ctrl_socket, zmq.POLLIN)
+
+        control_ctrl_socket.send_string("INITIALIZED OPTIMIZER")
+
+
+        # Configure the Poller for I/O multiplexing
+        init_poller = zmq.Poller()
+        init_poller.register(control_ctrl_socket, zmq.POLLIN)
+
+        controller_defined_instance = False
+
+        while True:
+            # Poll with a 1000ms timeout to prevent deadlocks
+            socks = dict(init_poller.poll(1000))
+
+            # Process Optimizer control socket events
+            if control_ctrl_socket in socks and socks[control_ctrl_socket] == zmq.POLLIN:
+                message = control_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
+                if message == "CONTROLLER DEFINED INSTANCE":
+                    controller_defined_instance = True
+                    break
+                elif message == "OPTIMIZER DEFINED INSTANCE":
+                    controller_defined_instance = False
+                    break
+                else:
+                    print(f"OPTIMIZER BUSY:\n{message}")
+
+        init_poller = zmq.Poller()
+        init_poller.register(control_ctrl_socket, zmq.POLLIN)
+        control_ctrl_socket.send_string("ack")
+
+        if controller_defined_instance is True:
+            # Configure the Poller for I/O multiplexing
+
+            while True:
+                # Poll with a 1000ms timeout to prevent deadlocks
+                socks = dict(init_poller.poll(1000))
+
+                # Process Optimizer control socket events
+                if control_ctrl_socket in socks and socks[control_ctrl_socket] == zmq.POLLIN:
+                    message = control_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
+                    if message.startswith("<LOAD>"):
+                        message = message[6:]
+                    data_dir_path = Path(message)
+                    args.data_dir = data_dir_path
+
+                    args.graph_path           = None
+                    args.sectors_path         = None
+                    args.flights_path         = None
+                    args.airports_path        = None
+                    args.airplanes_path       = None
+                    args.airplane_flight_path = None
+                    args.navaid_sector_path   = None
+
+                    args = _apply_data_dir_defaults(args, data_dir_path)
+                    _validate_inputs(args)
+                    break
+
+    else:
+        control_context = None
+        control_ctrl_socket = None
+        control_pub_socket = None
+        control_poller = None
+
     if args.verbosity > 0:
         # Optional: small echo of resolved inputs
         print("[i] Using inputs:")
@@ -2411,50 +2504,45 @@ def main(argv: Optional[List[str]] = None) -> None:
         )
         wandb_log = run.log
 
-    if args.controller_enabled is True:
 
-        control_context = zmq.Context()
-        
-        # 1. Control Channel (PAIR)
-        control_ctrl_socket = control_context.socket(zmq.PAIR)
-        control_ctrl_socket.connect("tcp://127.0.0.1:5555")
-        
-        # 2. Telemetry Channel (PUB)
-        control_pub_socket = control_context.socket(zmq.PUB)
-        control_pub_socket.bind("tcp://127.0.0.1:5556")
-        
-        # Non-blocking I/O setup for the Control Channel
-        control_poller = zmq.Poller()
-        control_poller.register(control_ctrl_socket, zmq.POLLIN)
+    while True:
 
-        # Block until initialization command
-        while True:
-            if control_ctrl_socket.recv_string() == "START":
-                print("START RECEIVED")
-                break
-    else:
-        control_context = None
-        control_ctrl_socket = None
-        control_pub_socket = None
-        control_poller = None
+        app = Main(args.graph_path, args.sectors_path, args.flights_path,
+                args.airports_path, args.airplanes_path,
+                args.airplane_flight_path, args.navaid_sector_path,
+                args.encoding_path,
+                args.seed, args.number_threads, args.timestep_granularity,
+                args.max_explored_vertices, args.max_delay_per_iteration,
+                args.max_time, args.verbosity,
+                args.sector_capacity_factor,
+                args.number_capacity_management_configs,
+                args.capacity_management_enabled,
+                composite_sector_function,
+                experiment_name,
+                wandb_log,
+                args.optimizer, args.max_number_navpoints_per_sector, args.max_number_sectors, args.minimize_number_sectors,
+                args.convex_sectors,
+                control_context, control_ctrl_socket, control_pub_socket, control_poller)
+        key, value = app.run()
 
-    app = Main(args.graph_path, args.sectors_path, args.flights_path,
-               args.airports_path, args.airplanes_path,
-               args.airplane_flight_path, args.navaid_sector_path,
-               args.encoding_path,
-               args.seed, args.number_threads, args.timestep_granularity,
-               args.max_explored_vertices, args.max_delay_per_iteration,
-               args.max_time, args.verbosity,
-               args.sector_capacity_factor,
-               args.number_capacity_management_configs,
-               args.capacity_management_enabled,
-               composite_sector_function,
-               experiment_name,
-               wandb_log,
-               args.optimizer, args.max_number_navpoints_per_sector, args.max_number_sectors, args.minimize_number_sectors,
-               args.convex_sectors,
-               control_context, control_ctrl_socket, control_pub_socket, control_poller)
-    app.run()
+        if key == "<LOAD>":
+            print("RECONFIGURE TO:")
+            print(value)
+            data_dir_path = Path(value)
+            args.data_dir = data_dir_path
+            args.graph_path           = None
+            args.sectors_path         = None
+            args.flights_path         = None
+            args.airports_path        = None
+            args.airplanes_path       = None
+            args.airplane_flight_path = None
+            args.navaid_sector_path   = None
+            args = _apply_data_dir_defaults(args, data_dir_path)
+            _validate_inputs(args)
+        else:
+            break
+
+
 
     # Save results if requested
     if args.save_results:
