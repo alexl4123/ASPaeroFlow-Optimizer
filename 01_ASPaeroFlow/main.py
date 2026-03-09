@@ -19,6 +19,8 @@ import networkx as nx
 import os
 import json
 
+import zmq
+
 import numpy as np
 import warnings
 
@@ -129,6 +131,10 @@ class Main:
         max_number_sectors = -1,
         minimize_number_sectors = False,        
         convex_sectors = 0,
+        control_context = None,
+        control_ctrl_socket = None,
+        control_pub_socket = None,
+        control_poller = None
         ) -> None:
 
         self._graph_path: Optional[Path] = graph_path
@@ -142,6 +148,11 @@ class Main:
         self.max_number_navpoints_per_sector = max_number_navpoints_per_sector
         self.max_number_sectors = max_number_sectors
         self.minimize_number_sectors = minimize_number_sectors
+
+        self._control_context = control_context
+        self._control_ctrl_socket = control_ctrl_socket
+        self._control_pub_socket = control_pub_socket
+        self._control_poller = control_poller
 
         self._optimizer = optimizer
 
@@ -394,6 +405,7 @@ class Main:
         output_dict["COMPUTATION-FINISHED"] = False
         output_string = json.dumps(output_dict)
         print(output_string)
+        self._control_pub_socket.send_string(f"{output_string}")
 
         last_time_bucket_updated = 0
 
@@ -441,7 +453,34 @@ class Main:
         global_t_start = 1
         time_bucket_updated = 0
 
+        paused = False
+
         while np.any(capacity_overload_mask, where=True):
+
+            # A. State Machine for Interrupts
+            events = dict(self._control_poller.poll(timeout=0))
+            if self._control_ctrl_socket in events:
+                command = self._control_ctrl_socket.recv_string()
+                if command == "PAUSE":
+                    paused = True
+                    print("[CONTROL->OPTIMIZER]: PAUSE")
+                    self._control_ctrl_socket.send_string("TELEMETRY: [STATUS] PAUSED")
+                elif command == "START":
+                    paused = False
+                    print("[CONTROL->OPTIMIZER]: START")
+                    self._control_ctrl_socket.send_string("TELEMETRY: [STATUS] RESUMED")
+                    
+            # B. Blocking Wait Loop (halts heuristic progression)
+            if paused:
+                # poller.poll() with None blocks indefinitely until I/O occurs
+                events = dict(self._control_poller.poll(timeout=None))
+                if self._control_ctrl_socket in events:
+                    if self._control_ctrl_socket.recv_string() == "START":
+                        print("[CONTROL->OPTIMIZER]: START")
+                        paused = False
+                        self._control_ctrl_socket.send_string("TELEMETRY: [STATUS] RESUMED")
+                continue
+
             if self.verbosity > 0:
                 print(f"<ITER:{iteration}><REMAINING ISSUES:{str(number_of_conflicts)}>")
 
@@ -942,8 +981,9 @@ class Main:
             output_dict["TOTAL-TIME-TO-THIS-POINT"] =  int(current_time)
             output_dict["COMPUTATION-FINISHED"] = False
             output_string = json.dumps(output_dict)
-            print(output_string)
 
+            print(output_string)
+            self._control_pub_socket.send_string(f"{output_string}")
 
         if self.minimize_number_sectors is True:
             time_bucket_updated = converted_navpoint_matrix.shape[1] - 1
@@ -1013,6 +1053,7 @@ class Main:
         output_dict["COMPUTATION-FINISHED"] = True
         output_string = json.dumps(output_dict)
         print(output_string)
+        self._control_pub_socket.send_string(f"TELEMETRY: Objective = {output_string}")
 
 
 
@@ -2106,7 +2147,9 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
     parser.add_argument("--composite-sector-function", type=str, default=str(C("composite-sector-function", "max")),
                         help="Defines the function of the composite sector - available: max, triangular, linear")
 
-                        
+    parser.add_argument("--controller-enabled", type=str, default=str(C("controller-enabled", "false")))
+    parser.add_argument("--controller-control-socket-port", type=int, default=5555)
+    parser.add_argument("--controller-data-socket-port", type=int, default=5556)
 
     # DYNAMIC SECTORIZATION:
     parser.add_argument("--number-capacity-management-configs", type=int, default=int(C("number-capacity-management-configs", 7)), help="How many compisitions/partitions to consider (only works when cap-mgmt. is enabled.")
@@ -2209,6 +2252,10 @@ def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
     args.save_results = _str2bool(args.save_results)
     args.wandb_enabled = _str2bool(args.wandb_enabled)
     args.minimize_number_sectors = _str2bool(args.minimize_number_sectors_enabled)
+
+    args.controller_enabled = _str2bool(args.controller_enabled)
+    args.controller_control_socket_port = _str2bool(args.controller_control_socket_port)
+    args.controller_data_socket_port = _str2bool(args.controller_data_socket_port)
 
     return args
 
@@ -2364,6 +2411,33 @@ def main(argv: Optional[List[str]] = None) -> None:
         )
         wandb_log = run.log
 
+    if args.controller_enabled is True:
+
+        control_context = zmq.Context()
+        
+        # 1. Control Channel (PAIR)
+        control_ctrl_socket = control_context.socket(zmq.PAIR)
+        control_ctrl_socket.connect("tcp://127.0.0.1:5555")
+        
+        # 2. Telemetry Channel (PUB)
+        control_pub_socket = control_context.socket(zmq.PUB)
+        control_pub_socket.bind("tcp://127.0.0.1:5556")
+        
+        # Non-blocking I/O setup for the Control Channel
+        control_poller = zmq.Poller()
+        control_poller.register(control_ctrl_socket, zmq.POLLIN)
+
+        # Block until initialization command
+        while True:
+            if control_ctrl_socket.recv_string() == "START":
+                print("START RECEIVED")
+                break
+    else:
+        control_context = None
+        control_ctrl_socket = None
+        control_pub_socket = None
+        control_poller = None
+
     app = Main(args.graph_path, args.sectors_path, args.flights_path,
                args.airports_path, args.airplanes_path,
                args.airplane_flight_path, args.navaid_sector_path,
@@ -2378,7 +2452,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                experiment_name,
                wandb_log,
                args.optimizer, args.max_number_navpoints_per_sector, args.max_number_sectors, args.minimize_number_sectors,
-               args.convex_sectors)
+               args.convex_sectors,
+               control_context, control_ctrl_socket, control_pub_socket, control_poller)
     app.run()
 
     # Save results if requested
