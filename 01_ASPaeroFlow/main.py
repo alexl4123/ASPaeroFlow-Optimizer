@@ -134,7 +134,8 @@ class Main:
         control_context = None,
         control_ctrl_socket = None,
         control_pub_socket = None,
-        control_poller = None
+        control_poller = None,
+        controller_enabled = False
         ) -> None:
 
         self._graph_path: Optional[Path] = graph_path
@@ -153,6 +154,7 @@ class Main:
         self._control_ctrl_socket = control_ctrl_socket
         self._control_pub_socket = control_pub_socket
         self._control_poller = control_poller
+        self._controller_enabled = controller_enabled
 
         self._optimizer = optimizer
 
@@ -457,34 +459,72 @@ class Main:
 
         while np.any(capacity_overload_mask, where=True):
 
-            # A. State Machine for Interrupts
-            events = dict(self._control_poller.poll(timeout=0))
-            if self._control_ctrl_socket in events:
-                command = self._control_ctrl_socket.recv_string()
-                if command == "PAUSE":
-                    paused = True
-                    print("[CONTROL->OPTIMIZER]: PAUSE")
-                    self._control_ctrl_socket.send_string("TELEMETRY: [STATUS] PAUSED")
-                elif command == "START":
-                    paused = False
-                    print("[CONTROL->OPTIMIZER]: START")
-                    self._control_ctrl_socket.send_string("TELEMETRY: [STATUS] RESUMED")
-                elif command.startswith("<LOAD>"):
-                    return "<LOAD>", command[6:]
-                    
-            # B. Blocking Wait Loop (halts heuristic progression)
-            if paused:
-                # poller.poll() with None blocks indefinitely until I/O occurs
-                events = dict(self._control_poller.poll(timeout=None))
-                if self._control_ctrl_socket in events:
-                    command = self._control_ctrl_socket.recv_string()
-                    if command == "START":
-                        print("[CONTROL->OPTIMIZER]: START")
-                        paused = False
-                        self._control_ctrl_socket.send_string("TELEMETRY: [STATUS] RESUMED")
-                    elif command.startswith("<LOAD>"):
-                        return "<LOAD>", command[6:]
-                continue
+            if  self._controller_enabled is True:
+                # A. State Machine for Interrupts
+                events = dict(self._control_poller.poll(timeout=0))
+
+                for event_key in events.keys():
+                    if self._control_ctrl_socket == event_key:
+                        command = self._control_ctrl_socket.recv_string()
+                        if command == "PAUSE":
+                            paused = True
+                            print("[CONTROL->OPTIMIZER]: PAUSE")
+                            self._control_ctrl_socket.send_string("TELEMETRY: [STATUS] PAUSED")
+                        elif command == "START":
+                            paused = False
+                            print("[CONTROL->OPTIMIZER]: START")
+                            self._control_ctrl_socket.send_string("TELEMETRY: [STATUS] RESUMED")
+                        elif command.startswith("<LOAD>"):
+                            return "<LOAD>", command[6:]
+                        elif command.startswith("<OPTION>"):
+                            command = command[8:]
+                            command = json.loads(command)
+                            for key in command.keys():
+                                if key == "timestep_granularity":
+                                    self._timestep_granularity = int(command[key])
+                                elif key == "max_explored_vertices":
+                                    self._max_explored_vertices = int(command[key])
+                                    original_max_explored_vertices = self._max_explored_vertices
+                                elif key == "max_delay_per_iteration":
+                                    self._max_delay_per_iteration = int(command[key])
+                                elif key == "number_capacity_management_configs":
+                                    self.number_capacity_management_configs = int(command[key])
+                                    default_number_capacity_management_configs = self.number_capacity_management_configs
+                                else:
+                                    print(f"NOT FOUND ATTR:{key}:{command[key]}")
+                    else:
+                        print("WEIRD BEHAVIOR IN CONNECTION - self._control_ctrl_socket not there")
+                        print(events)
+                        
+                # B. Blocking Wait Loop (halts heuristic progression)
+                if paused:
+                    # poller.poll() with None blocks indefinitely until I/O occurs
+                    events = dict(self._control_poller.poll(timeout=None))
+                    if self._control_ctrl_socket in events:
+                        command = self._control_ctrl_socket.recv_string()
+                        if command == "START":
+                            print("[CONTROL->OPTIMIZER]: START")
+                            paused = False
+                            self._control_ctrl_socket.send_string("TELEMETRY: [STATUS] RESUMED")
+                        elif command.startswith("<LOAD>"):
+                            return "<LOAD>", command[6:]
+                        elif command.startswith("<OPTION>"):
+                            command = command[8:]
+                            command = json.loads(command)
+                            for key in command.keys():
+                                if key == "timestep_granularity":
+                                    self._timestep_granularity = int(command[key])
+                                elif key == "max_explored_vertices":
+                                    self._max_explored_vertices = int(command[key])
+                                    original_max_explored_vertices = self._max_explored_vertices
+                                elif key == "max_delay_per_iteration":
+                                    self._max_delay_per_iteration = int(command[key])
+                                elif key == "number_capacity_management_configs":
+                                    self.number_capacity_management_configs = int(command[key])
+                                    default_number_capacity_management_configs = self.number_capacity_management_configs
+                                else:
+                                    print(f"NOT FOUND ATTR:{key}:{command[key]}")
+                    continue
 
             if self.verbosity > 0:
                 print(f"<ITER:{iteration}><REMAINING ISSUES:{str(number_of_conflicts)}>")
@@ -2411,6 +2451,54 @@ def main(argv: Optional[List[str]] = None) -> None:
         init_poller.register(control_ctrl_socket, zmq.POLLIN)
         control_ctrl_socket.send_string("ack")
 
+        while True:
+            # Poll with a 1000ms timeout to prevent deadlocks
+            socks = dict(init_poller.poll(1000))
+
+            # Process Optimizer control socket events
+            if control_ctrl_socket in socks and socks[control_ctrl_socket] == zmq.POLLIN:
+                message = control_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
+                if message == "GET OPTIONS":
+                    break
+
+        config_dict = {}
+
+        config_dict["timestep_granularity"] = {}
+        config_dict["timestep_granularity"]["type"] = "int"
+        config_dict["timestep_granularity"]["value"] = str(args.timestep_granularity)
+        config_dict["timestep_granularity"]["name"] = "Timestep Granularity"
+
+        config_dict["max_explored_vertices"] = {}
+        config_dict["max_explored_vertices"]["type"] = "int"
+        config_dict["max_explored_vertices"]["value"] = str(args.max_explored_vertices)
+        config_dict["max_explored_vertices"]["name"] = "Max Explored Vertices"
+
+        config_dict["max_delay_per_iteration"] = {}
+        config_dict["max_delay_per_iteration"]["type"] = "int"
+        config_dict["max_delay_per_iteration"]["value"] = str(args.max_delay_per_iteration)
+        config_dict["max_delay_per_iteration"]["name"] = "Max Delay Per Iteration"
+
+        config_dict["number_capacity_management_configs"] = {}
+        config_dict["number_capacity_management_configs"]["type"] = "int"
+        config_dict["number_capacity_management_configs"]["value"] = str(args.number_capacity_management_configs)
+        config_dict["number_capacity_management_configs"]["name"] = "Number Capacity Management Configs"
+
+        config = json.dumps(config_dict)
+
+        init_poller = zmq.Poller()
+        init_poller.register(control_ctrl_socket, zmq.POLLIN)
+        control_ctrl_socket.send_string(config)
+
+        while True:
+            # Poll with a 1000ms timeout to prevent deadlocks
+            socks = dict(init_poller.poll(1000))
+
+            # Process Optimizer control socket events
+            if control_ctrl_socket in socks and socks[control_ctrl_socket] == zmq.POLLIN:
+                message = control_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
+                if message == "ack":
+                    break
+
         if controller_defined_instance is True:
             # Configure the Poller for I/O multiplexing
 
@@ -2423,20 +2511,28 @@ def main(argv: Optional[List[str]] = None) -> None:
                     message = control_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
                     if message.startswith("<LOAD>"):
                         message = message[6:]
-                    data_dir_path = Path(message)
-                    args.data_dir = data_dir_path
+                        data_dir_path = Path(message)
+                        args.data_dir = data_dir_path
 
-                    args.graph_path           = None
-                    args.sectors_path         = None
-                    args.flights_path         = None
-                    args.airports_path        = None
-                    args.airplanes_path       = None
-                    args.airplane_flight_path = None
-                    args.navaid_sector_path   = None
+                        args.graph_path           = None
+                        args.sectors_path         = None
+                        args.flights_path         = None
+                        args.airports_path        = None
+                        args.airplanes_path       = None
+                        args.airplane_flight_path = None
+                        args.navaid_sector_path   = None
 
-                    args = _apply_data_dir_defaults(args, data_dir_path)
-                    _validate_inputs(args)
-                    break
+                        args = _apply_data_dir_defaults(args, data_dir_path)
+                        _validate_inputs(args)
+                        break
+                    elif message.startswith("<OPTION>"):
+                        message = message[8:]
+                        message = json.loads(message)
+                        for key in message.keys():
+                            if hasattr(args,key):
+                                setattr(args,key, int(message[key]))
+                            else:
+                                print(f"NOT FOUND ATTR:{key}:{message[key]}")
 
     else:
         control_context = None
@@ -2522,7 +2618,9 @@ def main(argv: Optional[List[str]] = None) -> None:
                 wandb_log,
                 args.optimizer, args.max_number_navpoints_per_sector, args.max_number_sectors, args.minimize_number_sectors,
                 args.convex_sectors,
-                control_context, control_ctrl_socket, control_pub_socket, control_poller)
+                control_context, control_ctrl_socket, control_pub_socket, control_poller, 
+                args.controller_enabled
+                )
         key, value = app.run()
 
         if key == "<LOAD>":

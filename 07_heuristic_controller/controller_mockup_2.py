@@ -95,6 +95,9 @@ def main(argv: Optional[List[str]] = None):
     init_poller = zmq.Poller()
     init_poller.register(ctrl_socket, zmq.POLLIN)
 
+    clinguin_init_poller = zmq.Poller()
+    clinguin_init_poller.register(clinguin_ctrl_socket, zmq.POLLIN)
+
     if args.controller_folder is not None:
         print("[DEBUG] CONTROLLER DEFINED INSTANCE")
         ctrl_socket.send_string("CONTROLLER DEFINED INSTANCE")
@@ -117,26 +120,6 @@ def main(argv: Optional[List[str]] = None):
         
         clinguin_ctrl_socket.send_string(json.dumps(folders_strings))
 
-        init_poller = zmq.Poller()
-        init_poller.register(clinguin_ctrl_socket, zmq.POLLIN)
-
-        while True:
-            socks = dict(init_poller.poll(1000))
-            if clinguin_ctrl_socket in socks and socks[clinguin_ctrl_socket] == zmq.POLLIN:
-                message = clinguin_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
-
-                if message.startswith("<LOAD>"):
-                    message = message[6:]
-
-                if message in folders_strings:
-                    selected_folder = message
-                    print(message)
-                    break
-                else:
-                    print(f"[DEBUG] CLINGUIN BUSY:\n{message}")
-
-        ctrl_socket.send_string(f"<LOAD>{selected_folder}")
-
     else:
         print("[DEBUG] OPTIMIZER DEFINED INSTANCE")
         ctrl_socket.send_string("OPTIMIZER DEFINED INSTANCE")
@@ -152,9 +135,44 @@ def main(argv: Optional[List[str]] = None):
                 else:
                     print(f"[DEBUG] OPTIMIZER BUSY:\n{message}")
 
+    while True:
+        socks = dict(clinguin_init_poller.poll(1000))
+        if clinguin_ctrl_socket in socks and socks[clinguin_ctrl_socket] == zmq.POLLIN:
+            message = clinguin_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
+            if message == "ack":
+                break
+            else:
+                print(f"[DEBUG] CLINGUIN BUSY:\n{message}")
+    
+    init_poller = zmq.Poller()
+    init_poller.register(ctrl_socket, zmq.POLLIN)
+    ctrl_socket.send_string("GET OPTIONS")
+
+    #print(ctrl_socket.recv_string())
+
+    while True:
+        socks = dict(init_poller.poll(1000))
+        if ctrl_socket in socks and socks[ctrl_socket] == zmq.POLLIN:
+            options = ctrl_socket.recv_string(flags=zmq.NOBLOCK)
+            break
+
+    ctrl_socket.send_string("ack")
+    init_poller = zmq.Poller()
+    init_poller.register(clinguin_ctrl_socket, zmq.POLLIN)
+    clinguin_ctrl_socket.send_string(options)
+
+    while True:
+        socks = dict(init_poller.poll(1000))
+        if clinguin_ctrl_socket in socks and socks[clinguin_ctrl_socket] == zmq.POLLIN:
+            message = clinguin_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
+
+            if message == "ack":
+                break
+
     #
     ################## OPTIMIZATION LOOP ###################
     #
+    """
     while True:
         # A. State Machine for Interrupts
         events = dict(clinguin_ctrl_poller.poll(timeout=0))
@@ -203,20 +221,33 @@ def main(argv: Optional[List[str]] = None):
 
     print("[Controller] Received START command...")
     ctrl_socket.send_string("START")
+    """
     
-    # Mock Interaction Loop
     try:
 
         #clinguin_pub_poller = zmq.Poller()
         #clinguin_pub_poller.register(clinguin_sub_socket, zmq.POLLIN)
         # Read remaining telemetry
+        paused = True
         while True:
+            time.sleep(0.05) 
             #events = dict(clinguin_pub_poller.poll(timeout=0))
             #if clinguin_sub_socket in events:
-            msg = sub_socket.recv_string()
-            print(f"[Controller] {msg}")
-            clinguin_sub_socket.send_string(msg)
-            if "\"COMPUTATION-FINISHED\": true" in msg:
+            #
+            computation_finished = False
+            while True:
+                try:
+                    # Attempt non-blocking read
+                    message = sub_socket.recv_string(flags=zmq.NOBLOCK)
+                    print(f"[Controller] {message}")
+                    clinguin_sub_socket.send_string(message)
+                    if "\"COMPUTATION-FINISHED\": true" in message:
+                        computation_finished = True
+                except zmq.Again:
+                    # Queue is empty; break loop to continue computation
+                    break
+
+            if computation_finished is True:
                 break
 
             # A. State Machine for Interrupts
@@ -239,8 +270,11 @@ def main(argv: Optional[List[str]] = None):
                     if command in folders_strings:
                         selected_folder = command
                         ctrl_socket.send_string(f"<LOAD>{selected_folder}")
-                    else:
-                        print(f"[DEBUG] CLINGUIN BUSY:\n{command}")
+                elif command.startswith("<OPTION>"):
+                    print(command)
+                    ctrl_socket.send_string(command)
+                else:
+                    print(f"[DEBUG] CLINGUIN BUSY:\n{command}")
             
 
             # B. Blocking Wait Loop (halts heuristic progression)
@@ -262,8 +296,11 @@ def main(argv: Optional[List[str]] = None):
                         if message in folders_strings:
                             selected_folder = message
                             ctrl_socket.send_string(f"<LOAD>{selected_folder}")
-                        else:
-                            print(f"[DEBUG] CLINGUIN BUSY:\n{message}")
+                    elif message.startswith("<OPTION>"):
+                        ctrl_socket.send_string(message)
+                        print(message)
+                    else:
+                        print(f"[DEBUG] CLINGUIN BUSY:\n{message}")
 
             if paused is True:
                 continue
