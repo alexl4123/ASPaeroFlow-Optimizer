@@ -140,16 +140,17 @@ def main(argv: Optional[List[str]] = None):
     else:
         print("[DEBUG] OPTIMIZER DEFINED INSTANCE")
         ctrl_socket.send_string("OPTIMIZER DEFINED INSTANCE")
+        clinguin_ctrl_socket.send_string("INSTANCE LOADED")
 
         while True:
             socks = dict(init_poller.poll(1000))
-            if clinguin_ctrl_socket in socks and socks[clinguin_ctrl_socket] == zmq.POLLIN:
-                message = clinguin_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
+            if ctrl_socket in socks and socks[ctrl_socket] == zmq.POLLIN:
+                message = ctrl_socket.recv_string(flags=zmq.NOBLOCK)
 
                 if message == "ack":
                     break
                 else:
-                    print(f"[DEBUG] CLINGUIN BUSY:\n{message}")
+                    print(f"[DEBUG] OPTIMIZER BUSY:\n{message}")
 
     #
     ################## OPTIMIZATION LOOP ###################
