@@ -135,7 +135,8 @@ class Main:
         control_ctrl_socket = None,
         control_pub_socket = None,
         control_poller = None,
-        controller_enabled = False
+        controller_enabled = False,
+        data_dir = None
         ) -> None:
 
         self._graph_path: Optional[Path] = graph_path
@@ -145,6 +146,7 @@ class Main:
         self._airplanes_path: Optional[Path] = airplanes_path
         self._airplane_flight_path: Optional[Path] = airplane_flight_path
         self._navaid_sector_path: Optional[Path] = navaid_sector_path
+        self._data_dir = data_dir
 
         self.max_number_navpoints_per_sector = max_number_navpoints_per_sector
         self.max_number_sectors = max_number_sectors
@@ -313,7 +315,6 @@ class Main:
 
         #np.savetxt("20251003_navaid_sector_time_assignment.csv", navaid_sector_time_assignment, delimiter=",",fmt="%i")
         #np.savetxt("20251003_instance_to_matrix.csv", converted_instance_matrix, delimiter=",",fmt="%i")
-        #quit()
 
         if self.verbosity > 0:
             # --- Demonstration output ---------
@@ -456,6 +457,86 @@ class Main:
         time_bucket_updated = 0
 
         paused = True
+
+        if self._controller_enabled is True:
+            
+            # Send navpoints, etc.
+            print("SEND NAVPOINTS etc.")
+
+            folder_path = self._data_dir
+            # Navgraph:
+            folder_path_navgraph_vertex = Path(folder_path / "navgraph" / "vertices.csv")
+            folder_path_navgraph_edges = Path(folder_path / "navgraph" / "edges.csv")
+            folder_path_mappings = Path(folder_path / "mappings" / "vertex_map.csv")
+
+            vertex_map = np.genfromtxt(
+                folder_path_mappings, 
+                delimiter=',', 
+                names=True, 
+                dtype=None, 
+                encoding='utf-8'
+            )
+
+            # Load vertex coordinates/attributes (Assuming numeric float/int)
+            # usecols can be used to filter specific ATM parameters (e.g., Lat, Lon, Alt)
+            vertices = np.genfromtxt(
+                folder_path_navgraph_vertex, 
+                delimiter=',', 
+                names=True, 
+                dtype=None, 
+                encoding='utf-8'
+            )
+
+            # Load edge list (Source, Target, Weight)
+            edges = np.genfromtxt(
+                folder_path_navgraph_edges, 
+                delimiter=',', 
+                names=True, 
+                dtype=None, 
+                encoding='utf-8'
+            )
+
+            graph_dict = {}
+            graph_dict["vertices"] = {}
+            graph_dict["edges"] = {}
+
+            for vertex in self.networkx_navpoint_graph.nodes():
+
+                vertex = int(vertex)
+
+                graph_dict["vertices"][vertex] = {}
+                row = vertex_map[vertex_map["VERTEX_ID"] == vertex]
+                name = row[0][0]
+
+                graph_dict["vertices"][vertex]["id"] = int(vertex)
+                graph_dict["vertices"][vertex]["name"] = str(name)
+                full_vertex = vertices[vertices["IDENTIFIER"] == name][0]
+                graph_dict["vertices"][vertex]["lat"] = float(full_vertex[1])
+                graph_dict["vertices"][vertex]["lon"] = float(full_vertex[2])
+                graph_dict["vertices"][vertex]["alt"] = float(full_vertex[3])
+                graph_dict["vertices"][vertex]["airport"] = int(full_vertex[4])
+
+
+            for edge in self.networkx_navpoint_graph.edges():
+                v0 = int(edge[0])
+                v1 = int(edge[1])
+
+                if v0 not in graph_dict["edges"]:
+                    graph_dict["edges"][v0] = []
+
+                if v1 not in graph_dict["edges"]:
+                    graph_dict["edges"][v1] = []
+
+                graph_dict["edges"][v0].append(v1)
+                graph_dict["edges"][v1].append(v0)
+
+
+            json_graph_dict = json.dumps(graph_dict)
+            self._control_ctrl_socket.send_string(json_graph_dict)
+
+            print("SENT GRAPH STRING")
+
+
 
         while np.any(capacity_overload_mask, where=True):
 
@@ -2666,7 +2747,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 args.optimizer, args.max_number_navpoints_per_sector, args.max_number_sectors, args.minimize_number_sectors,
                 args.convex_sectors,
                 control_context, control_ctrl_socket, control_pub_socket, control_poller, 
-                args.controller_enabled
+                args.controller_enabled, args.data_dir
                 )
         key, value = app.run()
 

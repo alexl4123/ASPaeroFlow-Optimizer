@@ -222,7 +222,11 @@ def main(argv: Optional[List[str]] = None):
                 break
 
             # A. State Machine for Interrupts
-            events = dict(clinguin_ctrl_poller.poll(timeout=0))
+            if paused is True:
+                events = dict(clinguin_ctrl_poller.poll(timeout=None))
+            else:
+                events = dict(clinguin_ctrl_poller.poll(timeout=0))
+
             if clinguin_ctrl_socket in events:
                 command = clinguin_ctrl_socket.recv_string()
                 if command == "PAUSE":
@@ -240,14 +244,25 @@ def main(argv: Optional[List[str]] = None):
 
                     if command in folders_strings:
                         selected_folder = command
+                        graph_poller = zmq.Poller()
+                        graph_poller.register(ctrl_socket, zmq.POLLIN)
                         ctrl_socket.send_string(f"<LOAD>{selected_folder}")
+
+                        while True:
+                            socks = dict(graph_poller.poll(1000))
+                            if ctrl_socket in socks and socks[ctrl_socket] == zmq.POLLIN:
+                                message = ctrl_socket.recv_string(flags=zmq.NOBLOCK)
+                                clinguin_ctrl_socket.send_string(message)
+                                break
+
                 elif command.startswith("<OPTION>"):
                     print(command)
                     ctrl_socket.send_string(command)
                 else:
                     print(f"[DEBUG] CLINGUIN BUSY:\n{command}")
             
-
+            
+            """
             # B. Blocking Wait Loop (halts heuristic progression)
             if paused:
                 # poller.poll() with None blocks indefinitely until I/O occurs
@@ -275,6 +290,7 @@ def main(argv: Optional[List[str]] = None):
 
             if paused is True:
                 continue
+            """
 
                 
     finally:
