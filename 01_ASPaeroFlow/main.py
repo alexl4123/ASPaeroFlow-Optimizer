@@ -2499,6 +2499,53 @@ def main(argv: Optional[List[str]] = None) -> None:
                 if message == "ack":
                     break
 
+        while True:
+            # Poll with a 1000ms timeout to prevent deadlocks
+            socks = dict(init_poller.poll(1000))
+
+            # Process Optimizer control socket events
+            if control_ctrl_socket in socks and socks[control_ctrl_socket] == zmq.POLLIN:
+                message = control_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
+                if message == "GET OBJECTIVE FUNCTIONS":
+                    break
+
+
+        optimization_criteria_config = {}
+        optimization_criteria_config[0] = {}
+        optimization_criteria_config[0]["name"] = "Overload"
+        optimization_criteria_config[0]["id"] = "OVERLOAD"
+        optimization_criteria_config[1] = {}
+        optimization_criteria_config[1]["name"] = "Arrival Delay"
+        optimization_criteria_config[1]["id"] = "ARRIVAL-DELAY"
+        optimization_criteria_config[2] = {}
+        optimization_criteria_config[2]["name"] = "Number of Sectors"
+        optimization_criteria_config[2]["id"] = "SECTOR-NUMBER"
+        optimization_criteria_config[3] = {}
+        optimization_criteria_config[3]["name"] = "Sector Changes"
+        optimization_criteria_config[3]["id"] = "SECTOR-DIFF"
+        optimization_criteria_config[4] = {}
+        optimization_criteria_config[4]["name"] = "Number of Reroutes"
+        optimization_criteria_config[4]["id"] = "REROUTE"
+        optimization_criteria_config[5] = {}
+        optimization_criteria_config[5]["name"] = "Number of Reconfigs"
+        optimization_criteria_config[5]["id"] = "RECONFIG"
+
+        optimization_criteria = json.dumps(optimization_criteria_config)
+
+        init_poller = zmq.Poller()
+        init_poller.register(control_ctrl_socket, zmq.POLLIN)
+        control_ctrl_socket.send_string(optimization_criteria)
+
+        while True:
+            # Poll with a 1000ms timeout to prevent deadlocks
+            socks = dict(init_poller.poll(1000))
+
+            # Process Optimizer control socket events
+            if control_ctrl_socket in socks and socks[control_ctrl_socket] == zmq.POLLIN:
+                message = control_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
+                if message == "ack":
+                    break
+        
         if controller_defined_instance is True:
             # Configure the Poller for I/O multiplexing
 
