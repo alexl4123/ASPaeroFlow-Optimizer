@@ -459,10 +459,7 @@ class Main:
         paused = True
 
         if self._controller_enabled is True:
-            
             # Send navpoints, etc.
-            print("SEND NAVPOINTS etc.")
-
             folder_path = self._data_dir
             # Navgraph:
             folder_path_navgraph_vertex = Path(folder_path / "navgraph" / "vertices.csv")
@@ -499,6 +496,7 @@ class Main:
             graph_dict = {}
             graph_dict["vertices"] = {}
             graph_dict["edges"] = {}
+            graph_dict["sectors"] = {}
 
             for vertex in self.networkx_navpoint_graph.nodes():
 
@@ -517,25 +515,57 @@ class Main:
                 graph_dict["vertices"][vertex]["airport"] = int(full_vertex[4])
 
 
+                if vertex not in graph_dict["sectors"]:
+                    graph_dict["sectors"][vertex] = {}
+                    graph_dict["sectors"][vertex]["vertices"] = []
+
+                sector = int(navaid_sector_time_assignment[vertex,0])
+
+                if sector not in graph_dict["sectors"]:
+                    graph_dict["sectors"][sector] = {}
+                    graph_dict["sectors"][sector]["vertices"] = []
+
+                graph_dict["sectors"][sector]["vertices"].append(vertex)
+
             for edge in self.networkx_navpoint_graph.edges():
                 v0 = int(edge[0])
                 v1 = int(edge[1])
 
                 if v0 not in graph_dict["edges"]:
-                    graph_dict["edges"][v0] = []
+                    graph_dict["edges"][v0] = {}
 
                 if v1 not in graph_dict["edges"]:
-                    graph_dict["edges"][v1] = []
+                    graph_dict["edges"][v1] = {}
 
-                graph_dict["edges"][v0].append(v1)
-                graph_dict["edges"][v1].append(v0)
+                graph_dict["edges"][v0][v1] = int(0)
+                graph_dict["edges"][v1][v0] = int(0)
 
+            for sector in graph_dict["sectors"].keys():
+
+                overload = 0
+                for _time in range(capacity_demand_diff_matrix.shape[1]):
+
+                    if capacity_demand_diff_matrix[sector,_time] < 0:
+                        overload += (-capacity_demand_diff_matrix[sector,_time])
+                
+                graph_dict["sectors"][int(sector)]["overload"] = int(overload)
+
+            for index in range(1, self.flights.shape[0]):
+
+                tuple_0 = self.flights[index-1,:]
+                tuple_1 = self.flights[index,:]
+
+                id0 = int(tuple_0[0])
+                v0 = int(tuple_0[1])
+                id1 = int(tuple_1[0])
+                v1 = int(tuple_1[1])
+
+                if id0 == id1:
+                    graph_dict["edges"][v0][v1] += int(1)
+                    graph_dict["edges"][v1][v0] += int(1)
 
             json_graph_dict = json.dumps(graph_dict)
             self._control_ctrl_socket.send_string(json_graph_dict)
-
-            print("SENT GRAPH STRING")
-
 
 
         while np.any(capacity_overload_mask, where=True):
