@@ -313,8 +313,6 @@ class Main:
         #capacity_time_matrix_test = OptimizeFlights.capacity_time_matrix_test(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor)
         #np.testing.assert_array_equal(capacity_time_matrix, capacity_time_matrix_test)
 
-        #np.savetxt("20251003_navaid_sector_time_assignment.csv", navaid_sector_time_assignment, delimiter=",",fmt="%i")
-        #np.savetxt("20251003_instance_to_matrix.csv", converted_instance_matrix, delimiter=",",fmt="%i")
 
         if self.verbosity > 0:
             # --- Demonstration output ---------
@@ -331,6 +329,10 @@ class Main:
         capacity_demand_diff_matrix = capacity_time_matrix - system_loads
         # 5.) Create capacity overload matrix
         capacity_overload_mask = capacity_demand_diff_matrix < 0
+
+        #np.savetxt("202603_converted_navpoint_matrix.csv", converted_navpoint_matrix, delimiter=",",fmt="%i")
+        #np.savetxt("202603_capacity_demand_diff_matrix.csv", capacity_demand_diff_matrix, delimiter=",",fmt="%i")
+        #quit()
 
         #number_of_conflicts = capacity_overload_mask.sum()
         number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
@@ -407,8 +409,9 @@ class Main:
         output_dict["TOTAL-TIME-TO-THIS-POINT"] =  int(current_time)
         output_dict["COMPUTATION-FINISHED"] = False
         output_string = json.dumps(output_dict)
-        print(output_string)
-        self._control_pub_socket.send_string(f"{output_string}")
+        print(output_string, flush=True)
+        if self._controller_enabled is True:
+            self._control_pub_socket.send_string(f"{output_string}")
 
         last_time_bucket_updated = 0
 
@@ -1138,8 +1141,9 @@ class Main:
             output_dict["COMPUTATION-FINISHED"] = False
             output_string = json.dumps(output_dict)
 
-            print(output_string)
-            self._control_pub_socket.send_string(f"{output_string}")
+            print(output_string, flush=True)
+            if self._controller_enabled is True:
+                self._control_pub_socket.send_string(f"{output_string}")
 
         if self.minimize_number_sectors is True:
             time_bucket_updated = converted_navpoint_matrix.shape[1] - 1
@@ -1208,8 +1212,9 @@ class Main:
         output_dict["TOTAL-TIME-TO-THIS-POINT"] =  int(current_time)
         output_dict["COMPUTATION-FINISHED"] = True
         output_string = json.dumps(output_dict)
-        print(output_string)
-        self._control_pub_socket.send_string(f"TELEMETRY: Objective = {output_string}")
+        print(output_string, flush=True)
+        if self._controller_enabled is True:
+            self._control_pub_socket.send_string(f"TELEMETRY: Objective = {output_string}")
 
 
 
