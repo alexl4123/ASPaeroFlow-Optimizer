@@ -411,6 +411,7 @@ class Main:
         output_string = json.dumps(output_dict)
         print(output_string, flush=True)
         if self._controller_enabled is True:
+            self._control_pub_socket.send_string(f"RESET-OBJECTIVE-VALUE")
             self._control_pub_socket.send_string(f"{output_string}")
 
         last_time_bucket_updated = 0
@@ -569,6 +570,8 @@ class Main:
 
             json_graph_dict = json.dumps(graph_dict)
             self._control_ctrl_socket.send_string(json_graph_dict)
+            print(json_graph_dict)
+            print("[OPTIMIZER->CONTROL]: SENT GRAPH DICT")
 
 
         while np.any(capacity_overload_mask, where=True):
@@ -589,6 +592,7 @@ class Main:
                             print("[CONTROL->OPTIMIZER]: START")
                             self._control_ctrl_socket.send_string("TELEMETRY: [STATUS] RESUMED")
                         elif command.startswith("<LOAD>"):
+                            print("[CONTROL->OPTIMIZER]: LOAD")
                             return "<LOAD>", command[6:]
                         elif command.startswith("<OPTION>"):
                             command = command[8:]
@@ -621,6 +625,7 @@ class Main:
                             paused = False
                             self._control_ctrl_socket.send_string("TELEMETRY: [STATUS] RESUMED")
                         elif command.startswith("<LOAD>"):
+                            print("[CONTROL->OPTIMIZER]: LOAD")
                             return "<LOAD>", command[6:]
                         elif command.startswith("<OPTION>"):
                             command = command[8:]
