@@ -915,7 +915,7 @@ class OptimizeFlights:
         #quit()
 
         if self.verbosity == 3:
-            open(f"20251126_test_instance_{additional_time_increase}.lp","w").write(instance)
+            open(f"20250410_test_instance_{additional_time_increase}.lp","w").write(instance)
         
         if self.verbosity > 3:
             open(f"20251021_test_instance_{additional_time_increase}.lp","w").write(instance)

@@ -411,6 +411,11 @@ class Main:
         output_string = json.dumps(output_dict)
         print(output_string, flush=True)
         if self._controller_enabled is True:
+            output_dict["DIFF"] = {}
+            output_dict["DIFF"]["FLIGHTS"] = []
+            output_dict["DIFF"]["SECTORS"] = []
+            output_string = json.dumps(output_dict)
+
             self._control_pub_socket.send_string(f"RESET-OBJECTIVE-VALUE")
             self._control_pub_socket.send_string(f"{output_string}")
 
@@ -692,6 +697,9 @@ class Main:
 
             start_time = time.time()
 
+
+            controller_sector_diff_dict = {}
+
             all_jobs = []
             all_candidates = {}
             for time_index, sector_index in time_bucket_tuples:
@@ -710,6 +718,12 @@ class Main:
                                 iteration, self.sector_capacity_factor, self.flights
                                 )
 
+                controller_sector_diff_dict["time_index"] = int(time_index)
+                controller_sector_diff_dict["sector_index"] = int(sector_index)
+                controller_sector_diff_dict["prev_sector_config"] = {}
+                controller_sector_diff_dict["prev_sector_config"][int(sector_index)] = {}
+                controller_sector_diff_dict["prev_sector_config"][int(sector_index)]["vertices"] = [int(i) for i in np.where(navaid_sector_time_assignment[:, time_index] == sector_index)[0]]
+                controller_sector_diff_dict["prev_sector_config"][int(sector_index)]["overload"] = int(-capacity_demand_diff_matrix[sector_index,time_index])
                 
                 all_new = True
                 for candidate in candidates:
@@ -737,6 +751,8 @@ class Main:
             all_navpoint_flights = []
             sector_configs = []
 
+            flight_per_navpoint_id = {}
+
             for model, sector_config_restore_dict in solutions:
                 if self._optimizer == "ASP":
                     if int(str(model.get_sector_config().arguments[0])) > 0:
@@ -758,73 +774,55 @@ class Main:
                         flight_id = int(str(flight.arguments[0]))
                         flight_ids[flight_id] = True
 
+                        if flight_id not in flight_per_navpoint_id:
+                            flight_per_navpoint_id[flight_id] = {}
+
+                        navpoint_id = int(str(flight.arguments[1]))
+                        time_id = int(str(flight.arguments[2]))
+
+                        flight_per_navpoint_id[flight_id][time_id] = navpoint_id
 
                         all_navpoint_flights.append(flight)
 
-                else:
-                    new_flight_durations = {}
-                    current_config = model[0][2]
-                    sector_configs.append((current_config, sector_config_restore_dict))
-                    flight_paths = model[0][3]
-                    flight_path_dict = model[1]
-
-                    for flight_index, path_number in flight_paths:
-
-                        converted_instance_matrix[flight_index, :] = -1
-                        converted_navpoint_matrix[flight_index, :] = -1
-
-                        for navpoint, cur_time in flight_path_dict[flight_index][path_number]["navpoint_flight"]:
-                            #navpoint, cur_time = flight_path_dict[flight_index][path_number]["navpoint_flight"][step_index]
-                            converted_navpoint_matrix[flight_index, cur_time] = navpoint
-
-                        for sector, cur_time in flight_path_dict[flight_index][path_number]["sector_flight"][current_config]:
-                            #sector, cur_time = flight_path_dict[flight_index][path_number]["sector_flight"][step_index]
-                            converted_instance_matrix[flight_index, cur_time] = sector
-
-                            if flight_index not in new_flight_durations:
-                                new_flight_durations[flight_index] = {}
-                                new_flight_durations[flight_index]["min"] = cur_time
-                                new_flight_durations[flight_index]["max"] = cur_time
-                                new_flight_durations[flight_index]["duration"] = new_flight_durations[flight_index]["max"] - new_flight_durations[flight_index]["min"]
-
-                            if cur_time < new_flight_durations[flight_index]["min"]:
-                                new_flight_durations[flight_index]["min"] = cur_time
-
-                            if cur_time > new_flight_durations[flight_index]["max"]:
-                                new_flight_durations[flight_index]["max"] = cur_time
-
-                            new_flight_durations[flight_index]["duration"] = new_flight_durations[flight_index]["max"] - new_flight_durations[flight_index]["min"]
-
-
-
-                        for potentially_affected_flight_index in flight_path_dict[flight_index][path_number]["potential_flights_affected"].keys():
- 
-                            converted_instance_matrix[potentially_affected_flight_index, :] = -1
-                            converted_navpoint_matrix[potentially_affected_flight_index, :] = -1
-
-                            for navpoint, cur_time in flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight_index]["navpoint_flight"]:
-                                #navpoint, cur_time = flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight_index]["navpoint_flight"][step_index]
-                                converted_navpoint_matrix[flight_index, cur_time] = navpoint
-
-                            for sector, cur_time in flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight_index]["sector_flight"][current_config]:
-                                #sector, cur_time = flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight_index]["sector_flight"][step_index]
-                                converted_instance_matrix[flight_index, cur_time] = sector
-
-                                if potentially_affected_flight_index not in new_flight_durations:
-                                    new_flight_durations[potentially_affected_flight_index] = {}
-                                    new_flight_durations[potentially_affected_flight_index]["min"] = cur_time
-                                    new_flight_durations[potentially_affected_flight_index]["max"] = cur_time
-                                    new_flight_durations[potentially_affected_flight_index]["duration"] = new_flight_durations[potentially_affected_flight_index]["max"] - new_flight_durations[potentially_affected_flight_index]["min"]
-
-                                if cur_time < new_flight_durations[potentially_affected_flight_index]["min"]:
-                                    new_flight_durations[potentially_affected_flight_index]["min"] = cur_time
-
-                                if cur_time > new_flight_durations[potentially_affected_flight_index]["max"]:
-                                    new_flight_durations[potentially_affected_flight_index]["max"] = cur_time
-
-                                new_flight_durations[potentially_affected_flight_index]["duration"] = new_flight_durations[potentially_affected_flight_index]["max"] - new_flight_durations[potentially_affected_flight_index]["min"]
-
             flight_ids = np.array(list(flight_ids.keys()), dtype=int)
+
+
+            all_flights_diff_dict = {}
+            if self._controller_enabled is True: 
+
+                for flight_id in flight_ids:
+                    navpoint_flight = converted_navpoint_matrix[flight_id,:]
+
+                    old_navpoint_flight_times = [int(i) for i in np.where(navpoint_flight != -1)[0]]
+                    new_navpoint_flight_times = sorted(list(flight_per_navpoint_id[flight_id].keys()))
+
+                    flights_equal = True
+
+                    if old_navpoint_flight_times == new_navpoint_flight_times:
+
+                        for flight_time in old_navpoint_flight_times:
+                            new_navpoint_id = flight_per_navpoint_id[flight_id][flight_time]
+                            old_navpoint_id = int(navpoint_flight[flight_time])
+
+                            if new_navpoint_id != old_navpoint_id:
+                                flights_equal = False
+                                break
+                    else:
+                        flights_equal = False
+
+                    if flights_equal is False:
+                        
+                        old_flight_per_navpoint_id = {}
+                        for flight_time in old_navpoint_flight_times:
+                            old_navpoint_id = int(navpoint_flight[flight_time])
+                            old_flight_per_navpoint_id[int(flight_time)] = old_navpoint_id
+
+                        flight_diff_dict = {}
+                        flight_diff_dict["id"] = int(flight_id)
+                        flight_diff_dict["old_flight"] = old_flight_per_navpoint_id
+                        flight_diff_dict["new_flight"] = flight_per_navpoint_id[flight_id]
+
+                        all_flights_diff_dict[flight_id] = flight_diff_dict
 
             if len(sector_configs) > 0:
                 if len(sector_configs) > 1:
@@ -837,7 +835,8 @@ class Main:
                     print(sector_config_number)
                     print("")
 
-                if sector_config_number != 0:
+
+                if sector_config_number != 0: # So there is a difference
 
                     tmp_composition_navpoints = sector_config_restore_dict[sector_config_number]["composition_navpoints"]
                     tmp_composition_sectors = sector_config_restore_dict[sector_config_number]["composition_sectors"]
@@ -1018,6 +1017,8 @@ class Main:
             # -----------------------------------------------------------------------------
             if number_of_conflicts is not None and number_of_conflicts_prev is not None:
                 if number_of_conflicts >= number_of_conflicts_prev:
+                    controller_sector_diff_dict["accepted_solution"] = False
+
                     counter_equal_solutions += 1
 
                     #if counter_equal_solutions >= 2 and counter_equal_solutions % 2 == 0:
@@ -1065,6 +1066,9 @@ class Main:
                 else:
                     if self.verbosity > 1:
                         print(f">> ACCEPT SOLUTION| OLD = {number_of_conflicts_prev} > {number_of_conflicts} = NEW")
+
+                    controller_sector_diff_dict["accepted_solution"] = True
+
                     old_navaid_sector_time_assignment = navaid_sector_time_assignment.copy()
                     old_converted_instance = converted_instance_matrix.copy()
                     old_converted_navpoint_matrix = converted_navpoint_matrix.copy()
@@ -1110,6 +1114,15 @@ class Main:
             rerouted_mask = np.any(converted_instance_matrix[:, :original_max_time_converted] != original_converted_instance_matrix, axis=1)     # True if flight differs anywhere
             number_reroutes = int(np.count_nonzero(rerouted_mask))
 
+            time_index = controller_sector_diff_dict["time_index"]
+            unique_sectors = np.unique(navaid_sector_time_assignment[:, time_index])
+            controller_sector_diff_dict["post_sector_config"] = {}
+
+            for sector_index in unique_sectors:
+                controller_sector_diff_dict["post_sector_config"][int(sector_index)] = {}
+                controller_sector_diff_dict["post_sector_config"][int(sector_index)]["vertices"] = [int(i) for i in np.where(navaid_sector_time_assignment[:, time_index] == sector_index)[0]]
+                controller_sector_diff_dict["post_sector_config"][int(sector_index)]["overload"] = int(-capacity_demand_diff_matrix[sector_index,time_index])
+
             if self._wandb_log is not None:
                 if time_bucket_updated >= navaid_sector_time_assignment.shape[1]:
                     time_bucket_updated = navaid_sector_time_assignment.shape[1] - 1
@@ -1148,6 +1161,16 @@ class Main:
 
             print(output_string, flush=True)
             if self._controller_enabled is True:
+                
+                output_dict["DIFF"] = {}
+                output_dict["DIFF"]["FLIGHTS"] = flight_diff_dict
+                output_dict["DIFF"]["SECTORS"] = controller_sector_diff_dict
+                output_dict["DIFF"]["ACCEPTED_SOLUTION"] = controller_sector_diff_dict["accepted_solution"]
+
+                print(output_dict)
+                
+                output_string = json.dumps(output_dict)
+
                 self._control_pub_socket.send_string(f"{output_string}")
 
         if self.minimize_number_sectors is True:

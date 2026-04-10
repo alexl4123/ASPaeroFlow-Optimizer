@@ -232,11 +232,34 @@ def main(argv: Optional[List[str]] = None):
                 if command == "PAUSE":
                     paused = True
                     print("[Clinguin->Controller->Optimizer] PAUSE")
+                    query_poller = zmq.Poller()
+                    query_poller.register(ctrl_socket, zmq.POLLIN)
                     ctrl_socket.send_string("PAUSE")
+
+                    while True:
+                        socks = dict(query_poller.poll(1000))
+                        if ctrl_socket in socks and socks[ctrl_socket] == zmq.POLLIN:
+                            message = ctrl_socket.recv_string(flags=zmq.NOBLOCK)
+                            if message != "TELEMETRY: [STATUS] PAUSED":
+                                print(">[WARN]< Optimizer response after pause does not match protocol.")
+                            break
                 elif command == "START":
                     paused = False
                     print("[Clinguin->Controller->Optimizer] START")
+
+
+                    query_poller = zmq.Poller()
+                    query_poller.register(ctrl_socket, zmq.POLLIN)
                     ctrl_socket.send_string("START")
+
+                    while True:
+                        socks = dict(query_poller.poll(1000))
+                        if ctrl_socket in socks and socks[ctrl_socket] == zmq.POLLIN:
+                            message = ctrl_socket.recv_string(flags=zmq.NOBLOCK)
+                            if message != "TELEMETRY: [STATUS] RESUMED":
+                                print(">[WARN]< Optimizer response after start does not match protocol.")
+                            break
+
                 elif command.startswith("<LOAD>"):
                     paused = True
                     command = command[6:]
