@@ -578,7 +578,6 @@ class Main:
             print(json_graph_dict)
             print("[OPTIMIZER->CONTROL]: SENT GRAPH DICT")
 
-
         while np.any(capacity_overload_mask, where=True):
 
             if  self._controller_enabled is True:
@@ -822,7 +821,7 @@ class Main:
                         flight_diff_dict["old_flight"] = old_flight_per_navpoint_id
                         flight_diff_dict["new_flight"] = flight_per_navpoint_id[flight_id]
 
-                        all_flights_diff_dict[flight_id] = flight_diff_dict
+                        all_flights_diff_dict[int(flight_id)] = flight_diff_dict
 
             if len(sector_configs) > 0:
                 if len(sector_configs) > 1:
@@ -1114,10 +1113,10 @@ class Main:
             rerouted_mask = np.any(converted_instance_matrix[:, :original_max_time_converted] != original_converted_instance_matrix, axis=1)     # True if flight differs anywhere
             number_reroutes = int(np.count_nonzero(rerouted_mask))
 
+            relevant_vertices = np.array(controller_sector_diff_dict["prev_sector_config"][int(sector_index)]["vertices"])
             time_index = controller_sector_diff_dict["time_index"]
-            unique_sectors = np.unique(navaid_sector_time_assignment[:, time_index])
+            unique_sectors = np.unique(navaid_sector_time_assignment[relevant_vertices, time_index])
             controller_sector_diff_dict["post_sector_config"] = {}
-
             for sector_index in unique_sectors:
                 controller_sector_diff_dict["post_sector_config"][int(sector_index)] = {}
                 controller_sector_diff_dict["post_sector_config"][int(sector_index)]["vertices"] = [int(i) for i in np.where(navaid_sector_time_assignment[:, time_index] == sector_index)[0]]
@@ -1149,6 +1148,7 @@ class Main:
                     
             current_time = time.time() - original_start_time
             output_dict = {}
+            output_dict["ITERATION"] = int(iteration)
             output_dict["OVERLOAD"] = int(number_of_conflicts)
             output_dict["ARRIVAL-DELAY"] = int(total_delay)
             output_dict["SECTOR-NUMBER"] = int(number_sectors)
@@ -1161,16 +1161,19 @@ class Main:
 
             print(output_string, flush=True)
             if self._controller_enabled is True:
-                
                 output_dict["DIFF"] = {}
-                output_dict["DIFF"]["FLIGHTS"] = flight_diff_dict
-                output_dict["DIFF"]["SECTORS"] = controller_sector_diff_dict
                 output_dict["DIFF"]["ACCEPTED_SOLUTION"] = controller_sector_diff_dict["accepted_solution"]
 
-                print(output_dict)
-                
-                output_string = json.dumps(output_dict)
+                prev_sector_indices = list(controller_sector_diff_dict["prev_sector_config"].keys())
+                post_sector_indices = list(controller_sector_diff_dict["post_sector_config"].keys())
 
+                if prev_sector_indices == post_sector_indices:
+                    controller_sector_diff_dict = {}
+                
+                output_dict["DIFF"]["FLIGHTS"] = all_flights_diff_dict
+                output_dict["DIFF"]["SECTORS"] = controller_sector_diff_dict
+
+                output_string = json.dumps(output_dict)
                 self._control_pub_socket.send_string(f"{output_string}")
 
         if self.minimize_number_sectors is True:
