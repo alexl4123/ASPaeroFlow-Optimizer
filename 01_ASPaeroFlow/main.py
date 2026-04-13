@@ -1162,6 +1162,7 @@ class Main:
             print(output_string, flush=True)
             if self._controller_enabled is True:
                 output_dict["DIFF"] = {}
+                output_dict["DIFF"]["ITERATION"] = int(iteration)
                 output_dict["DIFF"]["ACCEPTED_SOLUTION"] = controller_sector_diff_dict["accepted_solution"]
 
                 prev_sector_indices = list(controller_sector_diff_dict["prev_sector_config"].keys())
