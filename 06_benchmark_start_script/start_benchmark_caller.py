@@ -208,17 +208,17 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--max-explored-vertices=3",
                 "--max-delay-per-iteration=5",
                 "--capacity-management-enabled=True",
-                "--number-capacity-management-configs=7",
+                "--number-capacity-management-configs=2",
                 "--sector-capacity-factor=6",
-                "--convex-sectors=1",
+                "--convex-sectors=0",
                 f"--results-root={output_path}/solver_outputs/01_ASPaeroFlow",
                 "--wandb-enabled=True",
                 "--wandb-experiment-name-suffix=_01_ASPaeroFlow",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
-                "--minimize-number-sectors=true",
+                "--minimize-number-sectors=false",
                 "--max-number-navpoints-per-sector=1000000",
-                "--max-number-sectors=-2",
+                "--max-number-sectors=1000000",
                 ]
         })
 
@@ -232,7 +232,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--max-explored-vertices=3",
                 "--max-delay-per-iteration=5",
                 "--capacity-management-enabled=True",
-                "--number-capacity-management-configs=7",
+                "--number-capacity-management-configs=2",
                 "--sector-capacity-factor=6",
                 "--convex-sectors=0",
                 f"--results-root={output_path}/solver_outputs/0A_ASPaeroFlow_NoConvex",
@@ -240,7 +240,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--wandb-experiment-name-suffix=_0A_ASPaeroFlow_NoConvex",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
-                "--minimize-number-sectors=true",
+                "--minimize-number-sectors=false",
                 "--max-number-navpoints-per-sector=1000000",
                 "--max-number-sectors=-2",
                 ]
@@ -256,15 +256,15 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--max-explored-vertices=1",
                 "--max-delay-per-iteration=1",
                 "--capacity-management-enabled=True",
-                "--number-capacity-management-configs=7",
+                "--number-capacity-management-configs=2",
                 "--sector-capacity-factor=6",
-                "--convex-sectors=1",
+                "--convex-sectors=0",
                 f"--results-root={output_path}/solver_outputs/0B_Sector_NoReroute_NoDelay",
                 "--wandb-enabled=True",
                 "--wandb-experiment-name-suffix=_0B_Sector_NoReroute_NoDelay",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
-                "--minimize-number-sectors=true",
+                "--minimize-number-sectors=false",
                 "--max-number-navpoints-per-sector=1000000",
                 "--max-number-sectors=-2",
                 ]
@@ -280,15 +280,15 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--max-explored-vertices=1",
                 "--max-delay-per-iteration=5",
                 "--capacity-management-enabled=True",
-                "--number-capacity-management-configs=7",
+                "--number-capacity-management-configs=2",
                 "--sector-capacity-factor=6",
-                "--convex-sectors=1",
+                "--convex-sectors=0",
                 f"--results-root={output_path}/solver_outputs/0C_Sector_NoReroute_Delay",
                 "--wandb-enabled=True",
                 "--wandb-experiment-name-suffix=_0C_Sector_NoReroute_NoDelay",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
-                "--minimize-number-sectors=true",
+                "--minimize-number-sectors=false",
                 "--max-number-navpoints-per-sector=1000000",
                 "--max-number-sectors=-2",
                 ]
@@ -304,15 +304,15 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--max-explored-vertices=3",
                 "--max-delay-per-iteration=1",
                 "--capacity-management-enabled=True",
-                "--number-capacity-management-configs=7",
+                "--number-capacity-management-configs=2",
                 "--sector-capacity-factor=6",
-                "--convex-sectors=1",
+                "--convex-sectors=0",
                 f"--results-root={output_path}/solver_outputs/0D_Sector_Reroute_NoDelay",
                 "--wandb-enabled=True",
                 "--wandb-experiment-name-suffix=_0D_Sector_Reroute_NoDelay",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
-                "--minimize-number-sectors=true",
+                "--minimize-number-sectors=false",
                 "--max-number-navpoints-per-sector=1000000",
                 "--max-number-sectors=-2",
                 ]
@@ -337,7 +337,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--wandb-experiment-name-suffix=_02_RerouteDelay",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
-                "--minimize-number-sectors=true",
+                "--minimize-number-sectors=false",
                 "--max-number-navpoints-per-sector=1000000",
                 "--max-number-sectors=-2",
                 ]
@@ -359,7 +359,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--wandb-experiment-name-suffix=_2A_Reroute",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
-                "--minimize-number-sectors=true",
+                "--minimize-number-sectors=false",
                 "--max-number-navpoints-per-sector=1000000",
                 "--max-number-sectors=-2",
                 ]
@@ -381,9 +381,33 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--wandb-experiment-name-suffix=_03_Delay",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
-                "--minimize-number-sectors=true",
+                "--minimize-number-sectors=false",
                 "--max-number-navpoints-per-sector=1000000",
                 "--max-number-sectors=-2",
+                ]
+        })
+
+
+    if args.experiment_casa != 0:
+        system_config.append({
+            "key": "03A_CASA",
+            "script": base_dir / "../01_ASPaeroFlow/main.py",
+            "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
+            "verbosity": None,
+            "cmd": [
+                "--max-explored-vertices=1",
+                "--max-delay-per-iteration=10",
+                "--capacity-management-enabled=False",
+                "--number-capacity-management-configs=1",
+                f"--results-root={output_path}/solver_outputs/03_DELAY",
+                "--wandb-enabled=True",
+                "--wandb-experiment-name-suffix=_03_Delay",
+                f"--wandb-experiment-name-prefix={experiment_name}_",
+                "--wandb-entity=thinklex",
+                "--minimize-number-sectors=false",
+                "--max-number-navpoints-per-sector=1000000",
+                "--max-number-sectors=-2",
+                "--max-considered-aircraft=1"
                 ]
         })
 
@@ -402,227 +426,99 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 ]
         })
 
-    if args.experiment_asp_r_d_s != 0:
+
+    if args.experiment_all_asp_variants != 0:
+        asp_index = 5
+        asp_base_key = "ASP"
+        asp_regulation_ground_delay = [0,1,2]
+        asp_regulation_rerouting = [0,1,2]
+        asp_regulation_DAC = [0,1,2]
+
+        for ground_delay_regulation in asp_regulation_ground_delay:
+            for rerouting_regulation in asp_regulation_rerouting:
+                for dac_regulation in asp_regulation_DAC:
+
+                    if ground_delay_regulation == 0:
+                        ground_delay_flag = "nd"
+                    elif ground_delay_regulation == 1:
+                        ground_delay_flag = "dp"
+                    elif ground_delay_regulation == 2:
+                        ground_delay_flag = "d"
+
+                    if rerouting_regulation == 0:
+                        rerouting_flag = "nr"
+                    elif rerouting_regulation == 1:
+                        rerouting_flag = "rp"
+                    elif rerouting_regulation == 2:
+                        rerouting_flag = "r"
+
+                    if dac_regulation == 0:
+                        dac_flag = "ns"
+                    elif dac_regulation == 1:
+                        dac_flag = "sp"
+                    elif dac_regulation == 2:
+                        dac_flag = "s"
+
+                    experiment_key = str(asp_index) + "_ASP_" + rerouting_flag + "_" + ground_delay_flag + "_" + dac_flag
+
+                    system_config.append({
+                        "key": experiment_key,
+                        "script": base_dir / "../02_ASP/main.py",
+                        "encoding": base_dir / "../02_ASP/encoding.lp",
+                        "verbosity": None,
+                        "cmd": [
+                            f"--results-root={output_path}/solver_outputs/" + experiment_key,
+                            "--wandb-enabled=True",
+                            "--wandb-experiment-name-suffix=_" + experiment_key,
+                            f"--wandb-experiment-name-prefix={experiment_name}_",
+                            "--wandb-entity=thinklex",
+                            "--regulation-ground-delay-active=" + str(ground_delay_regulation),
+                            "--regulation-rerouting-active=" + str(rerouting_regulation),
+                            "--regulation-dynamic-sectorization=" + str(dac_regulation),
+                            ]
+                    })
+                    
+                    asp_index += 1
+
+
+    if args.experiment_asp_rp_dp_sp != 0:
 
         system_config.append({
-            "key": "05_ASP_r_d_s",
+            "key": "05_ASP_rp_dp_sp",
             "script": base_dir / "../02_ASP/main.py",
             "encoding": base_dir / "../02_ASP/encoding.lp",
             "verbosity": None,
             "cmd": [
-                f"--results-root={output_path}/solver_outputs/05_ASP_r_d_s",
+                f"--results-root={output_path}/solver_outputs/05_ASP_rp_dp_sp",
                 "--wandb-enabled=True",
-                "--wandb-experiment-name-suffix=_05_ASP_r_d_s",
+                "--wandb-experiment-name-suffix=_05_ASP_rp_dp_sp",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
-                "--regulation-ground-delay-active=True",
-                "--regulation-rerouting-active=True",
-                "--regulation-dynamic-sectorization=2",
-                ]
-        })
-
-    if args.experiment_asp_r_d_ns != 0:
-        system_config.append({
-            "key": "06_ASP_r_d_ns",
-            "script": base_dir / "../02_ASP/main.py",
-            "encoding": base_dir / "../02_ASP/encoding.lp",
-            "verbosity": None,
-            "cmd": [
-                f"--results-root={output_path}/solver_outputs/06_ASP_r_d_ns",
-                "--wandb-enabled=True",
-                "--wandb-experiment-name-suffix=_06_ASP_r_d_ns",
-                f"--wandb-experiment-name-prefix={experiment_name}_",
-                "--wandb-entity=thinklex",
-                "--regulation-ground-delay-active=True",
-                "--regulation-rerouting-active=True",
-                "--regulation-dynamic-sectorization=0",
-                ]
-        })
-
-    if args.experiment_asp_r_nd_s != 0:
-        system_config.append({
-            "key": "07_ASP_r_nd_s",
-            "script": base_dir / "../02_ASP/main.py",
-            "encoding": base_dir / "../02_ASP/encoding.lp",
-            "verbosity": None,
-            "cmd": [
-                f"--results-root={output_path}/solver_outputs/07_ASP_r_nd_s",
-                "--wandb-enabled=True",
-                "--wandb-experiment-name-suffix=_07_ASP_r_nd_s",
-                f"--wandb-experiment-name-prefix={experiment_name}_",
-                "--wandb-entity=thinklex",
-                "--regulation-ground-delay-active=False",
-                "--regulation-rerouting-active=True",
-                "--regulation-dynamic-sectorization=2",
-                ]
-        })
-
-    if args.experiment_asp_nr_d_s != 0:
-        system_config.append({
-            "key": "08_ASP_nr_d_s",
-            "script": base_dir / "../02_ASP/main.py",
-            "encoding": base_dir / "../02_ASP/encoding.lp",
-            "verbosity": None,
-            "cmd": [
-                f"--results-root={output_path}/solver_outputs/08_ASP_nr_d_s",
-                "--wandb-enabled=True",
-                "--wandb-experiment-name-suffix=_08_ASP_nr_d_s",
-                f"--wandb-experiment-name-prefix={experiment_name}_",
-                "--wandb-entity=thinklex",
-                "--regulation-ground-delay-active=True",
-                "--regulation-rerouting-active=False",
-                "--regulation-dynamic-sectorization=2",
-                ]
-        })
-
-    if args.experiment_asp_r_nd_ns != 0:
-        system_config.append({
-            "key": "09_ASP_r_nd_ns",
-            "script": base_dir / "../02_ASP/main.py",
-            "encoding": base_dir / "../02_ASP/encoding.lp",
-            "verbosity": None,
-            "cmd": [
-                f"--results-root={output_path}/solver_outputs/09_ASP_r_nd_ns",
-                "--wandb-enabled=True",
-                "--wandb-experiment-name-suffix=_09_ASP_r_nd_ns",
-                f"--wandb-experiment-name-prefix={experiment_name}_",
-                "--wandb-entity=thinklex",
-                "--regulation-ground-delay-active=False",
-                "--regulation-rerouting-active=True",
-                "--regulation-dynamic-sectorization=0",
-                ]
-        })
-
-    if args.experiment_asp_nr_nd_s != 0:
-        system_config.append({
-            "key": "10_ASP_nr_nd_s",
-            "script": base_dir / "../02_ASP/main.py",
-            "encoding": base_dir / "../02_ASP/encoding.lp",
-            "verbosity": None,
-            "cmd": [
-                f"--results-root={output_path}/solver_outputs/10_ASP_nr_nd_s",
-                "--wandb-enabled=True",
-                "--wandb-experiment-name-suffix=_10_ASP_nr_nd_s",
-                f"--wandb-experiment-name-prefix={experiment_name}_",
-                "--wandb-entity=thinklex",
-                "--regulation-ground-delay-active=False",
-                "--regulation-rerouting-active=False",
-                "--regulation-dynamic-sectorization=2",
-                ]
-        })
-
-    if args.experiment_asp_nr_d_ns != 0:
-        system_config.append({
-            "key": "11_ASP_nr_d_ns",
-            "script": base_dir / "../02_ASP/main.py",
-            "encoding": base_dir / "../02_ASP/encoding.lp",
-            "verbosity": None,
-            "cmd": [
-                f"--results-root={output_path}/solver_outputs/11_ASP_nr_d_ns",
-                "--wandb-enabled=True",
-                "--wandb-experiment-name-suffix=_11_ASP_nr_d_ns",
-                f"--wandb-experiment-name-prefix={experiment_name}_",
-                "--wandb-entity=thinklex",
-                "--regulation-ground-delay-active=True",
-                "--regulation-rerouting-active=False",
-                "--regulation-dynamic-sectorization=0",
-                ]
-        })
-
-    if args.experiment_asp_nr_nd_ns != 0:
-        system_config.append({
-            "key": "12_ASP_nr_nd_ns",
-            "script": base_dir / "../02_ASP/main.py",
-            "encoding": base_dir / "../02_ASP/encoding.lp",
-            "verbosity": None,
-            "cmd": [
-                f"--results-root={output_path}/solver_outputs/12_ASP_nr_nd_ns",
-                "--wandb-enabled=True",
-                "--wandb-experiment-name-suffix=_12_ASP_nr_nd_ns",
-                f"--wandb-experiment-name-prefix={experiment_name}_",
-                "--wandb-entity=thinklex",
-                "--regulation-ground-delay-active=False",
-                "--regulation-rerouting-active=False",
-                "--regulation-dynamic-sectorization=0",
-                "--allow-overloads=True",
-                ]
-        })
-
-    if args.experiment_asp_r_d_sp != 0:
-        system_config.append({
-            "key": "13_ASP_r_d_sp",
-            "script": base_dir / "../02_ASP/main.py",
-            "encoding": base_dir / "../02_ASP/encoding.lp",
-            "verbosity": None,
-            "cmd": [
-                f"--results-root={output_path}/solver_outputs/13_ASP_r_d_sp",
-                "--wandb-enabled=True",
-                "--wandb-experiment-name-suffix=_13_ASP_r_d_sp",
-                f"--wandb-experiment-name-prefix={experiment_name}_",
-                "--wandb-entity=thinklex",
-                "--regulation-ground-delay-active=True",
-                "--regulation-rerouting-active=True",
+                "--regulation-ground-delay-active=1",
+                "--regulation-rerouting-active=1",
                 "--regulation-dynamic-sectorization=1",
-                "--allow-overloads=True",
                 ]
         })
 
-    if args.experiment_asp_nr_d_sp != 0:
+    if args.experiment_asp_rp_d_sp != 0:
+
         system_config.append({
-            "key": "14_ASP_nr_d_sp",
+            "key": "05_ASP_rp_d_sp",
             "script": base_dir / "../02_ASP/main.py",
             "encoding": base_dir / "../02_ASP/encoding.lp",
             "verbosity": None,
             "cmd": [
-                f"--results-root={output_path}/solver_outputs/14_ASP_nr_d_sp",
+                f"--results-root={output_path}/solver_outputs/05_ASP_rp_d_sp",
                 "--wandb-enabled=True",
-                "--wandb-experiment-name-suffix=_14_ASP_nr_d_sp",
+                "--wandb-experiment-name-suffix=_05_ASP_rp_d_sp",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
-                "--regulation-ground-delay-active=True",
-                "--regulation-rerouting-active=False",
+                "--regulation-ground-delay-active=2",
+                "--regulation-rerouting-active=1",
                 "--regulation-dynamic-sectorization=1",
-                "--allow-overloads=True",
                 ]
         })
 
-    if args.experiment_asp_r_nd_sp != 0:
-        system_config.append({
-            "key": "15_ASP_r_nd_sp",
-            "script": base_dir / "../02_ASP/main.py",
-            "encoding": base_dir / "../02_ASP/encoding.lp",
-            "verbosity": None,
-            "cmd": [
-                f"--results-root={output_path}/solver_outputs/15_ASP_r_nd_sp",
-                "--wandb-enabled=True",
-                "--wandb-experiment-name-suffix=_15_ASP_r_nd_sp",
-                f"--wandb-experiment-name-prefix={experiment_name}_",
-                "--wandb-entity=thinklex",
-                "--regulation-ground-delay-active=False",
-                "--regulation-rerouting-active=True",
-                "--regulation-dynamic-sectorization=1",
-                "--allow-overloads=True",
-                ]
-        })
-
-    if args.experiment_asp_nr_nd_sp != 0:
-        system_config.append({
-            "key": "16_ASP_nr_nd_sp",
-            "script": base_dir / "../02_ASP/main.py",
-            "encoding": base_dir / "../02_ASP/encoding.lp",
-            "verbosity": None,
-            "cmd": [
-                f"--results-root={output_path}/solver_outputs/16_ASP_nr_nd_sp",
-                "--wandb-enabled=True",
-                "--wandb-experiment-name-suffix=_16_ASP_nr_nd_sp",
-                f"--wandb-experiment-name-prefix={experiment_name}_",
-                "--wandb-entity=thinklex",
-                "--regulation-ground-delay-active=False",
-                "--regulation-rerouting-active=False",
-                "--regulation-dynamic-sectorization=1",
-                "--allow-overloads=True",
-                ]
-        })
 
     return system_config
 
@@ -636,6 +532,7 @@ def build_command(system: Dict, paths: Dict[str, Path], python_bin: str, timeste
     """Assemble the command‑line for one solver run."""
     cmd = [
         python_bin,
+        "-u",
         str(system["script"].resolve()),
         f"--graph-path={paths['graph-edges']}",
         f"--sectors-path={paths['sectors']}",
@@ -810,11 +707,18 @@ def main() -> None:
     parser.add_argument("--experiment-asp-aero-flow-nr-d", type=int, default=1, help="true (val!=0), false (val=0)")
     parser.add_argument("--experiment-asp-aero-flow-r-nd", type=int, default=1, help="true (val!=0), false (val=0)")
 
+    parser.add_argument("--experiment-casa", type=int, default=1, help="true (val!=0), false (val=0)")
 
     parser.add_argument("--experiment-route-delay", type=int, default=1, help="true (val!=0), false (val=0)")
     parser.add_argument("--experiment-route", type=int, default=1, help="true (val!=0), false (val=0)")
     parser.add_argument("--experiment-delay", type=int, default=1, help="true (val!=0), false (val=0)")
     parser.add_argument("--experiment-mip", type=int, default=1, help="true (val!=0), false (val=0)")
+
+    parser.add_argument("--experiment-all-asp-variants", type=int, default=1, help="true (val!=0), false (val=0)")
+    parser.add_argument("--experiment-asp-rp-dp-sp", type=int, default=1, help="true (val!=0), false (val=0)")
+    parser.add_argument("--experiment-asp-rp-d-sp", type=int, default=1, help="true (val!=0), false (val=0)")
+
+    # LEGACY:
     parser.add_argument("--experiment-asp-r-d-s", type=int, default=1, help="true (val!=0), false (val=0)")
     parser.add_argument("--experiment-asp-r-d-ns", type=int, default=1, help="true (val!=0), false (val=0)")
     parser.add_argument("--experiment-asp-r-nd-s", type=int, default=1, help="true (val!=0), false (val=0)")
@@ -1024,16 +928,19 @@ def main() -> None:
             tmp_path_root = output_path / "individual_outputs"
             tmp_path = tmp_path_root / f"{inst}_{system_name}.json"
             
-            json_object_list = []
-            for json_val_line in sol_value[inst][system_name]:
-                json_object_list.append(json.dumps(json_val_line))
+            #json_object_list = []
+            #for json_val_line in sol_value[inst][system_name]:
+            #    json_object_list.append(json.dumps(json_val_line))
 
-            json_object = "{\"object\":[" + ','.join(json_object_list) + "}]}"
+            #json_object = "{\"object\":[" + ','.join(json_object_list) + "}]}"
 
             tmp_path_root.mkdir(parents=True, exist_ok=True)
 
+            #with tmp_path.open("w", encoding="utf-8") as fh:
+            #    fh.write(json_object)
             with tmp_path.open("w", encoding="utf-8") as fh:
-                fh.write(json_object)
+                json.dump({"object": sol_value[inst][system_name]}, fh)
+
 
     print("Benchmarking finished. Results written to:")
     for fn in ("execution_time.csv", "ram_usage.csv", "solution_value.csv"):
