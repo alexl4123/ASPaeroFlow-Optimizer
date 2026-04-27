@@ -136,7 +136,8 @@ class Main:
         control_pub_socket = None,
         control_poller = None,
         controller_enabled = False,
-        data_dir = None
+        data_dir = None,
+        max_considered_aircraft = 2
         ) -> None:
 
         self._graph_path: Optional[Path] = graph_path
@@ -150,6 +151,7 @@ class Main:
 
         self.max_number_navpoints_per_sector = max_number_navpoints_per_sector
         self.max_number_sectors = max_number_sectors
+        self.max_considered_aircraft = max_considered_aircraft
         self.minimize_number_sectors = minimize_number_sectors
 
         self._control_context = control_context
@@ -340,7 +342,7 @@ class Main:
 
         counter_equal_solutions = 0
         additional_time_increase = 0
-        max_number_airplanes_considered_in_ASP = 2
+        max_number_airplanes_considered_in_ASP = self.max_considered_aircraft
 
         iteration = 0
         fill_value = -1
@@ -1074,7 +1076,7 @@ class Main:
 
                     counter_equal_solutions = 0
                     max_number_processors = 20
-                    max_number_airplanes_considered_in_ASP = 2
+                    max_number_airplanes_considered_in_ASP = self.max_considered_aircraft
                     additional_time_increase = 0
                     self._max_explored_vertices = original_max_explored_vertices
                     self.number_capacity_management_configs = default_number_capacity_management_configs
@@ -2322,6 +2324,8 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
                         help="Granularity: 1=1h, 4=15min, etc.")
     parser.add_argument("--max-explored-vertices", type=int, default=int(C("max-explored-vertices", 6)),
                         help="Max vertices explored in parallel.")
+    parser.add_argument("--max-considered-aircraft", type=int, default=int(C("max-considered-aircraft", 2)),
+                        help="Max considered aircraft in one optimization step.")
     parser.add_argument("--max-delay-per-iteration", type=int, default=int(C("max-delay-per-iteration", -1)),
                         help="Max hours of delay per iteration (−1 = auto).")
     parser.add_argument("--max-time", type=int, default=int(C("max-time", 24)),
@@ -2814,7 +2818,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                 args.optimizer, args.max_number_navpoints_per_sector, args.max_number_sectors, args.minimize_number_sectors,
                 args.convex_sectors,
                 control_context, control_ctrl_socket, control_pub_socket, control_poller, 
-                args.controller_enabled, args.data_dir
+                args.controller_enabled, args.data_dir,
+                args.max_considered_aircraft
                 )
         key, value = app.run()
 
