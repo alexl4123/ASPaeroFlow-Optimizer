@@ -1168,9 +1168,9 @@ class Main:
                 prev_sector_indices = list(controller_sector_diff_dict["prev_sector_config"].keys())
                 post_sector_indices = list(controller_sector_diff_dict["post_sector_config"].keys())
 
+                output_dict["DIFF"]["OPTIMIZED_SECTOR"] = list(controller_sector_diff_dict["prev_sector_config"].keys())
                 if prev_sector_indices == post_sector_indices:
                     controller_sector_diff_dict = {}
-                
                 output_dict["DIFF"]["FLIGHTS"] = all_flights_diff_dict
                 output_dict["DIFF"]["SECTORS"] = controller_sector_diff_dict
 
