@@ -1237,6 +1237,7 @@ class Main:
 
         current_time = time.time() - original_start_time
         output_dict = {}
+        output_dict["ITERATION"] = int(iteration)
         output_dict["OVERLOAD"] = int(number_of_conflicts)
         output_dict["ARRIVAL-DELAY"] = int(total_delay)
         output_dict["SECTOR-NUMBER"] = int(number_sectors)
@@ -1245,12 +1246,12 @@ class Main:
         output_dict["RECONFIG"] = int(number_sector_reconfigurations)
         output_dict["TOTAL-TIME-TO-THIS-POINT"] =  int(current_time)
         output_dict["COMPUTATION-FINISHED"] = True
+        output_dict["DIFF"] = {}
+        output_dict["DIFF"]["ACCEPTED_SOLUTION"] = False
         output_string = json.dumps(output_dict)
         print(output_string, flush=True)
         if self._controller_enabled is True:
-            self._control_pub_socket.send_string(f"TELEMETRY: Objective = {output_string}")
-
-
+            self._control_pub_socket.send_string(f"{output_string}")
 
         if self.verbosity > 0:
 
@@ -2823,23 +2824,47 @@ def main(argv: Optional[List[str]] = None) -> None:
                 )
         key, value = app.run()
 
-        if key == "<LOAD>":
-            print("RECONFIGURE TO:")
-            print(value)
-            data_dir_path = Path(value)
-            args.data_dir = data_dir_path
-            args.graph_path           = None
-            args.sectors_path         = None
-            args.flights_path         = None
-            args.airports_path        = None
-            args.airplanes_path       = None
-            args.airplane_flight_path = None
-            args.navaid_sector_path   = None
-            args = _apply_data_dir_defaults(args, data_dir_path)
-            _validate_inputs(args)
+        if args.controller_enabled is True:
+            if key != "<LOAD>":
+                # poller.poll() with None blocks indefinitely until I/O occurs
+                while key not in ["<LOAD>","<QUIT>"]:
+                    events = dict(app._control_poller.poll(timeout=None))
+                    if app._control_ctrl_socket in events:
+                        command = app._control_ctrl_socket.recv_string()
+                        if command == "START":
+                            print("[CONTROL->OPTIMIZER]: START NOT EXECUTED (idle).")
+                            app._control_ctrl_socket.send_string("TELEMETRY: [STATUS] RESUMED")
+                            continue
+                        elif command.startswith("<LOAD>"):
+                            print("[CONTROL->OPTIMIZER]: LOAD")
+                            key = "<LOAD>"
+                            value = command[6:]
+                        elif command.startswith("<OPTION>"):
+                            print("[CONTROL->OPTIMIZER]: Option not executed (idle).")
+                        elif command.startswith("<QUIT>"):
+                            print("[CONTROL->OPTIMIZER]: QUIT")
+                            key = "<QUIT>"
+
+            if key == "<LOAD>":
+                print("RECONFIGURE TO:")
+                print(value)
+                data_dir_path = Path(value)
+                args.data_dir = data_dir_path
+                args.graph_path           = None
+                args.sectors_path         = None
+                args.flights_path         = None
+                args.airports_path        = None
+                args.airplanes_path       = None
+                args.airplane_flight_path = None
+                args.navaid_sector_path   = None
+                args = _apply_data_dir_defaults(args, data_dir_path)
+                _validate_inputs(args)
+            elif key == "<QUIT>":
+                break
+            else:
+                break
         else:
             break
-
 
 
     # Save results if requested

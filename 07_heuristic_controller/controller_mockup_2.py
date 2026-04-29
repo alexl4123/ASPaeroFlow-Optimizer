@@ -212,8 +212,8 @@ def main(argv: Optional[List[str]] = None):
                     message = sub_socket.recv_string(flags=zmq.NOBLOCK)
                     print(f"[Controller] {message}")
                     clinguin_sub_socket.send_string(message)
-                    if "\"COMPUTATION-FINISHED\": true" in message:
-                        computation_finished = True
+                    #if "\"COMPUTATION-FINISHED\": true" in message:
+                    #    computation_finished = True
                 except zmq.Again:
                     # Queue is empty; break loop to continue computation
                     break
