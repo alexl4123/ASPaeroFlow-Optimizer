@@ -929,7 +929,7 @@ class OptimizeFlights:
         solver: Model = Solver(encoding, instance)
         model = solver.solve()
 
-        return model, config_restore_dict
+        return model, config_restore_dict, instance
 
     def evaluate_flights_for_sector_configuration(self, flight_path_dict, current_config, navaid_sector_time_assignment, capacity_demand_diff_matrix):
 

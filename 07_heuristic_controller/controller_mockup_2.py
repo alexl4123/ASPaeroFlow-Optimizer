@@ -5,7 +5,7 @@ import argparse
 from pathlib import Path
 from typing import Any, Final, List, Optional, Callable
 
-
+import base64
 import json
 
 
@@ -281,6 +281,15 @@ def main(argv: Optional[List[str]] = None):
                 elif command.startswith("<OPTION>"):
                     print(command)
                     ctrl_socket.send_string(command)
+                elif command.startswith("<EXPLAIN>"):
+                    print(command)
+                    explain_dict = json.loads(command[9:])
+                    print(explain_dict)
+                    print("NOW DECODING ASP-INSTANCE")
+                    asp_encoded = explain_dict["ASP-INSTANCE"]
+                    asp_instance = base64.b64decode(asp_encoded).decode("utf-8")
+                    print(asp_instance)
+
                 else:
                     print(f"[DEBUG] CLINGUIN BUSY:\n{command}")
             

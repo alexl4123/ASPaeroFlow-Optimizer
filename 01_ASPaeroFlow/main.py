@@ -19,6 +19,7 @@ import networkx as nx
 import os
 import json
 
+import base64
 import zmq
 
 import numpy as np
@@ -754,8 +755,11 @@ class Main:
 
             flight_per_navpoint_id = {}
 
-            for model, sector_config_restore_dict in solutions:
+            asp_instance = None
+
+            for model, sector_config_restore_dict, instance in solutions:
                 if self._optimizer == "ASP":
+                    asp_instance = instance
                     if int(str(model.get_sector_config().arguments[0])) > 0:
                         sector_configs.append((int(str(model.get_sector_config().arguments[0])), sector_config_restore_dict))
 
@@ -1163,6 +1167,7 @@ class Main:
 
             print(output_string, flush=True)
             if self._controller_enabled is True:
+                output_dict["ASP-INSTANCE"] = base64.b64encode(asp_instance.encode("utf-8")).decode("utf-8")
                 output_dict["DIFF"] = {}
                 output_dict["DIFF"]["ITERATION"] = int(iteration)
                 output_dict["DIFF"]["ACCEPTED_SOLUTION"] = controller_sector_diff_dict["accepted_solution"]
