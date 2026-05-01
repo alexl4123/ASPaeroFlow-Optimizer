@@ -138,7 +138,8 @@ class Main:
         control_poller = None,
         controller_enabled = False,
         data_dir = None,
-        max_considered_aircraft = 2
+        max_considered_aircraft = 2,
+        explainability_context = None,
         ) -> None:
 
         self._graph_path: Optional[Path] = graph_path
@@ -160,6 +161,8 @@ class Main:
         self._control_pub_socket = control_pub_socket
         self._control_poller = control_poller
         self._controller_enabled = controller_enabled
+
+        self._explainability_context = explainability_context
 
         self._optimizer = optimizer
 
@@ -227,119 +230,6 @@ class Main:
 
     def run(self) -> None:  
         """Run the application"""
-        self.load_data()
-
-        original_start_time = time.time()
-
-        # For NumPy floating-point issues (divide/overflow/invalid/underflow):
-        np.seterr(all='raise')  # or: with np.errstate(divide='raise', invalid='raise', over='raise')
-
-        # For NumPy warnings that use Python’s warnings system (e.g., RuntimeWarning):
-        warnings.filterwarnings("error", category=RuntimeWarning)
-
-        if self.verbosity > 0:
-            # --- Demonstration output ---------
-            print("  graph   :", None if self.graph is None else self.graph.shape)
-            print("  capacity:", None if self.sectors is None else self.sectors.shape)
-            print("  instance:", None if self.flights is None else self.flights.shape)
-            print("  airport-vertices:", None if self.airports is None else self.airports.shape)
-            # -----------------------------------------------------------------
-
-        sources = self.graph[:,0]
-        targets = self.graph[:,1]
-        dists = self.graph[:,2]
-        self.networkx_navpoint_graph = nx.Graph()
-        self.networkx_navpoint_graph.add_weighted_edges_from(zip(sources, targets, dists))
-
-        self.unit_graphs = {}
-
-        different_speeds = list(set(list(self.airplanes[:,1])))
-        for cur_airplane_speed in different_speeds:
-
-            self.unit_graphs[cur_airplane_speed] = self.networkx_navpoint_graph.copy()
-            graph = self.unit_graphs[cur_airplane_speed]
-
-            self.nearest_neighbors_lookup[cur_airplane_speed] = {}
-
-            tmp_edges = {}
-
-            for edge in graph.edges(data=True):
-
-                distance = edge[2]["weight"]
-                # CONVERT AIRPLANE SPEED TO m/s
-                airplane_speed_ms = cur_airplane_speed * 0.51444
-                duration_in_seconds = distance/airplane_speed_ms
-                factor_to_unit_standard = 3600.00 / float(self._timestep_granularity)
-                duration_in_unit_standards = math.ceil(duration_in_seconds / factor_to_unit_standard)
-
-                duration_in_unit_standards = max(duration_in_unit_standards, 1)
-
-                tmp_edges[(edge[0],edge[1])] = {"weight":duration_in_unit_standards}
-
-                #print(f"{distance}/{airplane_speed_ms} = {duration_in_seconds}")
-                #print(f"{duration_in_seconds}/{factor_to_unit_standard} = {duration_in_unit_standards}")
-
-            nx.set_edge_attributes(graph, tmp_edges)
-
-
-        airport_instance = []
-
-        for row_index in range(self.airports.shape[0]):
-            row = self.airports[row_index]
-            airport_instance.append(f"airport({row}).")
-
-        airport_instance = "\n".join(airport_instance)
-
-        # 0.) Create navpaid sector time assignment (|R|XT):
-        navaid_sector_time_assignment = self.create_initial_navpoint_sector_assignment(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity)
-
-        # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
-        converted_navpoint_matrix, _ = self.instance_navpoint_matrix(self.flights, navaid_sector_time_assignment.shape[1], fill_value=-1)
-        #converted_instance_matrix, planned_arrival_times = OptimizeFlights.instance_to_matrix_vectorized(self.flights, self.airplane_flight, navaid_sector_time_assignment.shape[1], self._timestep_granularity, navaid_sector_time_assignment)
-        converted_instance_matrix, planned_arrival_times = OptimizeFlights.instance_to_matrix(self.flights, self.airplane_flight, navaid_sector_time_assignment.shape[1], self._timestep_granularity, navaid_sector_time_assignment)
-
-        #converted_instance_matrix, planned_arrival_times = self.instance_to_matrix(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity, navaid_sector_lookup)
-        #
-        #np.testing.assert_array_equal(converted_instance_matrix, converted_instance_matrix_2)
-
-        # 2.) Create demand matrix (|R|x|T|)
-        system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
-
-        # 3.) Create capacity matrix (|R|x|T|)
-        #capacity_time_matrix = self.capacity_time_matrix_reference(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = z)
-        #capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor)
-
-        capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor,
-                                                                    composite_sector_function=self.composite_sector_function)
-        #np.testing.assert_array_equal(capacity_time_matrix, capacity_time_matrix_test_2)
-
-        #capacity_time_matrix_test = OptimizeFlights.capacity_time_matrix_test(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor)
-        #np.testing.assert_array_equal(capacity_time_matrix, capacity_time_matrix_test)
-
-
-        if self.verbosity > 0:
-            # --- Demonstration output ---------
-            print("  converted-instance:   ", converted_instance_matrix.shape)
-            print("  converted-navpoint:   ", converted_navpoint_matrix.shape)
-            print("  navpoint-time-sector:   ", navaid_sector_time_assignment.shape)
-            print("  system-loads-matrix:   ", system_loads.shape)
-            print("  capacity-matrix:   ", capacity_time_matrix.shape)
-            # -----------------------------------------------------------------
-
-
-
-        # 4.) Subtract demand from capacity (|R|x|T|)
-        capacity_demand_diff_matrix = capacity_time_matrix - system_loads
-        # 5.) Create capacity overload matrix
-        capacity_overload_mask = capacity_demand_diff_matrix < 0
-
-        #np.savetxt("202603_converted_navpoint_matrix.csv", converted_navpoint_matrix, delimiter=",",fmt="%i")
-        #np.savetxt("202603_capacity_demand_diff_matrix.csv", capacity_demand_diff_matrix, delimiter=",",fmt="%i")
-        #quit()
-
-        #number_of_conflicts = capacity_overload_mask.sum()
-        number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
-        number_of_conflicts_prev = None
 
         counter_equal_solutions = 0
         additional_time_increase = 0
@@ -351,402 +241,593 @@ class Main:
         max_number_processors = self._number_threads
         seed = self._seed
 
-        if self.verbosity > 1:
-            np.savetxt("20250826_initial_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
-
-        original_converted_instance_matrix = converted_instance_matrix.copy()
-        original_navaid_sector_time_assignment = navaid_sector_time_assignment.copy()
-
-        original_max_explored_vertices = self._max_explored_vertices
-        original_max_time = original_converted_instance_matrix.shape[1]
-        self.original_max_time = original_max_time
+        original_start_time = time.time()
 
         if self._max_delay_per_iteration < 0:
             #self._max_delay_per_iteration = original_max_time
             self._max_delay_per_iteration = 20
 
-        old_converted_instance = converted_instance_matrix.copy()
-        old_converted_navpoint_matrix = converted_navpoint_matrix.copy()
-        old_navaid_sector_time_assignment = navaid_sector_time_assignment.copy()
-
-        if np.any(capacity_overload_mask, where=True):
-            
-            default_number_capacity_management_configs = self.number_capacity_management_configs
-
-            _, _, flight_durations = self.flight_spans_contiguous(converted_instance_matrix, fill_value=-1)
-
-        # Track to Weights & Biases when enabled
-        current_time = time.time() - original_start_time
-
-        number_sectors = self.compute_total_number_sectors(navaid_sector_time_assignment)
-
-        if self._wandb_log is not None:
-
-            self._wandb_log({
-                "iteration": int(iteration), # FIRST ONE:
-                "number_of_conflicts": int(number_of_conflicts),
-                "total_delay": int(0),
-                "number_sectors": int(number_sectors),
-                "sector_diff": int(0),
-                "number_reroutes": int(0),
-                "number_reconfigurations": int(0),
-                "current_time": int(current_time),
-            })
-
-            if self.verbosity > 1:
-                print(f"""
-    iteration -> {int(iteration)}
-    number_of_conflicts -> {int(number_of_conflicts)}
-    total_delay -> {int(0)}
-    number_sectors -> {len(uniq.values)}
-    current_time -> {int(0)}
-                      """)
-                
-        output_dict = {}
-        output_dict["OVERLOAD"] = int(number_of_conflicts)
-        output_dict["ARRIVAL-DELAY"] = int(0)
-        output_dict["SECTOR-NUMBER"] = int(number_sectors)
-        output_dict["SECTOR-DIFF"] = int(0)
-        output_dict["REROUTE"] = int(0)
-        output_dict["RECONFIG"] = int(0)
-        output_dict["TOTAL-TIME-TO-THIS-POINT"] =  int(current_time)
-        output_dict["COMPUTATION-FINISHED"] = False
-        output_string = json.dumps(output_dict)
-        print(output_string, flush=True)
-        if self._controller_enabled is True:
-            output_dict["DIFF"] = {}
-            output_dict["DIFF"]["FLIGHTS"] = []
-            output_dict["DIFF"]["SECTORS"] = []
-            output_string = json.dumps(output_dict)
-
-            self._control_pub_socket.send_string(f"RESET-OBJECTIVE-VALUE")
-            self._control_pub_socket.send_string(f"{output_string}")
-
-        last_time_bucket_updated = 0
-
-        if self.max_number_navpoints_per_sector == -1 or self.max_number_sectors == -1:
-            if self.max_number_navpoints_per_sector == -1:
-                max_number_navpoints_per_sector_update = True
-            else:
-                max_number_navpoints_per_sector_update = False
-
-            if self.max_number_sectors == -1:
-                max_number_sectors_update = True
-            else:
-                max_number_sectors_update = False
-
-            for time_index in range(navaid_sector_time_assignment.shape[1]):
-
-                uniq = np.unique_counts(navaid_sector_time_assignment[:,time_index])
-
-                if max_number_navpoints_per_sector_update is True:
-                    if max(uniq.counts) > self.max_number_navpoints_per_sector:
-                        self.max_number_navpoints_per_sector = max(uniq.counts)
-
-                if max_number_sectors_update is True:
-                    if len(uniq.values) > self.max_number_sectors:
-                        self.max_number_sectors = len(uniq.values)
-        elif self.max_number_sectors == -2:
-            self.max_number_sectors = navaid_sector_time_assignment.shape[0]
-
-        if self.minimize_number_sectors is True:
-
-            if self.verbosity > 1:
-                print("MINIMIZE NUMBER OF SECTORS INITIALIZED")
-
-            t_start = 1
-            t_end = 60
-
-            for t_start in range(1,converted_instance_matrix.shape[1] + 1, self._timestep_granularity):
-                t_end = t_start + self._timestep_granularity - 1
-
-                if t_end >= converted_instance_matrix.shape[1]:
-                    t_end = converted_instance_matrix.shape[1] - 1
-
-                converted_instance_matrix, converted_navpoint_matrix, navaid_sector_time_assignment, capacity_time_matrix, system_loads = self.minimize_number_of_sectors_new(navaid_sector_time_assignment,converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix, system_loads, self.max_number_navpoints_per_sector, self.max_number_sectors, t_start, t_end, self.networkx_navpoint_graph, self.airports)
-
-        global_t_start = 1
-        time_bucket_updated = 0
-
-        paused = True
-
-        if self._controller_enabled is True:
-            # Send navpoints, etc.
-            folder_path = self._data_dir
-            # Navgraph:
-            folder_path_navgraph_vertex = Path(folder_path / "navgraph" / "vertices.csv")
-            folder_path_navgraph_edges = Path(folder_path / "navgraph" / "edges.csv")
-            folder_path_mappings = Path(folder_path / "mappings" / "vertex_map.csv")
-
-            vertex_map = np.genfromtxt(
-                folder_path_mappings, 
-                delimiter=',', 
-                names=True, 
-                dtype=None, 
-                encoding='utf-8'
-            )
-
-            # Load vertex coordinates/attributes (Assuming numeric float/int)
-            # usecols can be used to filter specific ATM parameters (e.g., Lat, Lon, Alt)
-            vertices = np.genfromtxt(
-                folder_path_navgraph_vertex, 
-                delimiter=',', 
-                names=True, 
-                dtype=None, 
-                encoding='utf-8'
-            )
-
-            # Load edge list (Source, Target, Weight)
-            edges = np.genfromtxt(
-                folder_path_navgraph_edges, 
-                delimiter=',', 
-                names=True, 
-                dtype=None, 
-                encoding='utf-8'
-            )
-
-            graph_dict = {}
-            graph_dict["vertices"] = {}
-            graph_dict["edges"] = {}
-            graph_dict["sectors"] = {}
-
-            for vertex in self.networkx_navpoint_graph.nodes():
-
-                vertex = int(vertex)
-
-                graph_dict["vertices"][vertex] = {}
-                row = vertex_map[vertex_map["VERTEX_ID"] == vertex]
-                name = row[0][0]
-
-                graph_dict["vertices"][vertex]["id"] = int(vertex)
-                graph_dict["vertices"][vertex]["name"] = str(name)
-                full_vertex = vertices[vertices["IDENTIFIER"] == name][0]
-                graph_dict["vertices"][vertex]["lat"] = float(full_vertex[1])
-                graph_dict["vertices"][vertex]["lon"] = float(full_vertex[2])
-                graph_dict["vertices"][vertex]["alt"] = float(full_vertex[3])
-                graph_dict["vertices"][vertex]["airport"] = int(full_vertex[4])
+        if self._explainability_context is None:
+            self.load_data()
 
 
-                if vertex not in graph_dict["sectors"]:
-                    graph_dict["sectors"][vertex] = {}
-                    graph_dict["sectors"][vertex]["vertices"] = []
+            # For NumPy floating-point issues (divide/overflow/invalid/underflow):
+            np.seterr(all='raise')  # or: with np.errstate(divide='raise', invalid='raise', over='raise')
 
-                sector = int(navaid_sector_time_assignment[vertex,0])
-
-                if sector not in graph_dict["sectors"]:
-                    graph_dict["sectors"][sector] = {}
-                    graph_dict["sectors"][sector]["vertices"] = []
-
-                graph_dict["sectors"][sector]["vertices"].append(vertex)
-
-            for edge in self.networkx_navpoint_graph.edges():
-                v0 = int(edge[0])
-                v1 = int(edge[1])
-
-                if v0 not in graph_dict["edges"]:
-                    graph_dict["edges"][v0] = {}
-
-                if v1 not in graph_dict["edges"]:
-                    graph_dict["edges"][v1] = {}
-
-                graph_dict["edges"][v0][v1] = int(0)
-                graph_dict["edges"][v1][v0] = int(0)
-
-            for sector in graph_dict["sectors"].keys():
-
-                overload = 0
-                for _time in range(capacity_demand_diff_matrix.shape[1]):
-
-                    if capacity_demand_diff_matrix[sector,_time] < 0:
-                        overload += (-capacity_demand_diff_matrix[sector,_time])
-                
-                graph_dict["sectors"][int(sector)]["overload"] = int(overload)
-
-            for index in range(1, self.flights.shape[0]):
-
-                tuple_0 = self.flights[index-1,:]
-                tuple_1 = self.flights[index,:]
-
-                id0 = int(tuple_0[0])
-                v0 = int(tuple_0[1])
-                id1 = int(tuple_1[0])
-                v1 = int(tuple_1[1])
-
-                if id0 == id1:
-                    graph_dict["edges"][v0][v1] += int(1)
-                    graph_dict["edges"][v1][v0] += int(1)
-
-            json_graph_dict = json.dumps(graph_dict)
-            self._control_ctrl_socket.send_string(json_graph_dict)
-            print(json_graph_dict)
-            print("[OPTIMIZER->CONTROL]: SENT GRAPH DICT")
-
-        while np.any(capacity_overload_mask, where=True):
-
-            if  self._controller_enabled is True:
-                # A. State Machine for Interrupts
-                events = dict(self._control_poller.poll(timeout=0))
-
-                for event_key in events.keys():
-                    if self._control_ctrl_socket == event_key:
-                        command = self._control_ctrl_socket.recv_string()
-                        if command == "PAUSE":
-                            paused = True
-                            print("[CONTROL->OPTIMIZER]: PAUSE")
-                            self._control_ctrl_socket.send_string("TELEMETRY: [STATUS] PAUSED")
-                        elif command == "START":
-                            paused = False
-                            print("[CONTROL->OPTIMIZER]: START")
-                            self._control_ctrl_socket.send_string("TELEMETRY: [STATUS] RESUMED")
-                        elif command.startswith("<LOAD>"):
-                            print("[CONTROL->OPTIMIZER]: LOAD")
-                            return "<LOAD>", command[6:]
-                        elif command.startswith("<OPTION>"):
-                            command = command[8:]
-                            command = json.loads(command)
-                            for key in command.keys():
-                                if key == "timestep_granularity":
-                                    self._timestep_granularity = int(command[key])
-                                elif key == "max_explored_vertices":
-                                    self._max_explored_vertices = int(command[key])
-                                    original_max_explored_vertices = self._max_explored_vertices
-                                elif key == "max_delay_per_iteration":
-                                    self._max_delay_per_iteration = int(command[key])
-                                elif key == "number_capacity_management_configs":
-                                    self.number_capacity_management_configs = int(command[key])
-                                    default_number_capacity_management_configs = self.number_capacity_management_configs
-                                else:
-                                    print(f"NOT FOUND ATTR:{key}:{command[key]}")
-                    else:
-                        print("WEIRD BEHAVIOR IN CONNECTION - self._control_ctrl_socket not there")
-                        print(events)
-                        
-                # B. Blocking Wait Loop (halts heuristic progression)
-                if paused:
-                    # poller.poll() with None blocks indefinitely until I/O occurs
-                    events = dict(self._control_poller.poll(timeout=None))
-                    if self._control_ctrl_socket in events:
-                        command = self._control_ctrl_socket.recv_string()
-                        if command == "START":
-                            print("[CONTROL->OPTIMIZER]: START")
-                            paused = False
-                            self._control_ctrl_socket.send_string("TELEMETRY: [STATUS] RESUMED")
-                        elif command.startswith("<LOAD>"):
-                            print("[CONTROL->OPTIMIZER]: LOAD")
-                            return "<LOAD>", command[6:]
-                        elif command.startswith("<OPTION>"):
-                            command = command[8:]
-                            command = json.loads(command)
-                            for key in command.keys():
-                                if key == "timestep_granularity":
-                                    self._timestep_granularity = int(command[key])
-                                elif key == "max_explored_vertices":
-                                    self._max_explored_vertices = int(command[key])
-                                    original_max_explored_vertices = self._max_explored_vertices
-                                elif key == "max_delay_per_iteration":
-                                    self._max_delay_per_iteration = int(command[key])
-                                elif key == "number_capacity_management_configs":
-                                    self.number_capacity_management_configs = int(command[key])
-                                    default_number_capacity_management_configs = self.number_capacity_management_configs
-                                else:
-                                    print(f"NOT FOUND ATTR:{key}:{command[key]}")
-                    continue
+            # For NumPy warnings that use Python’s warnings system (e.g., RuntimeWarning):
+            warnings.filterwarnings("error", category=RuntimeWarning)
 
             if self.verbosity > 0:
-                print(f"<ITER:{iteration}><REMAINING ISSUES:{str(number_of_conflicts)}>")
+                # --- Demonstration output ---------
+                print("  graph   :", None if self.graph is None else self.graph.shape)
+                print("  capacity:", None if self.sectors is None else self.sectors.shape)
+                print("  instance:", None if self.flights is None else self.flights.shape)
+                print("  airport-vertices:", None if self.airports is None else self.airports.shape)
+                # -----------------------------------------------------------------
 
-            cols_with_values = (converted_instance_matrix != -1).any(axis=0)           
-            idxs = np.flatnonzero(cols_with_values)            
-            last_idx = int(idxs[-1]) if idxs.size else -1     
-            safety_factor = self._timestep_granularity * 2
+            sources = self.graph[:,0]
+            targets = self.graph[:,1]
+            dists = self.graph[:,2]
+            self.networkx_navpoint_graph = nx.Graph()
+            self.networkx_navpoint_graph.add_weighted_edges_from(zip(sources, targets, dists))
 
-            if last_idx + self._max_delay_per_iteration * (additional_time_increase + 1) + safety_factor >= converted_instance_matrix.shape[1]:
-                # INCREASE MATRIX SIZE (TIME) AUTOMATICALLY
-                diff = last_idx + self._max_delay_per_iteration * (additional_time_increase + 1) + safety_factor - converted_instance_matrix.shape[1] + 1
-                in_units = math.ceil(diff / self._timestep_granularity)
-                number_new_cols = in_units * self._timestep_granularity
+            self.unit_graphs = {}
 
-                # 0.) Handle Sector Assignments:
-                new_cols = np.repeat(navaid_sector_time_assignment[:,[-1]], number_new_cols, axis=1)  # shape (N,k)
-                navaid_sector_time_assignment = np.concatenate([navaid_sector_time_assignment, new_cols], axis=1)
-                # 1.) Handle Instance Matrix:
-                extra_col = -1 * np.ones((converted_instance_matrix.shape[0], number_new_cols), dtype=int)
-                converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+            different_speeds = list(set(list(self.airplanes[:,1])))
+            for cur_airplane_speed in different_speeds:
 
-                extra_col = -1 * np.ones((converted_navpoint_matrix.shape[0], number_new_cols), dtype=int)
-                converted_navpoint_matrix = np.hstack((converted_navpoint_matrix, extra_col)) 
-                
-                # 2.) Create demand matrix (|R|x|T|):
-                system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
-                # 3.) Create capacity matrix (|R|x|T|):
-                #capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, z = self.sector_capacity_factor)
-                capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor, composite_sector_function=self.composite_sector_function)
+                self.unit_graphs[cur_airplane_speed] = self.networkx_navpoint_graph.copy()
+                graph = self.unit_graphs[cur_airplane_speed]
 
-                # 3.) Create capacity matrix (|R|x|T|)
-                #capacity_time_matrix = self.capacity_time_matrix_reference(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = z)
-                # 4.) Subtract demand from capacity (|R|x|T|):
-                capacity_demand_diff_matrix = capacity_time_matrix - system_loads
-                # 5.) Create capacity overload matrix:
-                capacity_overload_mask = capacity_demand_diff_matrix < 0
+                self.nearest_neighbors_lookup[cur_airplane_speed] = {}
 
-            if navaid_sector_time_assignment.shape[1] != converted_instance_matrix.shape[1]:
-                raise Exception(f"Navaid time must correspond to instance time: {navaid_sector_time_assignment.shape[1]} != {converted_instance_matrix.shape[1]}")
+                tmp_edges = {}
 
-            #time_index,bucket_index = self.first_overload(capacity_overload_mask)
+                for edge in graph.edges(data=True):
 
-            max_number_processors = 1
-            time_bucket_tuples = self.first_overloads(capacity_overload_mask, k=max_number_processors)
+                    distance = edge[2]["weight"]
+                    # CONVERT AIRPLANE SPEED TO m/s
+                    airplane_speed_ms = cur_airplane_speed * 0.51444
+                    duration_in_seconds = distance/airplane_speed_ms
+                    factor_to_unit_standard = 3600.00 / float(self._timestep_granularity)
+                    duration_in_unit_standards = math.ceil(duration_in_seconds / factor_to_unit_standard)
 
-            start_time = time.time()
+                    duration_in_unit_standards = max(duration_in_unit_standards, 1)
+
+                    tmp_edges[(edge[0],edge[1])] = {"weight":duration_in_unit_standards}
+
+                    #print(f"{distance}/{airplane_speed_ms} = {duration_in_seconds}")
+                    #print(f"{duration_in_seconds}/{factor_to_unit_standard} = {duration_in_unit_standards}")
+
+                nx.set_edge_attributes(graph, tmp_edges)
 
 
-            controller_sector_diff_dict = {}
+            airport_instance = []
 
-            all_jobs = []
-            all_candidates = {}
-            for time_index, sector_index in time_bucket_tuples:
-            
-                time_bucket_updated = time_index
+            for row_index in range(self.airports.shape[0]):
+                row = self.airports[row_index]
+                airport_instance.append(f"airport({row}).")
 
-                #print(capacity_demand_diff_matrix[sector_index, time_index])
-                
-                #_, _, flight_durations = self.flight_spans_contiguous(converted_instance_matrix, fill_value=-1)
-                job, candidates = self.build_job(time_index, sector_index, converted_instance_matrix, converted_navpoint_matrix,
-                                capacity_time_matrix,
-                                system_loads, capacity_demand_diff_matrix, additional_time_increase, fill_value, 
-                                max_number_airplanes_considered_in_ASP, max_number_processors, original_max_time,
-                                self.networkx_navpoint_graph, self.unit_graphs, planned_arrival_times, self.airplane_flight,
-                                self.airplanes, navaid_sector_time_assignment, flight_durations,
-                                iteration, self.sector_capacity_factor, self.flights
-                                )
+            airport_instance = "\n".join(airport_instance)
 
-                controller_sector_diff_dict["time_index"] = int(time_index)
-                controller_sector_diff_dict["sector_index"] = int(sector_index)
-                controller_sector_diff_dict["prev_sector_config"] = {}
-                controller_sector_diff_dict["prev_sector_config"][int(sector_index)] = {}
-                controller_sector_diff_dict["prev_sector_config"][int(sector_index)]["vertices"] = [int(i) for i in np.where(navaid_sector_time_assignment[:, time_index] == sector_index)[0]]
-                controller_sector_diff_dict["prev_sector_config"][int(sector_index)]["overload"] = int(-capacity_demand_diff_matrix[sector_index,time_index])
-                
-                all_new = True
-                for candidate in candidates:
-                    if candidate in all_candidates:
-                        all_new = False
-                    else:
-                        all_candidates[candidate] = True
+            # 0.) Create navpaid sector time assignment (|R|XT):
+            navaid_sector_time_assignment = self.create_initial_navpoint_sector_assignment(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity)
 
-                if all_new:
-                    all_jobs.append(job)
+            # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
+            converted_navpoint_matrix, _ = self.instance_navpoint_matrix(self.flights, navaid_sector_time_assignment.shape[1], fill_value=-1)
+            #converted_instance_matrix, planned_arrival_times = OptimizeFlights.instance_to_matrix_vectorized(self.flights, self.airplane_flight, navaid_sector_time_assignment.shape[1], self._timestep_granularity, navaid_sector_time_assignment)
+            converted_instance_matrix, planned_arrival_times = OptimizeFlights.instance_to_matrix(self.flights, self.airplane_flight, navaid_sector_time_assignment.shape[1], self._timestep_granularity, navaid_sector_time_assignment)
 
-            solutions = Parallel(n_jobs=max_number_processors, backend="loky")(
-                        delayed(_run)(job) for job in all_jobs)
+            #converted_instance_matrix, planned_arrival_times = self.instance_to_matrix(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity, navaid_sector_lookup)
+            #
+            #np.testing.assert_array_equal(converted_instance_matrix, converted_instance_matrix_2)
 
-            #models = [_run(job) for job in jobs]
+            # 2.) Create demand matrix (|R|x|T|)
+            system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
 
-            end_time = time.time()
+            # 3.) Create capacity matrix (|R|x|T|)
+            #capacity_time_matrix = self.capacity_time_matrix_reference(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = z)
+            #capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor)
+
+            capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor,
+                                                                        composite_sector_function=self.composite_sector_function)
+            #np.testing.assert_array_equal(capacity_time_matrix, capacity_time_matrix_test_2)
+
+            #capacity_time_matrix_test = OptimizeFlights.capacity_time_matrix_test(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor)
+            #np.testing.assert_array_equal(capacity_time_matrix, capacity_time_matrix_test)
+
+
+            if self.verbosity > 0:
+                # --- Demonstration output ---------
+                print("  converted-instance:   ", converted_instance_matrix.shape)
+                print("  converted-navpoint:   ", converted_navpoint_matrix.shape)
+                print("  navpoint-time-sector:   ", navaid_sector_time_assignment.shape)
+                print("  system-loads-matrix:   ", system_loads.shape)
+                print("  capacity-matrix:   ", capacity_time_matrix.shape)
+                # -----------------------------------------------------------------
+
+
+
+            # 4.) Subtract demand from capacity (|R|x|T|)
+            capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+            # 5.) Create capacity overload matrix
+            capacity_overload_mask = capacity_demand_diff_matrix < 0
+
+            #np.savetxt("202603_converted_navpoint_matrix.csv", converted_navpoint_matrix, delimiter=",",fmt="%i")
+            #np.savetxt("202603_capacity_demand_diff_matrix.csv", capacity_demand_diff_matrix, delimiter=",",fmt="%i")
+            #quit()
+
+            #number_of_conflicts = capacity_overload_mask.sum()
+            number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
+            number_of_conflicts_prev = None
+
+
             if self.verbosity > 1:
-                print(f">> Elapsed solving time: {end_time - start_time}")
+                np.savetxt("20250826_initial_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
 
-            #models = self.run_parallel(jobs)
+            original_converted_instance_matrix = converted_instance_matrix.copy()
+            original_navaid_sector_time_assignment = navaid_sector_time_assignment.copy()
+
+            original_max_explored_vertices = self._max_explored_vertices
+            original_max_time = original_converted_instance_matrix.shape[1]
+            self.original_max_time = original_max_time
+
+
+            old_converted_instance = converted_instance_matrix.copy()
+            old_converted_navpoint_matrix = converted_navpoint_matrix.copy()
+            old_navaid_sector_time_assignment = navaid_sector_time_assignment.copy()
+
+            if np.any(capacity_overload_mask, where=True):
+                
+                default_number_capacity_management_configs = self.number_capacity_management_configs
+
+                _, _, flight_durations = self.flight_spans_contiguous(converted_instance_matrix, fill_value=-1)
+
+            # Track to Weights & Biases when enabled
+            current_time = time.time() - original_start_time
+
+            number_sectors = self.compute_total_number_sectors(navaid_sector_time_assignment)
+
+            if self._wandb_log is not None:
+
+                self._wandb_log({
+                    "iteration": int(iteration), # FIRST ONE:
+                    "number_of_conflicts": int(number_of_conflicts),
+                    "total_delay": int(0),
+                    "number_sectors": int(number_sectors),
+                    "sector_diff": int(0),
+                    "number_reroutes": int(0),
+                    "number_reconfigurations": int(0),
+                    "current_time": int(current_time),
+                })
+
+                if self.verbosity > 1:
+                    print(f"""
+        iteration -> {int(iteration)}
+        number_of_conflicts -> {int(number_of_conflicts)}
+        total_delay -> {int(0)}
+        number_sectors -> {len(uniq.values)}
+        current_time -> {int(0)}
+                        """)
+                    
+            output_dict = {}
+            output_dict["OVERLOAD"] = int(number_of_conflicts)
+            output_dict["ARRIVAL-DELAY"] = int(0)
+            output_dict["SECTOR-NUMBER"] = int(number_sectors)
+            output_dict["SECTOR-DIFF"] = int(0)
+            output_dict["REROUTE"] = int(0)
+            output_dict["RECONFIG"] = int(0)
+            output_dict["TOTAL-TIME-TO-THIS-POINT"] =  int(current_time)
+            output_dict["COMPUTATION-FINISHED"] = False
+            output_string = json.dumps(output_dict)
+            print(output_string, flush=True)
+            if self._controller_enabled is True:
+                output_dict["DIFF"] = {}
+                output_dict["DIFF"]["FLIGHTS"] = []
+                output_dict["DIFF"]["SECTORS"] = []
+                output_string = json.dumps(output_dict)
+
+                self._control_pub_socket.send_string(f"RESET-OBJECTIVE-VALUE")
+                self._control_pub_socket.send_string(f"{output_string}")
+
+            last_time_bucket_updated = 0
+
+            if self.max_number_navpoints_per_sector == -1 or self.max_number_sectors == -1:
+                if self.max_number_navpoints_per_sector == -1:
+                    max_number_navpoints_per_sector_update = True
+                else:
+                    max_number_navpoints_per_sector_update = False
+
+                if self.max_number_sectors == -1:
+                    max_number_sectors_update = True
+                else:
+                    max_number_sectors_update = False
+
+                for time_index in range(navaid_sector_time_assignment.shape[1]):
+
+                    uniq = np.unique_counts(navaid_sector_time_assignment[:,time_index])
+
+                    if max_number_navpoints_per_sector_update is True:
+                        if max(uniq.counts) > self.max_number_navpoints_per_sector:
+                            self.max_number_navpoints_per_sector = max(uniq.counts)
+
+                    if max_number_sectors_update is True:
+                        if len(uniq.values) > self.max_number_sectors:
+                            self.max_number_sectors = len(uniq.values)
+            elif self.max_number_sectors == -2:
+                self.max_number_sectors = navaid_sector_time_assignment.shape[0]
+
+            if self.minimize_number_sectors is True:
+
+                if self.verbosity > 1:
+                    print("MINIMIZE NUMBER OF SECTORS INITIALIZED")
+
+                t_start = 1
+                t_end = 60
+
+                for t_start in range(1,converted_instance_matrix.shape[1] + 1, self._timestep_granularity):
+                    t_end = t_start + self._timestep_granularity - 1
+
+                    if t_end >= converted_instance_matrix.shape[1]:
+                        t_end = converted_instance_matrix.shape[1] - 1
+
+                    converted_instance_matrix, converted_navpoint_matrix, navaid_sector_time_assignment, capacity_time_matrix, system_loads = self.minimize_number_of_sectors_new(navaid_sector_time_assignment,converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix, system_loads, self.max_number_navpoints_per_sector, self.max_number_sectors, t_start, t_end, self.networkx_navpoint_graph, self.airports)
+
+            global_t_start = 1
+            time_bucket_updated = 0
+
+            paused = True
+
+            if self._controller_enabled is True:
+                # Send navpoints, etc.
+                folder_path = self._data_dir
+                # Navgraph:
+                folder_path_navgraph_vertex = Path(folder_path / "navgraph" / "vertices.csv")
+                folder_path_navgraph_edges = Path(folder_path / "navgraph" / "edges.csv")
+                folder_path_mappings = Path(folder_path / "mappings" / "vertex_map.csv")
+
+                vertex_map = np.genfromtxt(
+                    folder_path_mappings, 
+                    delimiter=',', 
+                    names=True, 
+                    dtype=None, 
+                    encoding='utf-8'
+                )
+
+                # Load vertex coordinates/attributes (Assuming numeric float/int)
+                # usecols can be used to filter specific ATM parameters (e.g., Lat, Lon, Alt)
+                vertices = np.genfromtxt(
+                    folder_path_navgraph_vertex, 
+                    delimiter=',', 
+                    names=True, 
+                    dtype=None, 
+                    encoding='utf-8'
+                )
+
+                # Load edge list (Source, Target, Weight)
+                edges = np.genfromtxt(
+                    folder_path_navgraph_edges, 
+                    delimiter=',', 
+                    names=True, 
+                    dtype=None, 
+                    encoding='utf-8'
+                )
+
+                graph_dict = {}
+                graph_dict["vertices"] = {}
+                graph_dict["edges"] = {}
+                graph_dict["sectors"] = {}
+
+                for vertex in self.networkx_navpoint_graph.nodes():
+
+                    vertex = int(vertex)
+
+                    graph_dict["vertices"][vertex] = {}
+                    row = vertex_map[vertex_map["VERTEX_ID"] == vertex]
+                    name = row[0][0]
+
+                    graph_dict["vertices"][vertex]["id"] = int(vertex)
+                    graph_dict["vertices"][vertex]["name"] = str(name)
+                    full_vertex = vertices[vertices["IDENTIFIER"] == name][0]
+                    graph_dict["vertices"][vertex]["lat"] = float(full_vertex[1])
+                    graph_dict["vertices"][vertex]["lon"] = float(full_vertex[2])
+                    graph_dict["vertices"][vertex]["alt"] = float(full_vertex[3])
+                    graph_dict["vertices"][vertex]["airport"] = int(full_vertex[4])
+
+
+                    if vertex not in graph_dict["sectors"]:
+                        graph_dict["sectors"][vertex] = {}
+                        graph_dict["sectors"][vertex]["vertices"] = []
+
+                    sector = int(navaid_sector_time_assignment[vertex,0])
+
+                    if sector not in graph_dict["sectors"]:
+                        graph_dict["sectors"][sector] = {}
+                        graph_dict["sectors"][sector]["vertices"] = []
+
+                    graph_dict["sectors"][sector]["vertices"].append(vertex)
+
+                for edge in self.networkx_navpoint_graph.edges():
+                    v0 = int(edge[0])
+                    v1 = int(edge[1])
+
+                    if v0 not in graph_dict["edges"]:
+                        graph_dict["edges"][v0] = {}
+
+                    if v1 not in graph_dict["edges"]:
+                        graph_dict["edges"][v1] = {}
+
+                    graph_dict["edges"][v0][v1] = int(0)
+                    graph_dict["edges"][v1][v0] = int(0)
+
+                for sector in graph_dict["sectors"].keys():
+
+                    overload = 0
+                    for _time in range(capacity_demand_diff_matrix.shape[1]):
+
+                        if capacity_demand_diff_matrix[sector,_time] < 0:
+                            overload += (-capacity_demand_diff_matrix[sector,_time])
+                    
+                    graph_dict["sectors"][int(sector)]["overload"] = int(overload)
+
+                for index in range(1, self.flights.shape[0]):
+
+                    tuple_0 = self.flights[index-1,:]
+                    tuple_1 = self.flights[index,:]
+
+                    id0 = int(tuple_0[0])
+                    v0 = int(tuple_0[1])
+                    id1 = int(tuple_1[0])
+                    v1 = int(tuple_1[1])
+
+                    if id0 == id1:
+                        graph_dict["edges"][v0][v1] += int(1)
+                        graph_dict["edges"][v1][v0] += int(1)
+
+                json_graph_dict = json.dumps(graph_dict)
+                self._control_ctrl_socket.send_string(json_graph_dict)
+                print(json_graph_dict)
+                print("[OPTIMIZER->CONTROL]: SENT GRAPH DICT")
+
+        else: # explainability context not none:
+
+            if self._encoding_path is not None:
+                with open(self._encoding_path, "r") as file:
+                    self.encoding = file.read()
+
+            self.sectors = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SECTORS"])
+            navaid_sector_time_assignment = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["NAVAID-SECTOR-TIME-ASSIGNMENT"])
+            converted_instance_matrix = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["CONVERTED-INSTANCE-MATRIX"])
+            converted_navpoint_matrix = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["CONVERTED-NAVPOINT-MATRIX"])
+            system_loads = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SYSTEM-LOADS"])
+            capacity_time_matrix = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["CAPACITY-TIME-MATRIX"])
+
+            original_converted_instance_matrix = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["ORIGINAL-CONVERTED-INSTANCE-MATRIX"])
+            original_navaid_sector_time_assignment = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["ORIGINAL-NAVAID-SECTOR-TIME-ASSIGNMENT"])
+
+            capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+            # 5.) Create capacity overload matrix:
+            capacity_overload_mask = capacity_demand_diff_matrix < 0
+
+            number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
+
+            asp_encoded = self._explainability_context["ITERATION-BACKUP"]["ASP-INSTANCE"]
+            self._explainability_context["ITERATION-BACKUP"]["ASP-INSTANCE"] = base64.b64decode(asp_encoded).decode("utf-8")
+
+            #open(f"20260501_test_instance.lp","w").write(self._explainability_context["ITERATION-BACKUP"]["ASP-INSTANCE"])
+
+            if self._explainability_context["TYPE"] == "FLIGHT":
+                explanation_fact = f"chosen_path({self._explainability_context["ID"]},0)."
+            elif self._explainability_context["TYPE"] == "SECTOR":
+                explanation_fact = f"chosen_config(0)."
+            else:
+                raise Exception(f"NOT IMPLEMENTED: {self._explainability_context["TYPE"]}")
+            
+            self._explainability_context["ITERATION-BACKUP"]["ASP-INSTANCE"] += f"\n {explanation_fact}"
+                
+        while np.any(capacity_overload_mask, where=True):
+            
+            if self._explainability_context is None:
+                if self._controller_enabled is True:
+
+                    iteration_backup = {}
+                    iteration_backup["NAVAID-SECTOR-TIME-ASSIGNMENT"] = self.encode_ndarray(navaid_sector_time_assignment.copy())
+                    iteration_backup["CONVERTED-INSTANCE-MATRIX"] = self.encode_ndarray(converted_instance_matrix.copy())
+                    iteration_backup["CONVERTED-NAVPOINT-MATRIX"] = self.encode_ndarray(converted_navpoint_matrix.copy())
+                    iteration_backup["SYSTEM-LOADS"] = self.encode_ndarray(system_loads.copy())
+                    iteration_backup["CAPACITY-TIME-MATRIX"] = self.encode_ndarray(capacity_time_matrix.copy())
+                    iteration_backup["SECTORS"] = self.encode_ndarray(self.sectors.copy())
+                    iteration_backup["ORIGINAL-CONVERTED-INSTANCE-MATRIX"] = self.encode_ndarray(original_converted_instance_matrix.copy())
+                    iteration_backup["ORIGINAL-NAVAID-SECTOR-TIME-ASSIGNMENT"] = self.encode_ndarray(original_navaid_sector_time_assignment.copy())
+
+                    # A. State Machine for Interrupts
+                    events = dict(self._control_poller.poll(timeout=0))
+
+                    for event_key in events.keys():
+                        if self._control_ctrl_socket == event_key:
+                            command = self._control_ctrl_socket.recv_string()
+                            if command == "PAUSE":
+                                paused = True
+                                print("[CONTROL->OPTIMIZER]: PAUSE")
+                                self._control_ctrl_socket.send_string("TELEMETRY: [STATUS] PAUSED")
+                            elif command == "START":
+                                paused = False
+                                print("[CONTROL->OPTIMIZER]: START")
+                                self._control_ctrl_socket.send_string("TELEMETRY: [STATUS] RESUMED")
+                            elif command.startswith("<LOAD>"):
+                                print("[CONTROL->OPTIMIZER]: LOAD")
+                                return "<LOAD>", command[6:]
+                            elif command.startswith("<OPTION>"):
+                                command = command[8:]
+                                command = json.loads(command)
+                                for key in command.keys():
+                                    if key == "timestep_granularity":
+                                        self._timestep_granularity = int(command[key])
+                                    elif key == "max_explored_vertices":
+                                        self._max_explored_vertices = int(command[key])
+                                        original_max_explored_vertices = self._max_explored_vertices
+                                    elif key == "max_delay_per_iteration":
+                                        self._max_delay_per_iteration = int(command[key])
+                                    elif key == "number_capacity_management_configs":
+                                        self.number_capacity_management_configs = int(command[key])
+                                        default_number_capacity_management_configs = self.number_capacity_management_configs
+                                    else:
+                                        print(f"NOT FOUND ATTR:{key}:{command[key]}")
+                        else:
+                            print("WEIRD BEHAVIOR IN CONNECTION - self._control_ctrl_socket not there")
+                            print(events)
+                            
+                    # B. Blocking Wait Loop (halts heuristic progression)
+                    if paused:
+                        # poller.poll() with None blocks indefinitely until I/O occurs
+                        events = dict(self._control_poller.poll(timeout=None))
+                        if self._control_ctrl_socket in events:
+                            command = self._control_ctrl_socket.recv_string()
+                            if command == "START":
+                                print("[CONTROL->OPTIMIZER]: START")
+                                paused = False
+                                self._control_ctrl_socket.send_string("TELEMETRY: [STATUS] RESUMED")
+                            elif command.startswith("<LOAD>"):
+                                print("[CONTROL->OPTIMIZER]: LOAD")
+                                return "<LOAD>", command[6:]
+                            elif command.startswith("<OPTION>"):
+                                command = command[8:]
+                                command = json.loads(command)
+                                for key in command.keys():
+                                    if key == "timestep_granularity":
+                                        self._timestep_granularity = int(command[key])
+                                    elif key == "max_explored_vertices":
+                                        self._max_explored_vertices = int(command[key])
+                                        original_max_explored_vertices = self._max_explored_vertices
+                                    elif key == "max_delay_per_iteration":
+                                        self._max_delay_per_iteration = int(command[key])
+                                    elif key == "number_capacity_management_configs":
+                                        self.number_capacity_management_configs = int(command[key])
+                                        default_number_capacity_management_configs = self.number_capacity_management_configs
+                                    else:
+                                        print(f"NOT FOUND ATTR:{key}:{command[key]}")
+                        continue
+
+                if self.verbosity > 0:
+                    print(f"<ITER:{iteration}><REMAINING ISSUES:{str(number_of_conflicts)}>")
+
+                cols_with_values = (converted_instance_matrix != -1).any(axis=0)           
+                idxs = np.flatnonzero(cols_with_values)            
+                last_idx = int(idxs[-1]) if idxs.size else -1     
+                safety_factor = self._timestep_granularity * 2
+
+                if last_idx + self._max_delay_per_iteration * (additional_time_increase + 1) + safety_factor >= converted_instance_matrix.shape[1]:
+                    # INCREASE MATRIX SIZE (TIME) AUTOMATICALLY
+                    diff = last_idx + self._max_delay_per_iteration * (additional_time_increase + 1) + safety_factor - converted_instance_matrix.shape[1] + 1
+                    in_units = math.ceil(diff / self._timestep_granularity)
+                    number_new_cols = in_units * self._timestep_granularity
+
+                    # 0.) Handle Sector Assignments:
+                    new_cols = np.repeat(navaid_sector_time_assignment[:,[-1]], number_new_cols, axis=1)  # shape (N,k)
+                    navaid_sector_time_assignment = np.concatenate([navaid_sector_time_assignment, new_cols], axis=1)
+                    # 1.) Handle Instance Matrix:
+                    extra_col = -1 * np.ones((converted_instance_matrix.shape[0], number_new_cols), dtype=int)
+                    converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
+
+                    extra_col = -1 * np.ones((converted_navpoint_matrix.shape[0], number_new_cols), dtype=int)
+                    converted_navpoint_matrix = np.hstack((converted_navpoint_matrix, extra_col)) 
+                    
+                    # 2.) Create demand matrix (|R|x|T|):
+                    system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+                    # 3.) Create capacity matrix (|R|x|T|):
+                    #capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, z = self.sector_capacity_factor)
+                    capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor, composite_sector_function=self.composite_sector_function)
+
+                    # 3.) Create capacity matrix (|R|x|T|)
+                    #capacity_time_matrix = self.capacity_time_matrix_reference(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = z)
+                    # 4.) Subtract demand from capacity (|R|x|T|):
+                    capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+                    # 5.) Create capacity overload matrix:
+                    capacity_overload_mask = capacity_demand_diff_matrix < 0
+
+                if navaid_sector_time_assignment.shape[1] != converted_instance_matrix.shape[1]:
+                    raise Exception(f"Navaid time must correspond to instance time: {navaid_sector_time_assignment.shape[1]} != {converted_instance_matrix.shape[1]}")
+
+                #time_index,bucket_index = self.first_overload(capacity_overload_mask)
+
+                max_number_processors = 1
+                time_bucket_tuples = self.first_overloads(capacity_overload_mask, k=max_number_processors)
+
+                start_time = time.time()
+
+
+                controller_sector_diff_dict = {}
+
+                all_jobs = []
+                all_candidates = {}
+                for time_index, sector_index in time_bucket_tuples:
+                
+                    time_bucket_updated = time_index
+
+                    #print(capacity_demand_diff_matrix[sector_index, time_index])
+                    
+                    #_, _, flight_durations = self.flight_spans_contiguous(converted_instance_matrix, fill_value=-1)
+                    job, candidates = self.build_job(time_index, sector_index, converted_instance_matrix, converted_navpoint_matrix,
+                                    capacity_time_matrix,
+                                    system_loads, capacity_demand_diff_matrix, additional_time_increase, fill_value, 
+                                    max_number_airplanes_considered_in_ASP, max_number_processors, original_max_time,
+                                    self.networkx_navpoint_graph, self.unit_graphs, planned_arrival_times, self.airplane_flight,
+                                    self.airplanes, navaid_sector_time_assignment, flight_durations,
+                                    iteration, self.sector_capacity_factor, self.flights
+                                    )
+
+                    controller_sector_diff_dict["time_index"] = int(time_index)
+                    controller_sector_diff_dict["sector_index"] = int(sector_index)
+                    controller_sector_diff_dict["prev_sector_config"] = {}
+                    controller_sector_diff_dict["prev_sector_config"][int(sector_index)] = {}
+                    controller_sector_diff_dict["prev_sector_config"][int(sector_index)]["vertices"] = [int(i) for i in np.where(navaid_sector_time_assignment[:, time_index] == sector_index)[0]]
+                    controller_sector_diff_dict["prev_sector_config"][int(sector_index)]["overload"] = int(-capacity_demand_diff_matrix[sector_index,time_index])
+                    
+                    all_new = True
+                    for candidate in candidates:
+                        if candidate in all_candidates:
+                            all_new = False
+                        else:
+                            all_candidates[candidate] = True
+
+                    if all_new:
+                        all_jobs.append(job)
+
+                solutions = Parallel(n_jobs=max_number_processors, backend="loky")(
+                            delayed(_run)(job) for job in all_jobs)
+
+                #models = [_run(job) for job in jobs]
+
+                end_time = time.time()
+                if self.verbosity > 1:
+                    print(f">> Elapsed solving time: {end_time - start_time}")
+
+                #models = self.run_parallel(jobs)
+
+            else: # explainability_contex is not None:
+
+                controller_sector_diff_dict = {}
+                sector_config_restore_dict = {}
+                
+                for key_1 in self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"].keys():
+                    sector_config_restore_dict[int(key_1)] = {}
+                    sector_config_restore_dict[int(key_1)]["composition_navpoints"] = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"][key_1]["composition_navpoints"])
+                    sector_config_restore_dict[int(key_1)]["composition_sectors"] = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"][key_1]["composition_sectors"])
+                    sector_config_restore_dict[int(key_1)]["demand"] = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"][key_1]["demand"])
+                    sector_config_restore_dict[int(key_1)]["capacity"] = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"][key_1]["capacity"])
+                    sector_config_restore_dict[int(key_1)]["composition"] = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"][key_1]["composition"])
+                    sector_config_restore_dict[int(key_1)]["affected_flights"] = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"][key_1]["affected_flights"])
+                    sector_config_restore_dict[int(key_1)]["time_index"] = int(self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"][key_1]["time_index"])
+                    sector_config_restore_dict[int(key_1)]["sector_index"] = int(self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"][key_1]["sector_index"])
+
+                instance = self._explainability_context["ITERATION-BACKUP"]["ASP-INSTANCE"]
+                encoding = self.encoding
+
+                solver: Model = Solver(encoding, instance)
+                model = solver.solve()
+
+                solutions = [(model, sector_config_restore_dict, instance)]
+
 
             flight_ids = {}
             all_sector_flights = []
@@ -755,11 +836,28 @@ class Main:
 
             flight_per_navpoint_id = {}
 
-            asp_instance = None
 
             for model, sector_config_restore_dict, instance in solutions:
                 if self._optimizer == "ASP":
-                    asp_instance = instance
+
+                    if self._controller_enabled is True:
+
+                        config_restore_dict_tmp = {}
+
+                        for key_1 in sector_config_restore_dict.keys():
+                            config_restore_dict_tmp[key_1] = {}
+                            config_restore_dict_tmp[key_1]["composition_navpoints"] = self.encode_ndarray(np.array(sector_config_restore_dict[key_1]["composition_navpoints"]))
+                            config_restore_dict_tmp[key_1]["composition_sectors"] = self.encode_ndarray(sector_config_restore_dict[key_1]["composition_sectors"])
+                            config_restore_dict_tmp[key_1]["demand"] = self.encode_ndarray(sector_config_restore_dict[key_1]["demand"])
+                            config_restore_dict_tmp[key_1]["capacity"] = self.encode_ndarray(sector_config_restore_dict[key_1]["capacity"])
+                            config_restore_dict_tmp[key_1]["composition"] = self.encode_ndarray(sector_config_restore_dict[key_1]["composition"])
+                            config_restore_dict_tmp[key_1]["affected_flights"] = self.encode_ndarray(sector_config_restore_dict[key_1]["affected_flights"])
+                            config_restore_dict_tmp[key_1]["time_index"] = int(sector_config_restore_dict[key_1]["time_index"])
+                            config_restore_dict_tmp[key_1]["sector_index"] = int(sector_config_restore_dict[key_1]["sector_index"])
+
+                        iteration_backup["SECTOR-CONFIG-RESTORE-DICT"] = config_restore_dict_tmp
+                        iteration_backup["ASP-INSTANCE"] = base64.b64encode(instance.encode("utf-8")).decode("utf-8")
+
                     if int(str(model.get_sector_config().arguments[0])) > 0:
                         sector_configs.append((int(str(model.get_sector_config().arguments[0])), sector_config_restore_dict))
 
@@ -793,7 +891,7 @@ class Main:
 
 
             all_flights_diff_dict = {}
-            if self._controller_enabled is True: 
+            if self._controller_enabled is True or self._explainability_context is not None: 
 
                 for flight_id in flight_ids:
                     navpoint_flight = converted_navpoint_matrix[flight_id,:]
@@ -1020,7 +1118,7 @@ class Main:
 
             # HEURISTIC SELECTION OF COMPLEXITY OF TASK
             # -----------------------------------------------------------------------------
-            if number_of_conflicts is not None and number_of_conflicts_prev is not None:
+            if number_of_conflicts is not None and number_of_conflicts_prev is not None and self._explainability_context is None:
                 if number_of_conflicts >= number_of_conflicts_prev:
                     controller_sector_diff_dict["accepted_solution"] = False
 
@@ -1092,6 +1190,9 @@ class Main:
                         if self.verbosity > 1:
                             print(f">>> RESET PROCESSOR COUNT TO:{max_number_processors}; AIRPLANES TO: {max_number_airplanes_considered_in_ASP}")
 
+            elif self._explainability_context is not None:
+                controller_sector_diff_dict["accepted_solution"] = True
+
             # -----------------------------------------------------------------------------
             t_init  = self.last_valid_pos(original_converted_instance_matrix)      # last non--1 in the *initial* schedule
             t_final = self.last_valid_pos(converted_instance_matrix)     # last non--1 in the *final* schedule
@@ -1119,14 +1220,15 @@ class Main:
             rerouted_mask = np.any(converted_instance_matrix[:, :original_max_time_converted] != original_converted_instance_matrix, axis=1)     # True if flight differs anywhere
             number_reroutes = int(np.count_nonzero(rerouted_mask))
 
-            relevant_vertices = np.array(controller_sector_diff_dict["prev_sector_config"][int(sector_index)]["vertices"])
-            time_index = controller_sector_diff_dict["time_index"]
-            unique_sectors = np.unique(navaid_sector_time_assignment[relevant_vertices, time_index])
-            controller_sector_diff_dict["post_sector_config"] = {}
-            for sector_index in unique_sectors:
-                controller_sector_diff_dict["post_sector_config"][int(sector_index)] = {}
-                controller_sector_diff_dict["post_sector_config"][int(sector_index)]["vertices"] = [int(i) for i in np.where(navaid_sector_time_assignment[:, time_index] == sector_index)[0]]
-                controller_sector_diff_dict["post_sector_config"][int(sector_index)]["overload"] = int(-capacity_demand_diff_matrix[sector_index,time_index])
+            if self._controller_enabled is True:
+                relevant_vertices = np.array(controller_sector_diff_dict["prev_sector_config"][int(sector_index)]["vertices"])
+                time_index = controller_sector_diff_dict["time_index"]
+                unique_sectors = np.unique(navaid_sector_time_assignment[relevant_vertices, time_index])
+                controller_sector_diff_dict["post_sector_config"] = {}
+                for sector_index in unique_sectors:
+                    controller_sector_diff_dict["post_sector_config"][int(sector_index)] = {}
+                    controller_sector_diff_dict["post_sector_config"][int(sector_index)]["vertices"] = [int(i) for i in np.where(navaid_sector_time_assignment[:, time_index] == sector_index)[0]]
+                    controller_sector_diff_dict["post_sector_config"][int(sector_index)]["overload"] = int(-capacity_demand_diff_matrix[sector_index,time_index])
 
             if self._wandb_log is not None:
                 if time_bucket_updated >= navaid_sector_time_assignment.shape[1]:
@@ -1165,24 +1267,41 @@ class Main:
             output_dict["COMPUTATION-FINISHED"] = False
             output_string = json.dumps(output_dict)
 
-            print(output_string, flush=True)
-            if self._controller_enabled is True:
-                output_dict["ASP-INSTANCE"] = base64.b64encode(asp_instance.encode("utf-8")).decode("utf-8")
+            if self._explainability_context is None:
+                print(output_string, flush=True)
+
+            if self._controller_enabled is True or self._explainability_context is not None:
+
                 output_dict["DIFF"] = {}
-                output_dict["DIFF"]["ITERATION"] = int(iteration)
-                output_dict["DIFF"]["ACCEPTED_SOLUTION"] = controller_sector_diff_dict["accepted_solution"]
+                # TODO -> STORE ALL STUFF NECESSARY FOR EXPLANATION!!!
+                if self._controller_enabled is True:
+                    output_dict["ITERATION-BACKUP"] = iteration_backup
 
-                prev_sector_indices = list(controller_sector_diff_dict["prev_sector_config"].keys())
-                post_sector_indices = list(controller_sector_diff_dict["post_sector_config"].keys())
+                    output_dict["DIFF"]["ITERATION"] = int(iteration)
+                    output_dict["DIFF"]["ACCEPTED_SOLUTION"] = controller_sector_diff_dict["accepted_solution"]
 
-                output_dict["DIFF"]["OPTIMIZED_SECTOR"] = list(controller_sector_diff_dict["prev_sector_config"].keys())
-                if prev_sector_indices == post_sector_indices:
-                    controller_sector_diff_dict = {}
-                output_dict["DIFF"]["FLIGHTS"] = all_flights_diff_dict
-                output_dict["DIFF"]["SECTORS"] = controller_sector_diff_dict
+                    prev_sector_indices = list(controller_sector_diff_dict["prev_sector_config"].keys())
+                    post_sector_indices = list(controller_sector_diff_dict["post_sector_config"].keys())
+
+                    output_dict["DIFF"]["OPTIMIZED_SECTOR"] = list(controller_sector_diff_dict["prev_sector_config"].keys())
+                    if prev_sector_indices == post_sector_indices:
+                        controller_sector_diff_dict = {}
+                    output_dict["DIFF"]["FLIGHTS"] = all_flights_diff_dict
+                    output_dict["DIFF"]["SECTORS"] = controller_sector_diff_dict
+
+                if self._explainability_context is not None:
+                    output_dict["EXPLAIN"] = True
+                    output_dict["ITERATION"] = self._explainability_context["ITERATION"]
+                    output_dict["TYPE"] = self._explainability_context["TYPE"]
+                    output_dict["ID"] = self._explainability_context["ID"]
 
                 output_string = json.dumps(output_dict)
                 self._control_pub_socket.send_string(f"{output_string}")
+
+                if self._explainability_context is not None:
+                    self._control_pub_socket.setsockopt(zmq.LINGER,0)
+                    self._control_pub_socket.close()
+                    quit()
 
         if self.minimize_number_sectors is True:
             time_bucket_updated = converted_navpoint_matrix.shape[1] - 1
@@ -1295,6 +1414,30 @@ class Main:
         number_sectors = int(uniq_per_col.sum())     # sum over all columns
 
         return number_sectors
+
+    def encode_ndarray(self, arr: np.ndarray) -> dict:
+        """
+        Serializes a NumPy array into a dictionary payload preserving spatial structure and data type.
+        """
+        # Forces C-order memory continuity. Crucial for arrays generated via slicing.
+        contiguous_arr = np.ascontiguousarray(arr)
+        return {
+            "__ndarray__": base64.b64encode(contiguous_arr.tobytes()).decode("ascii"),
+            "dtype": str(arr.dtype),
+            "shape": arr.shape
+        }
+
+    def decode_ndarray(self, payload: dict) -> np.ndarray:
+        """
+        Reconstructs the precise NumPy array from the payload and ensures mutability.
+        """
+        arr_bytes = base64.b64decode(payload["__ndarray__"])
+        dtype = np.dtype(payload["dtype"])
+        
+        # .copy() forces allocation of a new, writeable C-buffer
+        arr = np.frombuffer(arr_bytes, dtype=dtype).copy()
+        
+        return arr.reshape(payload["shape"])
 
 
     def build_job(self, time_index: int,
@@ -2353,6 +2496,7 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
                         help="Defines the function of the composite sector - available: max, triangular, linear")
 
     parser.add_argument("--controller-enabled", type=str, default=str(C("controller-enabled", "false")))
+    parser.add_argument("--explainability-enabled", type=str, default=str(C("explainability-enabled", "false")))
     parser.add_argument("--controller-control-socket-port", type=int, default=5555)
     parser.add_argument("--controller-data-socket-port", type=int, default=5556)
 
@@ -2451,6 +2595,7 @@ def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
     args.minimize_number_sectors = _str2bool(args.minimize_number_sectors_enabled)
 
     args.controller_enabled = _str2bool(args.controller_enabled)
+    args.explainability_enabled = _str2bool(args.explainability_enabled)
 
 
     # Keep the config path in args for traceability
@@ -2462,7 +2607,7 @@ def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
         args.data_dir = pre.data_dir
     args = _apply_data_dir_defaults(args)
 
-    if args.controller_enabled is False:
+    if args.controller_enabled is False and args.explainability_enabled is False:
         # 4) Final validation
         _validate_inputs(args)
 
@@ -2557,193 +2702,250 @@ def _save_results(args: argparse.Namespace, app) -> None:
 # Top-level script wrapper
 # ---------------------------------------------------------------------------
 
+
+def initialize_explainability(args):
+
+    control_context = zmq.Context()
+    
+    control_socket_port = args.controller_control_socket_port 
+    data_socket_port = args.controller_data_socket_port
+    
+    # 1. Control Channel (PAIR)
+    control_ctrl_socket = control_context.socket(zmq.PAIR)
+    control_ctrl_socket.bind(f"tcp://127.0.0.1:6000")
+    
+    # 2. Telemetry Channel (PUB)
+    control_pub_socket = control_context.socket(zmq.PUB)
+    control_pub_socket.connect(f"tcp://127.0.0.1:{data_socket_port}")
+
+
+
+    # Configure the Poller for I/O multiplexing
+    init_poller = zmq.Poller()
+    init_poller.register(control_ctrl_socket, zmq.POLLIN)
+    
+
+    controller_defined_instance = False
+
+    while True:
+        # Poll with a 1000ms timeout to prevent deadlocks
+        socks = dict(init_poller.poll(1000))
+
+        # Process Optimizer control socket events
+        if control_ctrl_socket in socks and socks[control_ctrl_socket] == zmq.POLLIN:
+            message = control_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
+
+            explain_dict = json.loads(message[9:])
+            break
+
+    control_ctrl_socket.send_string("ack")
+
+    control_ctrl_socket.setsockopt(zmq.LINGER, 0)
+    control_ctrl_socket.close()
+
+    return control_pub_socket, explain_dict
+
+
+def initialize_controller(args):
+
+    control_context = zmq.Context()
+    
+    control_socket_port = args.controller_control_socket_port 
+    data_socket_port = args.controller_data_socket_port
+    
+    # 1. Control Channel (PAIR)
+    control_ctrl_socket = control_context.socket(zmq.PAIR)
+    control_ctrl_socket.connect(f"tcp://127.0.0.1:{control_socket_port}")
+    
+    # 2. Telemetry Channel (PUB)
+    control_pub_socket = control_context.socket(zmq.PUB)
+    control_pub_socket.connect(f"tcp://127.0.0.1:{data_socket_port}")
+    
+    # Non-blocking I/O setup for the Control Channel
+    control_poller = zmq.Poller()
+    control_poller.register(control_ctrl_socket, zmq.POLLIN)
+
+    control_ctrl_socket.send_string("INITIALIZED OPTIMIZER")
+
+
+    # Configure the Poller for I/O multiplexing
+    init_poller = zmq.Poller()
+    init_poller.register(control_ctrl_socket, zmq.POLLIN)
+
+    controller_defined_instance = False
+
+    while True:
+        # Poll with a 1000ms timeout to prevent deadlocks
+        socks = dict(init_poller.poll(1000))
+
+        # Process Optimizer control socket events
+        if control_ctrl_socket in socks and socks[control_ctrl_socket] == zmq.POLLIN:
+            message = control_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
+            if message == "CONTROLLER DEFINED INSTANCE":
+                controller_defined_instance = True
+                break
+            elif message == "OPTIMIZER DEFINED INSTANCE":
+                controller_defined_instance = False
+                break
+            else:
+                print(f"OPTIMIZER BUSY:\n{message}")
+
+    init_poller = zmq.Poller()
+    init_poller.register(control_ctrl_socket, zmq.POLLIN)
+    control_ctrl_socket.send_string("ack")
+
+    while True:
+        # Poll with a 1000ms timeout to prevent deadlocks
+        socks = dict(init_poller.poll(1000))
+
+        # Process Optimizer control socket events
+        if control_ctrl_socket in socks and socks[control_ctrl_socket] == zmq.POLLIN:
+            message = control_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
+            if message == "GET OPTIONS":
+                break
+
+    config_dict = {}
+
+    config_dict["timestep_granularity"] = {}
+    config_dict["timestep_granularity"]["type"] = "int"
+    config_dict["timestep_granularity"]["value"] = str(args.timestep_granularity)
+    config_dict["timestep_granularity"]["name"] = "Timestep Granularity"
+
+    config_dict["max_explored_vertices"] = {}
+    config_dict["max_explored_vertices"]["type"] = "int"
+    config_dict["max_explored_vertices"]["value"] = str(args.max_explored_vertices)
+    config_dict["max_explored_vertices"]["name"] = "Max Explored Vertices"
+
+    config_dict["max_delay_per_iteration"] = {}
+    config_dict["max_delay_per_iteration"]["type"] = "int"
+    config_dict["max_delay_per_iteration"]["value"] = str(args.max_delay_per_iteration)
+    config_dict["max_delay_per_iteration"]["name"] = "Max Delay Per Iteration"
+
+    config_dict["number_capacity_management_configs"] = {}
+    config_dict["number_capacity_management_configs"]["type"] = "int"
+    config_dict["number_capacity_management_configs"]["value"] = str(args.number_capacity_management_configs)
+    config_dict["number_capacity_management_configs"]["name"] = "Number Capacity Management Configs"
+
+    config = json.dumps(config_dict)
+
+    init_poller = zmq.Poller()
+    init_poller.register(control_ctrl_socket, zmq.POLLIN)
+    control_ctrl_socket.send_string(config)
+
+    while True:
+        # Poll with a 1000ms timeout to prevent deadlocks
+        socks = dict(init_poller.poll(1000))
+
+        # Process Optimizer control socket events
+        if control_ctrl_socket in socks and socks[control_ctrl_socket] == zmq.POLLIN:
+            message = control_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
+            if message == "ack":
+                break
+
+    while True:
+        # Poll with a 1000ms timeout to prevent deadlocks
+        socks = dict(init_poller.poll(1000))
+
+        # Process Optimizer control socket events
+        if control_ctrl_socket in socks and socks[control_ctrl_socket] == zmq.POLLIN:
+            message = control_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
+            if message == "GET OBJECTIVE FUNCTIONS":
+                break
+
+
+    optimization_criteria_config = {}
+    optimization_criteria_config[0] = {}
+    optimization_criteria_config[0]["name"] = "Overload"
+    optimization_criteria_config[0]["id"] = "OVERLOAD"
+    optimization_criteria_config[1] = {}
+    optimization_criteria_config[1]["name"] = "Arrival Delay"
+    optimization_criteria_config[1]["id"] = "ARRIVAL-DELAY"
+    optimization_criteria_config[2] = {}
+    optimization_criteria_config[2]["name"] = "Number of Sectors"
+    optimization_criteria_config[2]["id"] = "SECTOR-NUMBER"
+    optimization_criteria_config[3] = {}
+    optimization_criteria_config[3]["name"] = "Sector Changes"
+    optimization_criteria_config[3]["id"] = "SECTOR-DIFF"
+    optimization_criteria_config[4] = {}
+    optimization_criteria_config[4]["name"] = "Number of Reroutes"
+    optimization_criteria_config[4]["id"] = "REROUTE"
+    optimization_criteria_config[5] = {}
+    optimization_criteria_config[5]["name"] = "Number of Reconfigs"
+    optimization_criteria_config[5]["id"] = "RECONFIG"
+
+    optimization_criteria = json.dumps(optimization_criteria_config)
+
+    init_poller = zmq.Poller()
+    init_poller.register(control_ctrl_socket, zmq.POLLIN)
+    control_ctrl_socket.send_string(optimization_criteria)
+
+    while True:
+        # Poll with a 1000ms timeout to prevent deadlocks
+        socks = dict(init_poller.poll(1000))
+
+        # Process Optimizer control socket events
+        if control_ctrl_socket in socks and socks[control_ctrl_socket] == zmq.POLLIN:
+            message = control_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
+            if message == "ack":
+                break
+    
+    if controller_defined_instance is True:
+        # Configure the Poller for I/O multiplexing
+
+        while True:
+            # Poll with a 1000ms timeout to prevent deadlocks
+            socks = dict(init_poller.poll(1000))
+
+            # Process Optimizer control socket events
+            if control_ctrl_socket in socks and socks[control_ctrl_socket] == zmq.POLLIN:
+                message = control_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
+                if message.startswith("<LOAD>"):
+                    message = message[6:]
+                    data_dir_path = Path(message)
+                    args.data_dir = data_dir_path
+
+                    args.graph_path           = None
+                    args.sectors_path         = None
+                    args.flights_path         = None
+                    args.airports_path        = None
+                    args.airplanes_path       = None
+                    args.airplane_flight_path = None
+                    args.navaid_sector_path   = None
+
+                    args = _apply_data_dir_defaults(args, data_dir_path)
+                    _validate_inputs(args)
+                    break
+                elif message.startswith("<OPTION>"):
+                    message = message[8:]
+                    message = json.loads(message)
+                    for key in message.keys():
+                        if hasattr(args,key):
+                            setattr(args,key, int(message[key]))
+                        else:
+                            print(f"NOT FOUND ATTR:{key}:{message[key]}")
+
+    return control_context, control_ctrl_socket, control_pub_socket, control_poller
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     """Script entry-point compatible with both `python -m` and `poetry run`."""
     args = parse_cli(argv)
-
+    
     if args.controller_enabled is True:
-
-        control_context = zmq.Context()
-        
-        control_socket_port = args.controller_control_socket_port 
-        data_socket_port = args.controller_data_socket_port
-        
-        # 1. Control Channel (PAIR)
-        control_ctrl_socket = control_context.socket(zmq.PAIR)
-        control_ctrl_socket.connect(f"tcp://127.0.0.1:{control_socket_port}")
-        
-        # 2. Telemetry Channel (PUB)
-        control_pub_socket = control_context.socket(zmq.PUB)
-        control_pub_socket.bind(f"tcp://127.0.0.1:{data_socket_port}")
-        
-        # Non-blocking I/O setup for the Control Channel
-        control_poller = zmq.Poller()
-        control_poller.register(control_ctrl_socket, zmq.POLLIN)
-
-        control_ctrl_socket.send_string("INITIALIZED OPTIMIZER")
-
-
-        # Configure the Poller for I/O multiplexing
-        init_poller = zmq.Poller()
-        init_poller.register(control_ctrl_socket, zmq.POLLIN)
-
-        controller_defined_instance = False
-
-        while True:
-            # Poll with a 1000ms timeout to prevent deadlocks
-            socks = dict(init_poller.poll(1000))
-
-            # Process Optimizer control socket events
-            if control_ctrl_socket in socks and socks[control_ctrl_socket] == zmq.POLLIN:
-                message = control_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
-                if message == "CONTROLLER DEFINED INSTANCE":
-                    controller_defined_instance = True
-                    break
-                elif message == "OPTIMIZER DEFINED INSTANCE":
-                    controller_defined_instance = False
-                    break
-                else:
-                    print(f"OPTIMIZER BUSY:\n{message}")
-
-        init_poller = zmq.Poller()
-        init_poller.register(control_ctrl_socket, zmq.POLLIN)
-        control_ctrl_socket.send_string("ack")
-
-        while True:
-            # Poll with a 1000ms timeout to prevent deadlocks
-            socks = dict(init_poller.poll(1000))
-
-            # Process Optimizer control socket events
-            if control_ctrl_socket in socks and socks[control_ctrl_socket] == zmq.POLLIN:
-                message = control_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
-                if message == "GET OPTIONS":
-                    break
-
-        config_dict = {}
-
-        config_dict["timestep_granularity"] = {}
-        config_dict["timestep_granularity"]["type"] = "int"
-        config_dict["timestep_granularity"]["value"] = str(args.timestep_granularity)
-        config_dict["timestep_granularity"]["name"] = "Timestep Granularity"
-
-        config_dict["max_explored_vertices"] = {}
-        config_dict["max_explored_vertices"]["type"] = "int"
-        config_dict["max_explored_vertices"]["value"] = str(args.max_explored_vertices)
-        config_dict["max_explored_vertices"]["name"] = "Max Explored Vertices"
-
-        config_dict["max_delay_per_iteration"] = {}
-        config_dict["max_delay_per_iteration"]["type"] = "int"
-        config_dict["max_delay_per_iteration"]["value"] = str(args.max_delay_per_iteration)
-        config_dict["max_delay_per_iteration"]["name"] = "Max Delay Per Iteration"
-
-        config_dict["number_capacity_management_configs"] = {}
-        config_dict["number_capacity_management_configs"]["type"] = "int"
-        config_dict["number_capacity_management_configs"]["value"] = str(args.number_capacity_management_configs)
-        config_dict["number_capacity_management_configs"]["name"] = "Number Capacity Management Configs"
-
-        config = json.dumps(config_dict)
-
-        init_poller = zmq.Poller()
-        init_poller.register(control_ctrl_socket, zmq.POLLIN)
-        control_ctrl_socket.send_string(config)
-
-        while True:
-            # Poll with a 1000ms timeout to prevent deadlocks
-            socks = dict(init_poller.poll(1000))
-
-            # Process Optimizer control socket events
-            if control_ctrl_socket in socks and socks[control_ctrl_socket] == zmq.POLLIN:
-                message = control_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
-                if message == "ack":
-                    break
-
-        while True:
-            # Poll with a 1000ms timeout to prevent deadlocks
-            socks = dict(init_poller.poll(1000))
-
-            # Process Optimizer control socket events
-            if control_ctrl_socket in socks and socks[control_ctrl_socket] == zmq.POLLIN:
-                message = control_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
-                if message == "GET OBJECTIVE FUNCTIONS":
-                    break
-
-
-        optimization_criteria_config = {}
-        optimization_criteria_config[0] = {}
-        optimization_criteria_config[0]["name"] = "Overload"
-        optimization_criteria_config[0]["id"] = "OVERLOAD"
-        optimization_criteria_config[1] = {}
-        optimization_criteria_config[1]["name"] = "Arrival Delay"
-        optimization_criteria_config[1]["id"] = "ARRIVAL-DELAY"
-        optimization_criteria_config[2] = {}
-        optimization_criteria_config[2]["name"] = "Number of Sectors"
-        optimization_criteria_config[2]["id"] = "SECTOR-NUMBER"
-        optimization_criteria_config[3] = {}
-        optimization_criteria_config[3]["name"] = "Sector Changes"
-        optimization_criteria_config[3]["id"] = "SECTOR-DIFF"
-        optimization_criteria_config[4] = {}
-        optimization_criteria_config[4]["name"] = "Number of Reroutes"
-        optimization_criteria_config[4]["id"] = "REROUTE"
-        optimization_criteria_config[5] = {}
-        optimization_criteria_config[5]["name"] = "Number of Reconfigs"
-        optimization_criteria_config[5]["id"] = "RECONFIG"
-
-        optimization_criteria = json.dumps(optimization_criteria_config)
-
-        init_poller = zmq.Poller()
-        init_poller.register(control_ctrl_socket, zmq.POLLIN)
-        control_ctrl_socket.send_string(optimization_criteria)
-
-        while True:
-            # Poll with a 1000ms timeout to prevent deadlocks
-            socks = dict(init_poller.poll(1000))
-
-            # Process Optimizer control socket events
-            if control_ctrl_socket in socks and socks[control_ctrl_socket] == zmq.POLLIN:
-                message = control_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
-                if message == "ack":
-                    break
-        
-        if controller_defined_instance is True:
-            # Configure the Poller for I/O multiplexing
-
-            while True:
-                # Poll with a 1000ms timeout to prevent deadlocks
-                socks = dict(init_poller.poll(1000))
-
-                # Process Optimizer control socket events
-                if control_ctrl_socket in socks and socks[control_ctrl_socket] == zmq.POLLIN:
-                    message = control_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
-                    if message.startswith("<LOAD>"):
-                        message = message[6:]
-                        data_dir_path = Path(message)
-                        args.data_dir = data_dir_path
-
-                        args.graph_path           = None
-                        args.sectors_path         = None
-                        args.flights_path         = None
-                        args.airports_path        = None
-                        args.airplanes_path       = None
-                        args.airplane_flight_path = None
-                        args.navaid_sector_path   = None
-
-                        args = _apply_data_dir_defaults(args, data_dir_path)
-                        _validate_inputs(args)
-                        break
-                    elif message.startswith("<OPTION>"):
-                        message = message[8:]
-                        message = json.loads(message)
-                        for key in message.keys():
-                            if hasattr(args,key):
-                                setattr(args,key, int(message[key]))
-                            else:
-                                print(f"NOT FOUND ATTR:{key}:{message[key]}")
+        control_context, control_ctrl_socket, control_pub_socket, control_poller = initialize_controller(args)
+        explainability_context = None
+    elif args.explainability_enabled is True:
+        control_pub_socket, explainability_context = initialize_explainability(args)
+        control_context = None
+        control_ctrl_socket = None
+        control_poller = None
 
     else:
         control_context = None
         control_ctrl_socket = None
         control_pub_socket = None
         control_poller = None
+        explainability_context = None
 
     if args.verbosity > 0:
         # Optional: small echo of resolved inputs
@@ -2825,7 +3027,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                 args.convex_sectors,
                 control_context, control_ctrl_socket, control_pub_socket, control_poller, 
                 args.controller_enabled, args.data_dir,
-                args.max_considered_aircraft
+                args.max_considered_aircraft,
+                explainability_context
                 )
         key, value = app.run()
 

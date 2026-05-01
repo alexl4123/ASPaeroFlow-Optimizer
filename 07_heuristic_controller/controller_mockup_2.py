@@ -1,12 +1,29 @@
 import zmq
 import time
 import argparse
+import sys
+import subprocess
+import threading
 
 from pathlib import Path
 from typing import Any, Final, List, Optional, Callable
 
 import base64
 import json
+
+def start_telemetry_broker():
+    """Dedicated background thread for XPUB/XSUB proxying."""
+    # Isolated ZeroMQ context for the thread
+    context = zmq.Context()
+    
+    frontend_xsub = context.socket(zmq.XSUB)
+    frontend_xsub.bind("tcp://127.0.0.1:5556") 
+    
+    backend_xpub = context.socket(zmq.XPUB)
+    backend_xpub.bind("tcp://127.0.0.1:5557") 
+    
+    # Blocks indefinitely to handle multiplexing
+    zmq.proxy(frontend_xsub, backend_xpub)
 
 
 def main(argv: Optional[List[str]] = None):
@@ -21,12 +38,17 @@ def main(argv: Optional[List[str]] = None):
 
     args = parser.parse_args(argv)
 
-
-
-
     print("[DEBUG] - Start")
+
+    # 0. Broker Initialization
+    # Spawn proxy thread before any subscribers attempt to connect
+    broker_thread = threading.Thread(target=start_telemetry_broker, daemon=True)
+    broker_thread.start()
+    print("[DEBUG] - Telemetry broker thread spawned (XSUB:5556 -> XPUB:5557)")
+
     context = zmq.Context()
     print("[DEBUG] - Startup initialized")    
+    
     # 1. Control Channel (PAIR)
     ctrl_socket = context.socket(zmq.PAIR)
     ctrl_socket.bind("tcp://127.0.0.1:5555")
@@ -34,9 +56,10 @@ def main(argv: Optional[List[str]] = None):
     
     # 2. Telemetry Channel (SUB)
     sub_socket = context.socket(zmq.SUB)
-    sub_socket.connect("tcp://127.0.0.1:5556")
+    # UPDATED: Connect to XPUB port (5557), not XSUB
+    sub_socket.connect("tcp://127.0.0.1:5557")
     sub_socket.setsockopt_string(zmq.SUBSCRIBE, "") # Subscribe to all topics
-    print("[DEBUG] - Optimizer data socket create")    
+    print("[DEBUG] - Optimizer data socket create")
 
 
     # 1. Control Channel (PAIR)
@@ -222,10 +245,13 @@ def main(argv: Optional[List[str]] = None):
                 break
 
             # A. State Machine for Interrupts
+            events = dict(clinguin_ctrl_poller.poll(timeout=0))
+            """
             if paused is True:
                 events = dict(clinguin_ctrl_poller.poll(timeout=None))
             else:
                 events = dict(clinguin_ctrl_poller.poll(timeout=0))
+            """
 
             if clinguin_ctrl_socket in events:
                 command = clinguin_ctrl_socket.recv_string()
@@ -282,13 +308,44 @@ def main(argv: Optional[List[str]] = None):
                     print(command)
                     ctrl_socket.send_string(command)
                 elif command.startswith("<EXPLAIN>"):
-                    print(command)
-                    explain_dict = json.loads(command[9:])
-                    print(explain_dict)
-                    print("NOW DECODING ASP-INSTANCE")
-                    asp_encoded = explain_dict["ASP-INSTANCE"]
-                    asp_instance = base64.b64decode(asp_encoded).decode("utf-8")
-                    print(asp_instance)
+                    print("<EXPLAIN>")
+
+                    # 1. Rename variable to prevent shadowing the actual payload string
+                    exec_args = [sys.executable, "../01_ASPaeroFlow/main.py", "--explainability-enabled=True", "--encoding-path=../01_ASPaeroFlow/encoding.lp"]
+                    process = subprocess.Popen(exec_args)
+                    print("[DEBUG] - Explainability process started")
+
+                    explain_ctrl_socket = context.socket(zmq.PAIR)
+                    explain_ctrl_socket.connect("tcp://127.0.0.1:6000")
+                    print("[DEBUG] - Explain control socket create")   
+
+                    explain_poller = zmq.Poller()
+                    explain_poller.register(explain_ctrl_socket, zmq.POLLIN)
+                    print("[DEBUG] - Poller created")   
+
+                    # 2. Handle ZMQ_PAIR mute state race condition
+                    while True:
+                        try:
+                            # Assuming 'command' holds the original string payload (e.g., "EXPLAIN: {...}")
+                            explain_ctrl_socket.send_string(command, flags=zmq.NOBLOCK)
+                            print("[DEBUG] - Explain command sent")    
+                            break
+                        except zmq.error.Again:
+                            # Peer has not bound yet. Backoff and retry.
+                            time.sleep(0.05) 
+
+                    # 3. Wait for acknowledgment
+                    while True:
+                        socks = dict(explain_poller.poll(1000))
+                        if explain_ctrl_socket in socks and socks[explain_ctrl_socket] == zmq.POLLIN:
+                            message = explain_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
+                            print(f"[DEBUG] - Received XAI Ack: {message}")
+                            break
+
+                    explain_poller.unregister(explain_ctrl_socket)
+                    explain_ctrl_socket.setsockopt(zmq.LINGER, 0)
+                    explain_ctrl_socket.close()
+                    print("[DEBUG] - Explain control socket closed")
 
                 else:
                     print(f"[DEBUG] CLINGUIN BUSY:\n{command}")
