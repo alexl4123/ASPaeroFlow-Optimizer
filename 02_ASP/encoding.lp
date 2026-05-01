@@ -93,7 +93,6 @@ navpoint_flight(ID,X,T) :- reroute(ID), actual_departure_time(ID,T), planned_ori
 % FLIGHT ENDS AT DESTINATION:
 planned_destination(ID,X) :- reroute(ID), T=#max{T':navpoint_flight_plan(ID,_,T')}, navpoint_flight_plan(ID,X,T).
 actual_arrival_time(ID,T) :- flightID(ID), T = #max{T':navpoint_flight(ID,_,T')}.
-:- reroute(ID), actual_arrival_time(ID,T), navpoint_flight(ID,X,T), planned_destination(ID,X'), X != X'.
 :- flightID(ID), not actual_arrival_time(ID,_).
 :- flightID(ID), planned_destination(ID,X), actual_arrival_time(ID,T), navpoint_flight(ID,X',T), X != X'.
 
@@ -126,8 +125,6 @@ actual_departure_time(ID,TP) :- planned_departure_time(ID,TP), -regulation_delay
 
 planned_arrival_time(ID,T) :- flightID(ID), T = #max{T':navpoint_flight_plan(ID,_,T')}.
 arrival_delay(ID,Y-T) :- planned_arrival_time(ID,T), actual_arrival_time(ID,Y).
-actualFlightTime(ID,T) :- actual_departure_time(ID,TDA),actual_destination_first_reached_time(ID,TRA), T = TRA - TDA.
-plannedFlightTime(ID,T) :- planned_departure_time(ID,TDP), planned_arrival_time(ID,TRP), T = TRP - TDP.
 
 % NO GAPS:
 :- time(T), actual_departure_time(ID,T'), T > T', actual_arrival_time(ID,T''), T < T'', not flight(ID,_,T).
