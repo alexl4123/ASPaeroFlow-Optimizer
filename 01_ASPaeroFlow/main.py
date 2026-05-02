@@ -425,6 +425,8 @@ class Main:
                 output_dict["DIFF"] = {}
                 output_dict["DIFF"]["FLIGHTS"] = []
                 output_dict["DIFF"]["SECTORS"] = []
+                output_dict["DIFF"]["ACCEPTED_SOLUTION"] = True
+                output_dict["ITERATION"] = 0
                 output_string = json.dumps(output_dict)
 
                 self._control_pub_socket.send_string(f"RESET-OBJECTIVE-VALUE")
