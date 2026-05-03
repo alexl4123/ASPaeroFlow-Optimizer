@@ -24,8 +24,7 @@ from typing import Any, Final, List, Optional, Callable, Dict
 from datetime import datetime, timezone
 
 from src.aspaeroflow.main_optimizer_loop import Main
-from src.aspaeroflow.solver import Solver, Model
-from src.aspaeroflow.optimize_flights import OptimizeFlights, MAX, TRIANGULAR, LINEAR
+from src.aspaeroflow.optimize_flights import MAX, TRIANGULAR, LINEAR
 
 # ---------------------------------------------------------------------------
 # CLI utilities (with config + bundle directory support)
