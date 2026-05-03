@@ -7,7 +7,7 @@ import numpy as np
 import networkx as nx
 from itertools import islice
 
-from solver import Solver, Model
+from .solver import Solver, Model
 
 from networkx.algorithms.boundary import node_boundary
 from sympy import bell

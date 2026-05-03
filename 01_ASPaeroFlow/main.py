@@ -33,19 +33,19 @@ from pathlib import Path
 from typing import Any, Final, List, Optional, Callable
 from datetime import datetime, timezone
 
-from solver import Solver, Model
 
 from joblib import Parallel, delayed
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import shortest_path
     
 from concurrent.futures import ProcessPoolExecutor
-from optimize_flights import OptimizeFlights, MAX, TRIANGULAR, LINEAR
 from concurrent.futures import ProcessPoolExecutor
     
 import numpy as np
 import networkx as nx
 
+from src.aspaeroflow.solver import Solver, Model
+from src.aspaeroflow.optimize_flights import OptimizeFlights, MAX, TRIANGULAR, LINEAR
 
 # ---------------------------------------------------------------------------
 # Helper functions
