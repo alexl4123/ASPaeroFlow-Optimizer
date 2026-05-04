@@ -32,6 +32,7 @@ from ..auxiliaries.dto_helpers import convert_dto_to_global_vars, convert_global
 from ..auxiliaries.computation_helpers import compute_total_number_sectors, last_valid_pos, system_loads_computation
 from ..optimize_flights import OptimizeFlights
 from ..auxiliaries.communication_helpers import decode_ndarray, encode_ndarray
+from ..solver import Solver
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -284,12 +285,12 @@ class IterationStep:
             
             for key_1 in self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"].keys():
                 sector_config_restore_dict[int(key_1)] = {}
-                sector_config_restore_dict[int(key_1)]["composition_navpoints"] = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"][key_1]["composition_navpoints"])
-                sector_config_restore_dict[int(key_1)]["composition_sectors"] = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"][key_1]["composition_sectors"])
-                sector_config_restore_dict[int(key_1)]["demand"] = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"][key_1]["demand"])
-                sector_config_restore_dict[int(key_1)]["capacity"] = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"][key_1]["capacity"])
-                sector_config_restore_dict[int(key_1)]["composition"] = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"][key_1]["composition"])
-                sector_config_restore_dict[int(key_1)]["affected_flights"] = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"][key_1]["affected_flights"])
+                sector_config_restore_dict[int(key_1)]["composition_navpoints"] = decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"][key_1]["composition_navpoints"])
+                sector_config_restore_dict[int(key_1)]["composition_sectors"] = decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"][key_1]["composition_sectors"])
+                sector_config_restore_dict[int(key_1)]["demand"] = decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"][key_1]["demand"])
+                sector_config_restore_dict[int(key_1)]["capacity"] = decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"][key_1]["capacity"])
+                sector_config_restore_dict[int(key_1)]["composition"] = decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"][key_1]["composition"])
+                sector_config_restore_dict[int(key_1)]["affected_flights"] = decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"][key_1]["affected_flights"])
                 sector_config_restore_dict[int(key_1)]["time_index"] = int(self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"][key_1]["time_index"])
                 sector_config_restore_dict[int(key_1)]["sector_index"] = int(self._explainability_context["ITERATION-BACKUP"]["SECTOR-CONFIG-RESTORE-DICT"][key_1]["sector_index"])
 

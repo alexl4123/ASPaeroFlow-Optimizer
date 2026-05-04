@@ -28,6 +28,7 @@ import numpy as np
 import networkx as nx
 import warnings
 
+from ..auxiliaries.communication_helpers import decode_ndarray, encode_ndarray
 from ..auxiliaries.dto_helpers import convert_dto_to_global_vars, convert_global_vars_to_dto
 from ..auxiliaries.computation_helpers import compute_total_number_sectors, minimize_number_of_sectors_new
 from ..optimize_flights import OptimizeFlights
@@ -448,15 +449,17 @@ class SetupBeforeOptimization:
                     self.encoding = file.read()
 
             global_t_start = 1
-            self.sectors = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SECTORS"])
-            navaid_sector_time_assignment = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["NAVAID-SECTOR-TIME-ASSIGNMENT"])
-            converted_instance_matrix = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["CONVERTED-INSTANCE-MATRIX"])
-            converted_navpoint_matrix = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["CONVERTED-NAVPOINT-MATRIX"])
-            system_loads = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SYSTEM-LOADS"])
-            capacity_time_matrix = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["CAPACITY-TIME-MATRIX"])
+            time_bucket_updated = 0
 
-            original_converted_instance_matrix = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["ORIGINAL-CONVERTED-INSTANCE-MATRIX"])
-            original_navaid_sector_time_assignment = self.decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["ORIGINAL-NAVAID-SECTOR-TIME-ASSIGNMENT"])
+            self.sectors = decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SECTORS"])
+            navaid_sector_time_assignment = decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["NAVAID-SECTOR-TIME-ASSIGNMENT"])
+            converted_instance_matrix = decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["CONVERTED-INSTANCE-MATRIX"])
+            converted_navpoint_matrix = decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["CONVERTED-NAVPOINT-MATRIX"])
+            system_loads = decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SYSTEM-LOADS"])
+            capacity_time_matrix = decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["CAPACITY-TIME-MATRIX"])
+
+            original_converted_instance_matrix = decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["ORIGINAL-CONVERTED-INSTANCE-MATRIX"])
+            original_navaid_sector_time_assignment = decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["ORIGINAL-NAVAID-SECTOR-TIME-ASSIGNMENT"])
 
             capacity_demand_diff_matrix = capacity_time_matrix - system_loads
             # 5.) Create capacity overload matrix:
