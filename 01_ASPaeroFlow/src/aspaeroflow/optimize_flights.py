@@ -1337,8 +1337,8 @@ class OptimizeFlights:
                 # Origin
                 t_slot = current_time
 
-                if t_slot >= flights_affected.shape[1]:
-                    raise Exception("In optimize_flights max time exceeded current allowed time.")
+                #if t_slot >= flights_affected.shape[1]:
+                #    raise Exception("In optimize_flights max time exceeded current allowed time.")
 
             else:
                 # En-route/destination
@@ -1361,8 +1361,8 @@ class OptimizeFlights:
 
                 t_slot=current_time
 
-                if t_slot >= flights_affected.shape[1]:
-                    raise Exception("In optimize_flights max time exceeded current allowed time.")
+                #if t_slot >= flights_affected.shape[1]:
+                #    raise Exception("In optimize_flights max time exceeded current allowed time.")
 
             traj.append((flight_index, vertex, t_slot))
 
