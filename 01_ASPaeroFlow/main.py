@@ -30,6 +30,8 @@ from src.aspaeroflow.optimize_flights import MAX, TRIANGULAR, LINEAR
 # CLI utilities (with config + bundle directory support)
 # ---------------------------------------------------------------------------
 
+bind_hostname = "127.0.0.1"
+connect_hostname = "127.0.0.1"
 
 DEFAULT_FILENAMES = {
     "graph_path":              "graph_edges.csv",
@@ -153,6 +155,7 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
     parser.add_argument("--explainability-enabled", type=str, default=str(C("explainability-enabled", "false")))
     parser.add_argument("--controller-control-socket-port", type=int, default=5555)
     parser.add_argument("--controller-data-socket-port", type=int, default=5556)
+    parser.add_argument("--controller-hostname", type=str, default=str(C("controller-hostname", "127.0.0.1")))
 
     # DYNAMIC SECTORIZATION:
     parser.add_argument("--number-capacity-management-configs", type=int, default=int(C("number-capacity-management-configs", 7)), help="How many compisitions/partitions to consider (only works when cap-mgmt. is enabled.")
@@ -238,6 +241,7 @@ def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
     # 2) build the full parser with cfg-derived defaults
     parser = _build_arg_parser(cfg)
     args = parser.parse_args(argv)
+
     # normalize booleans
     def _str2bool(v):
         if isinstance(v, bool): return v
@@ -251,6 +255,16 @@ def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
     args.controller_enabled = _str2bool(args.controller_enabled)
     args.explainability_enabled = _str2bool(args.explainability_enabled)
 
+    global bind_hostname
+    global connect_hostname
+
+    hostname = args.controller_hostname
+    if hostname == "0.0.0.0":
+        bind_hostname = "0.0.0.0"
+        connect_hostname = "controller"
+    else:
+        bind_hostname = hostname
+        connect_hostname = hostname
 
     # Keep the config path in args for traceability
     if args.config is None and pre.config:
@@ -363,22 +377,22 @@ def initialize_explainability(args):
     
     control_socket_port = args.controller_control_socket_port 
     data_socket_port = args.controller_data_socket_port
+
+    global bind_hostname
+    global connect_hostname
     
     # 1. Control Channel (PAIR)
     control_ctrl_socket = control_context.socket(zmq.PAIR)
-    control_ctrl_socket.bind(f"tcp://127.0.0.1:6000")
+    control_ctrl_socket.bind(f"tcp://{bind_hostname}:6000")
     
     # 2. Telemetry Channel (PUB)
     control_pub_socket = control_context.socket(zmq.PUB)
-    control_pub_socket.connect(f"tcp://127.0.0.1:{data_socket_port}")
-
-
+    control_pub_socket.connect(f"tcp://{connect_hostname}:{data_socket_port}")
 
     # Configure the Poller for I/O multiplexing
     init_poller = zmq.Poller()
     init_poller.register(control_ctrl_socket, zmq.POLLIN)
     
-
     controller_defined_instance = False
 
     while True:
@@ -388,7 +402,7 @@ def initialize_explainability(args):
         # Process Optimizer control socket events
         if control_ctrl_socket in socks and socks[control_ctrl_socket] == zmq.POLLIN:
             message = control_ctrl_socket.recv_string(flags=zmq.NOBLOCK)
-
+            
             explain_dict = json.loads(message[9:])
             break
 
@@ -406,14 +420,17 @@ def initialize_controller(args):
     
     control_socket_port = args.controller_control_socket_port 
     data_socket_port = args.controller_data_socket_port
+
+    global bind_hostname
+    global connect_hostname
     
     # 1. Control Channel (PAIR)
     control_ctrl_socket = control_context.socket(zmq.PAIR)
-    control_ctrl_socket.connect(f"tcp://127.0.0.1:{control_socket_port}")
+    control_ctrl_socket.connect(f"tcp://{connect_hostname}:{control_socket_port}")
     
     # 2. Telemetry Channel (PUB)
     control_pub_socket = control_context.socket(zmq.PUB)
-    control_pub_socket.connect(f"tcp://127.0.0.1:{data_socket_port}")
+    control_pub_socket.connect(f"tcp://{connect_hostname}:{data_socket_port}")
     
     # Non-blocking I/O setup for the Control Channel
     control_poller = zmq.Poller()

@@ -202,7 +202,6 @@ class OptimizeFlights:
             origin = flight_affected[0]
             destination = flight_affected[-1]
 
-            # WITH A FILED FLIGHT PATH WE GET PATH NUMBER = 0
             paths = self.k_diverse_near_shortest_paths(unit_graphs[airplane_speed_kts], origin, destination, self.nearest_neighbors_lookup[airplane_speed_kts],
                                                 k=k, eps=0.1, jaccard_max=0.6, penalty_scale=0.1, max_tries=50, weight_key="weight",
                                                 filed_path=list(filed_flight_path[:,1]))

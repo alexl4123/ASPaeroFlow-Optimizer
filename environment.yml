@@ -1,0 +1,26 @@
+name: optimizer-env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - clingo=5.6.2
+  - pyzmq
+  - pandas
+  - numpy
+  - networkx
+  - sympy
+  - more-itertools
+  - geopandas
+  - shapely
+  - scipy
+  - fastapi
+  - uvicorn
+  - pydantic
+  - pyyaml
+  - httpx
+  - pip
+  - pip:
+    - gurobipy==13.0.0
+    - clingcon==5.2.1.post2
+    - clingraph==1.1.2

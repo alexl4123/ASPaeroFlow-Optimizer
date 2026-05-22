@@ -11,16 +11,23 @@ from typing import Any, Final, List, Optional, Callable
 import base64
 import json
 
+bind_host_name = "127.0.0.1"
+optimizer_connection_hostname = "127.0.0.1"
+asp_aero_flow_path = "../01_ASPaeroFlow/main.py"
+
 def start_telemetry_broker():
     """Dedicated background thread for XPUB/XSUB proxying."""
     # Isolated ZeroMQ context for the thread
     context = zmq.Context()
-    
+
+    global bind_host_name
+    global optimizer_connection_hostname
+
     frontend_xsub = context.socket(zmq.XSUB)
-    frontend_xsub.bind("tcp://127.0.0.1:5556") 
+    frontend_xsub.bind(f"tcp://{bind_host_name}:5556") 
     
     backend_xpub = context.socket(zmq.XPUB)
-    backend_xpub.bind("tcp://127.0.0.1:5557") 
+    backend_xpub.bind(f"tcp://{bind_host_name}:5557") 
     
     # Blocks indefinitely to handle multiplexing
     zmq.proxy(frontend_xsub, backend_xpub)
@@ -36,7 +43,26 @@ def main(argv: Optional[List[str]] = None):
     parser.add_argument(
             "--controller-folder", help="Selectable folders for optimizer.", type=Path, default=None, metavar="FOLDER")
 
+
+    parser.add_argument(
+            "--default-hostname", help="Default hostname is 127.0.0.1", type=str, default="127.0.0.1")
+
+
+
     args = parser.parse_args(argv)
+
+    global bind_host_name
+    global optimizer_connection_hostname
+    global asp_aero_flow_path
+
+    bind_host_name = args.default_hostname
+
+
+    if bind_host_name == "0.0.0.0":
+        optimizer_connection_hostname = "optimizer"
+        asp_aero_flow_path = "01_ASPaeroFlow/main.py"
+    else:
+        optimizer_connection_hostname = "127.0.0.1"
 
     print("[DEBUG] - Start")
 
@@ -51,20 +77,21 @@ def main(argv: Optional[List[str]] = None):
     
     # 1. Control Channel (PAIR)
     ctrl_socket = context.socket(zmq.PAIR)
-    ctrl_socket.bind("tcp://127.0.0.1:5555")
+    ctrl_socket.bind(f"tcp://{bind_host_name}:5555")
     print("[DEBUG] - Optimizer control socket create")    
     
     # 2. Telemetry Channel (SUB)
     sub_socket = context.socket(zmq.SUB)
     # UPDATED: Connect to XPUB port (5557), not XSUB
-    sub_socket.connect("tcp://127.0.0.1:5557")
+    sub_socket.connect(f"tcp://127.0.0.1:5557")
     sub_socket.setsockopt_string(zmq.SUBSCRIBE, "") # Subscribe to all topics
     print("[DEBUG] - Optimizer data socket create")
 
 
+
     # 1. Control Channel (PAIR)
     clinguin_ctrl_socket = context.socket(zmq.PAIR)
-    clinguin_ctrl_socket.bind("tcp://127.0.0.1:5570")
+    clinguin_ctrl_socket.bind(f"tcp://{bind_host_name}:5570")
     print("[DEBUG] - Clinguin control socket create")    
 
     # Non-blocking I/O setup for the Control Channel
@@ -73,7 +100,7 @@ def main(argv: Optional[List[str]] = None):
 
     # 2. Telemetry Channel (SUB)
     clinguin_sub_socket = context.socket(zmq.PUB)
-    clinguin_sub_socket.bind("tcp://127.0.0.1:5571")
+    clinguin_sub_socket.bind(f"tcp://{bind_host_name}:5571")
     print("[DEBUG] - Clinguin data socket create")    
     #clinguin_sub_socket.setsockopt_string(zmq.SUBSCRIBE, "") # Subscribe to all topics
     
@@ -310,13 +337,25 @@ def main(argv: Optional[List[str]] = None):
                 elif command.startswith("<EXPLAIN>"):
                     print("<EXPLAIN>")
 
+                    if bind_host_name == "0.0.0.0":
+                        controller_hostname = "controller"
+                        controller_hostname = "127.0.0.1"
+                        _encoding_path = "01_ASPaeroFlow/encoding.lp"
+                    else:
+                        controller_hostname = "127.0.0.1"
+                        _encoding_path = "../01_ASPaeroFlow/encoding.lp"
+
                     # 1. Rename variable to prevent shadowing the actual payload string
-                    exec_args = [sys.executable, "../01_ASPaeroFlow/main.py", "--explainability-enabled=True", "--encoding-path=../01_ASPaeroFlow/encoding.lp"]
+                    exec_args = [sys.executable, f"{asp_aero_flow_path}", "--explainability-enabled=True", f"--encoding-path={_encoding_path}", f"--controller-hostname={controller_hostname}"]
+
+
+
                     process = subprocess.Popen(exec_args)
                     print("[DEBUG] - Explainability process started")
 
                     explain_ctrl_socket = context.socket(zmq.PAIR)
-                    explain_ctrl_socket.connect("tcp://127.0.0.1:6000")
+                    #explain_ctrl_socket.connect(f"tcp://{optimizer_connection_hostname}:6000")
+                    explain_ctrl_socket.connect(f"tcp://127.0.0.1:6000")
                     print("[DEBUG] - Explain control socket create")   
 
                     explain_poller = zmq.Poller()

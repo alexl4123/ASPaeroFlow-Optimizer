@@ -1,0 +1,65 @@
+services:
+  optimizer:
+    build: 
+      context: . 
+      dockerfile: Dockerfile
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: 
+      - "01_ASPaeroFlow/main.py"
+      - "--seed=11904657"
+      - "--max-number-sectors=100000"
+      - "--timestep-granularity=1"
+      - "--controller-enabled=True"
+      - "--data-dir=01_ASPaeroFlow/controller_folder/"
+      - "--encoding-path=01_ASPaeroFlow/encoding.lp"
+      - "--controller-hostname=0.0.0.0"
+    expose:
+      - "8080" 
+
+  controller:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: 
+      - "07_heuristic_controller/controller_mockup_2.py"
+      - "--default-hostname=0.0.0.0"
+      - "--controller-folder=01_ASPaeroFlow/controller_folder/"
+    depends_on:
+      - optimizer
+      - clinguin-backend
+    expose:
+      - "8081" 
+
+  clinguin-backend:
+    build:
+      context: ../../../2026/09_XAI_Clinguin/clinguin
+      dockerfile: Dockerfile
+    entrypoint: ["micromamba", "run", "-n", "base"]
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: 
+      - "python"
+      - "start.py"
+      - "server"
+      - "--backend=ATFCMBackend"
+      - "--domain-files"
+      - "atfcm_frontend/encoding.lp"
+      - "atfcm_frontend/instance.lp"
+      - "--ui-files"
+      - "atfcm_frontend/ui.lp"
+    ports:
+      - "8000:8000" 
+
+  frontend:
+    build:
+      # Relative path traversing up 3 levels, then down into 2026
+      context: ../../../2026/09_XAI_Clinguin/clinguin/angular_frontend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:80" 
+    depends_on:
+      - clinguin-backend
+
