@@ -35,11 +35,13 @@ services:
 
   clinguin-backend:
     build:
-      context: ../../../2026/09_XAI_Clinguin/clinguin
+      context: ../ASPaeroFlow-XAI
       dockerfile: Dockerfile
     entrypoint: ["micromamba", "run", "-n", "base"]
     environment:
       - PYTHONUNBUFFERED=1
+      - SUBJECT_ID=${SUBJECT_ID}
+      - SESSION_HASH=${SESSION_HASH}
     command: 
       - "python"
       - "start.py"
@@ -50,16 +52,40 @@ services:
       - "atfcm_frontend/instance.lp"
       - "--ui-files"
       - "atfcm_frontend/ui.lp"
-    ports:
-      - "8000:8000" 
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.backend-${SESSION_HASH}.entrypoints=web"
+      - "traefik.http.routers.backend-${SESSION_HASH}.rule=PathPrefix(`/session/${SESSION_HASH}/api`)"
+      - "traefik.http.middlewares.strip-api-${SESSION_HASH}.stripprefix.prefixes=/session/${SESSION_HASH}/api"
+      - "traefik.http.routers.backend-${SESSION_HASH}.middlewares=strip-api-${SESSION_HASH}"
+      - "traefik.http.services.backend-${SESSION_HASH}.loadbalancer.server.port=8000"
+    volumes:
+      - /root/ASPaeroFlow/telemetry_data:/app/telemetry_data
+
+    networks:
+      - default
+      - proxy
 
   frontend:
     build:
       # Relative path traversing up 3 levels, then down into 2026
-      context: ../../../2026/09_XAI_Clinguin/clinguin/angular_frontend
+      context: ../ASPaeroFlow-XAI/angular_frontend
       dockerfile: Dockerfile
-    ports:
-      - "8080:80" 
     depends_on:
       - clinguin-backend
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.frontend-${SESSION_HASH}.entrypoints=web"
+      - "traefik.http.routers.frontend-${SESSION_HASH}.rule=PathPrefix(`/session/${SESSION_HASH}`)"
+      - "traefik.http.middlewares.strip-ui-${SESSION_HASH}.stripprefix.prefixes=/session/${SESSION_HASH}"
+      - "traefik.http.routers.frontend-${SESSION_HASH}.middlewares=strip-ui-${SESSION_HASH}"
+      - "traefik.http.services.frontend-${SESSION_HASH}.loadbalancer.server.port=80"
+    networks:
+      - default
+      - proxy
 
+networks:
+  proxy:
+    external: true
