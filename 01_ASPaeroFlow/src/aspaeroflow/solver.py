@@ -34,7 +34,7 @@ class Solver:
 
         start_time = time.time()
 
-        ctl = clingo.Control()
+        ctl = clingo.Control(["--seed=11904657"])
 
         ##########################################################
         # SILENCE CLINGO (all stdout/warnings directly to devnull):
@@ -94,6 +94,13 @@ class PickleAbleSymbol:
 
         for argument in symbol.arguments:
             self.arguments.append(str(argument))
+
+    def __str__(self):
+        if not self.arguments:
+            return self.name
+        
+        args_str = ",".join(self.arguments)
+        return f"{self.name}({args_str})"
 
 
 class Model:

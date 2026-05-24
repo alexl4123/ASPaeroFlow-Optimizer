@@ -267,10 +267,10 @@ class IterationStep:
                 if all_new:
                     all_jobs.append(job)
 
-            solutions = Parallel(n_jobs=max_number_processors, backend="loky")(
-                        delayed(_run)(job) for job in all_jobs)
+            #solutions = Parallel(n_jobs=max_number_processors, backend="loky")(
+            #            delayed(_run)(job) for job in all_jobs)
 
-            #models = [_run(job) for job in jobs]
+            solutions = [_run(job) for job in all_jobs]
 
             end_time = time.time()
             if self.verbosity > 1:

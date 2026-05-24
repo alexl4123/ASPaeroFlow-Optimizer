@@ -526,6 +526,7 @@ class OptimizeFlights:
 
         sector_config_instance.append(f"config_number_sectors({current_config},{np.unique(self.navaid_sector_time_assignment[:,time_index]).size}).")
 
+        tmp_sector_time_diff = {}
         for navpoint in needed_capacities_for_navpoint.keys():
             from_time = needed_capacities_for_navpoint[navpoint][0]
             until_time = needed_capacities_for_navpoint[navpoint][1]
@@ -541,8 +542,10 @@ class OptimizeFlights:
                 current_capacity = self.capacity_demand_diff_matrix[current_sector, current_time]
                 sector_capacity_instance.append(f"possible_sector_capacity({current_sector},{current_capacity},{current_time},{current_config}).")
 
-                if current_capacity < 0:
-                    number_of_conflicts -= abs(current_capacity)
+                if (current_sector,current_time) not in tmp_sector_time_diff:
+                    tmp_sector_time_diff[current_sector,current_time] = True
+                    if current_capacity < 0:
+                        number_of_conflicts -= abs(current_capacity)
 
         sector_config_instance.append(f"config({current_config},{number_of_conflicts}).")
 
@@ -719,6 +722,7 @@ class OptimizeFlights:
                     # COMPOSITION CONFIG 
                     sector_config_instance.append(f"config_number_sectors({current_config},{np.unique(self.navaid_sector_time_assignment[:,time_index]).size}).")
 
+                    tmp_sector_time_diff = {}
                     for navpoint in needed_capacities_for_navpoint.keys():
                         from_time = needed_capacities_for_navpoint[navpoint][0]
                         until_time = needed_capacities_for_navpoint[navpoint][1]
@@ -731,8 +735,10 @@ class OptimizeFlights:
                             current_capacity = capacity_demand_diff_matrix[current_sector, current_time]
                             sector_capacity_instance.append(f"possible_sector_capacity({current_sector},{current_capacity},{current_time},{current_config}).")
                             
-                            if current_capacity < 0:
-                                number_of_conflicts -= abs(current_capacity)
+                            if (current_sector,current_time) not in tmp_sector_time_diff:
+                                tmp_sector_time_diff[current_sector,current_time] = True
+                                if current_capacity < 0:
+                                    number_of_conflicts -= abs(current_capacity)
 
                     sector_config_instance.append(f"config({current_config},{number_of_conflicts}).")
 
@@ -871,7 +877,7 @@ class OptimizeFlights:
 
         # -----------------------------------------------------------
 
-        planned_arrival_time_instance = list(set(planned_arrival_time_instance))
+        planned_arrival_time_instance = sorted(list(set(planned_arrival_time_instance)))
 
         flight_navpoint_instance = "\n".join(flight_navpoint_instance)
         flight_times_instance = "\n".join(flight_times_instance)
@@ -910,8 +916,7 @@ class OptimizeFlights:
 
         encoding = self.encoding
 
-        #open(f"20260116_test_instance_{additional_time_increase}.lp","w").write(instance)
-        #quit()
+        #open(f"20260524_test_instance_{self.iteration}_{time_index}_{sector_index}_{additional_time_increase}.lp","w").write(instance)
 
         if self.verbosity == 3:
             open(f"20250410_test_instance_{additional_time_increase}.lp","w").write(instance)
