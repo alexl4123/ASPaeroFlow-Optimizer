@@ -877,7 +877,7 @@ class OptimizeFlights:
 
         # -----------------------------------------------------------
 
-        planned_arrival_time_instance = list(set(planned_arrival_time_instance))
+        planned_arrival_time_instance = sorted(list(set(planned_arrival_time_instance)))
 
         flight_navpoint_instance = "\n".join(flight_navpoint_instance)
         flight_times_instance = "\n".join(flight_times_instance)
@@ -916,7 +916,7 @@ class OptimizeFlights:
 
         encoding = self.encoding
 
-        open(f"20260524_test_instance_{time_index}_{sector_index}_{additional_time_increase}.lp","w").write(instance)
+        #open(f"20260524_test_instance_{self.iteration}_{time_index}_{sector_index}_{additional_time_increase}.lp","w").write(instance)
 
         if self.verbosity == 3:
             open(f"20250410_test_instance_{additional_time_increase}.lp","w").write(instance)

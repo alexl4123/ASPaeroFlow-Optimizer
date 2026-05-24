@@ -48,6 +48,30 @@ from .main_loop_components.evaluate_solution import EvaluateSolution
 # Main application class
 # ---------------------------------------------------------------------------
 
+
+def serialize_asp_model(optimization_dto: dict, filepath: str):
+    # Retrieve the Model instance
+    asp_model = optimization_dto["solutions"][0][0]
+    
+    # Extract string representations of all logical symbols
+    facts = set()
+    facts.update(str(sym) for sym in asp_model.get_sector_flights())
+    facts.update(str(sym) for sym in asp_model.get_navpoint_flights())
+    facts.update(str(sym) for sym in asp_model.get_reroutes())
+    
+    # Direct attribute access required as get_atfm_delays() is missing in the class definition
+    facts.update(str(sym) for sym in asp_model.atfm_delays) 
+    
+    if asp_model.get_sector_config():
+        facts.add(str(asp_model.get_sector_config()))
+        
+    # Sort to enforce strict canonical ordering
+    canonical_facts = sorted(list(facts))
+    
+    # Write to canonical .lp file
+    with open(filepath, 'w', encoding='utf-8') as f:
+        f.write("\n".join(canonical_facts))
+
 class Main:
     """Application entry‑point.
 
@@ -165,9 +189,33 @@ class Main:
                
         while np.any(optimization_dto["capacity_overload_mask"], where=True):
 
+            """
+            iteration = optimization_dto["iteration"]
+            # Format '%f' retains float precision. Use '%d' if the matrices contain strictly integers.
+            np.savetxt(f"20260524_converted_navpoint_matrix_{iteration}.csv", 
+                    optimization_dto["converted_navpoint_matrix"], 
+                    delimiter=",", 
+                    fmt="%i")
+
+            np.savetxt(f"20260524_converted_instance_matrix_{iteration}.csv", 
+                    optimization_dto["converted_instance_matrix"], 
+                    delimiter=",", 
+                    fmt="%i")
+
+            np.savetxt(f"20260524_navaid_sector_time_assignment_{iteration}.csv", 
+                    optimization_dto["navaid_sector_time_assignment"], 
+                    delimiter=",", 
+            fmt="%f")
+            """
+
             global_dto = convert_global_vars_to_dto(self)
             optimization_dto, global_dto, command  = IterationStep(global_dto).optimization_step(optimization_dto)
             convert_dto_to_global_vars(self, global_dto)
+
+            """
+            iteration = optimization_dto["iteration"]
+            serialize_asp_model(optimization_dto, f"20260524_asp_canonical_model_{iteration}.lp")
+            """
 
             if command == "continue":
                 continue
