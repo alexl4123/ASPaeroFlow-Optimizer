@@ -11,7 +11,7 @@ services:
       - "--max-number-sectors=100000"
       - "--timestep-granularity=1"
       - "--controller-enabled=True"
-      - "--data-dir=01_ASPaeroFlow/controller_folder/"
+      - "--data-dir=01_ASPaeroFlow/controller_folder/CENTRAL-EUROPE-7x7"
       - "--encoding-path=01_ASPaeroFlow/encoding.lp"
       - "--controller-hostname=0.0.0.0"
     expose:
@@ -26,12 +26,11 @@ services:
     command: 
       - "07_heuristic_controller/controller_mockup_2.py"
       - "--default-hostname=0.0.0.0"
-      - "--controller-folder=01_ASPaeroFlow/controller_folder/"
-    depends_on:
-      - optimizer
-      - clinguin-backend
     expose:
       - "8081" 
+    depends_on:
+      - clinguin-backend
+      - optimizer
 
   clinguin-backend:
     build:
@@ -59,7 +58,7 @@ services:
       context: ../../../2026/09_XAI_Clinguin/clinguin/angular_frontend
       dockerfile: Dockerfile
     ports:
-      - "8080:80" 
+      - "8082:80" 
     depends_on:
       - clinguin-backend
 

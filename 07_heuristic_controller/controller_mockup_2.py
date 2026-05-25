@@ -79,6 +79,7 @@ def main(argv: Optional[List[str]] = None):
     ctrl_socket = context.socket(zmq.PAIR)
     ctrl_socket.bind(f"tcp://{bind_host_name}:5555")
     print("[DEBUG] - Optimizer control socket create")    
+    print(f"tcp://{bind_host_name}:5555")
     
     # 2. Telemetry Channel (SUB)
     sub_socket = context.socket(zmq.SUB)
@@ -103,19 +104,20 @@ def main(argv: Optional[List[str]] = None):
     clinguin_sub_socket.bind(f"tcp://{bind_host_name}:5571")
     print("[DEBUG] - Clinguin data socket create")    
     #clinguin_sub_socket.setsockopt_string(zmq.SUBSCRIBE, "") # Subscribe to all topics
-    
+
     # Mitigate Slow Joiner Syndrome (allow TCP handshake to complete)
     time.sleep(1) 
+
+    # Configure the Poller for I/O multiplexing
+    init_poller = zmq.Poller()
+    init_poller.register(ctrl_socket, zmq.POLLIN)
+    init_poller.register(clinguin_ctrl_socket, zmq.POLLIN)
     
     ######################## INITIALIZE ############################
     # Initialize state tracking variables
     optimizer_ready = False
     clinguin_ready = False
 
-    # Configure the Poller for I/O multiplexing
-    init_poller = zmq.Poller()
-    init_poller.register(ctrl_socket, zmq.POLLIN)
-    init_poller.register(clinguin_ctrl_socket, zmq.POLLIN)
 
     # Loop until both components are fully initialized
     while not (optimizer_ready and clinguin_ready):
@@ -204,9 +206,9 @@ def main(argv: Optional[List[str]] = None):
             options = ctrl_socket.recv_string(flags=zmq.NOBLOCK)
             break
 
-    ctrl_socket.send_string("ack")
     init_poller = zmq.Poller()
     init_poller.register(clinguin_ctrl_socket, zmq.POLLIN)
+    ctrl_socket.send_string("ack")
     clinguin_ctrl_socket.send_string(options)
 
     while True:
@@ -227,6 +229,9 @@ def main(argv: Optional[List[str]] = None):
             options = ctrl_socket.recv_string(flags=zmq.NOBLOCK)
             break
 
+    ctrl_poller = zmq.Poller()
+    ctrl_poller.register(ctrl_socket, zmq.POLLIN)
+    ctrl_socket.send_string("GET OBJECTIVE FUNCTIONS")
     ctrl_socket.send_string("ack")
     init_poller = zmq.Poller()
     init_poller.register(clinguin_ctrl_socket, zmq.POLLIN)
@@ -240,6 +245,18 @@ def main(argv: Optional[List[str]] = None):
             if message == "ack":
                 break
 
+    if args.controller_folder is None:
+        print("[CONTROLLER]: WAITING FOR GRAPH")
+        while True:
+            socks = dict(ctrl_poller.poll(1000))
+            if ctrl_socket in socks and socks[ctrl_socket] == zmq.POLLIN:
+                graph = ctrl_socket.recv_string(flags=zmq.NOBLOCK)
+                break
+
+        clinguin_ctrl_socket.send_string(graph)
+        print("[CONTROLLER]: GRAPH SENT TO CLINGUIN")
+
+    time.sleep(1)
 
     #
     ################## OPTIMIZATION LOOP ###################

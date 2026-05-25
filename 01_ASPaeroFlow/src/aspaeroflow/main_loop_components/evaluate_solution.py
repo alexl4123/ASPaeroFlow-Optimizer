@@ -265,7 +265,8 @@ class EvaluateSolution:
                     #extra_col = -1 * np.ones((converted_instance_matrix.shape[0], 1), dtype=int)
                     #converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
 
-                    number_new_cols = 1 * self._timestep_granularity
+                    #number_new_cols = 1 * self._timestep_granularity
+                    number_new_cols = int((math.ceil(float(time_id - converted_instance_matrix.shape[1]) / self._timestep_granularity) + 1) * self._timestep_granularity)
 
                     # 0.) Handle Sector Assignments:
                     new_cols = np.repeat(navaid_sector_time_assignment[:,[-1]], number_new_cols, axis=1)  # shape (N,k)
