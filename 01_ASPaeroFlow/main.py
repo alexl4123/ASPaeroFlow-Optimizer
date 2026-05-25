@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import os
 import json
+import time
 
 import zmq
 
@@ -431,13 +432,12 @@ def initialize_controller(args):
     # 2. Telemetry Channel (PUB)
     control_pub_socket = control_context.socket(zmq.PUB)
     control_pub_socket.connect(f"tcp://{connect_hostname}:{data_socket_port}")
-    
+
     # Non-blocking I/O setup for the Control Channel
     control_poller = zmq.Poller()
     control_poller.register(control_ctrl_socket, zmq.POLLIN)
 
     control_ctrl_socket.send_string("INITIALIZED OPTIMIZER")
-
 
     # Configure the Poller for I/O multiplexing
     init_poller = zmq.Poller()
