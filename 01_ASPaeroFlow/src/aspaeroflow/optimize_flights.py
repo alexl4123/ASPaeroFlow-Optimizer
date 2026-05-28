@@ -615,6 +615,18 @@ class OptimizeFlights:
                 else:
                     parts = self._partition_connected_convex(navpoints_in_sector, number_partitions)
 
+                # Fix not connected subgraph problem
+                tmp_parts = []
+                for partition in parts:
+                    tmp_navpoints = []
+                    for partition_navpoints in partition:
+                        if len(partition_navpoints) > 0:
+                            tmp_navpoints.append(partition_navpoints)
+
+                    tmp_parts.append(tmp_navpoints)
+
+                parts = tmp_parts
+
                 self.max_number_sectors 
 
                 #if self.verbosity > 2:
