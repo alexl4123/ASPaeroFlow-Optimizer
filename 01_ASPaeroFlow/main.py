@@ -158,8 +158,11 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
     parser.add_argument("--controller-data-socket-port", type=int, default=5556)
     parser.add_argument("--controller-hostname", type=str, default=str(C("controller-hostname", "127.0.0.1")))
 
+
+    parser.add_argument("--sequential-execution", type=str, default=str(C("sequential-execution", "false")))
+
     # DYNAMIC SECTORIZATION:
-    parser.add_argument("--number-capacity-management-configs", type=int, default=int(C("number-capacity-management-configs", 7)), help="How many compisitions/partitions to consider (only works when cap-mgmt. is enabled.")
+    parser.add_argument("--number-capacity-management-configs", type=int, default=int(C("number-capacity-management-configs", 7)), help="How many compositions/partitions to consider (only works when cap-mgmt. is enabled.")
     parser.add_argument("--capacity-management-enabled",
         type=str,
         default=str(C("capacity-management-enabled", "true")),
@@ -252,6 +255,8 @@ def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
     args.save_results = _str2bool(args.save_results)
     args.wandb_enabled = _str2bool(args.wandb_enabled)
     args.minimize_number_sectors = _str2bool(args.minimize_number_sectors_enabled)
+
+    args.sequential_execution = _str2bool(args.sequential_execution)
 
     args.controller_enabled = _str2bool(args.controller_enabled)
     args.explainability_enabled = _str2bool(args.explainability_enabled)
@@ -679,29 +684,105 @@ def main(argv: Optional[List[str]] = None) -> None:
         wandb_log = run.log
 
 
+
     while True:
 
-        app = Main(args.graph_path, args.sectors_path, args.flights_path,
-                args.airports_path, args.airplanes_path,
-                args.airplane_flight_path, args.navaid_sector_path,
-                args.encoding_path,
-                args.seed, args.number_threads, args.timestep_granularity,
-                args.max_explored_vertices, args.max_delay_per_iteration,
-                args.max_time, args.verbosity,
-                args.sector_capacity_factor,
-                args.number_capacity_management_configs,
-                args.capacity_management_enabled,
-                composite_sector_function,
-                experiment_name,
-                wandb_log,
-                args.optimizer, args.max_number_navpoints_per_sector, args.max_number_sectors, args.minimize_number_sectors,
-                args.convex_sectors,
-                control_context, control_ctrl_socket, control_pub_socket, control_poller, 
-                args.controller_enabled, args.data_dir,
-                args.max_considered_aircraft,
-                explainability_context
-                )
-        key, value = app.run()
+        if args.sequential_execution is False:
+            app = Main(args.graph_path, args.sectors_path, args.flights_path,
+                    args.airports_path, args.airplanes_path,
+                    args.airplane_flight_path, args.navaid_sector_path,
+                    args.encoding_path,
+                    args.seed, args.number_threads, args.timestep_granularity,
+                    args.max_explored_vertices, args.max_delay_per_iteration,
+                    args.max_time, args.verbosity,
+                    args.sector_capacity_factor,
+                    args.number_capacity_management_configs,
+                    args.capacity_management_enabled,
+                    composite_sector_function,
+                    experiment_name,
+                    wandb_log,
+                    args.optimizer, args.max_number_navpoints_per_sector, args.max_number_sectors, args.minimize_number_sectors,
+                    args.convex_sectors,
+                    control_context, control_ctrl_socket, control_pub_socket, control_poller, 
+                    args.controller_enabled, args.data_dir,
+                    args.max_considered_aircraft,
+                    explainability_context,
+                    args.sequential_execution
+                    )
+            key, value = app.run()
+        else:
+
+            max_reroutes = 1
+            max_delay = 1
+
+            app = Main(args.graph_path, args.sectors_path, args.flights_path,
+                    args.airports_path, args.airplanes_path,
+                    args.airplane_flight_path, args.navaid_sector_path,
+                    args.encoding_path,
+                    args.seed, args.number_threads, args.timestep_granularity,
+                    max_reroutes, max_delay,
+                    args.max_time, args.verbosity,
+                    args.sector_capacity_factor,
+                    args.number_capacity_management_configs,
+                    args.capacity_management_enabled,
+                    composite_sector_function,
+                    experiment_name,
+                    wandb_log,
+                    args.optimizer, args.max_number_navpoints_per_sector, args.max_number_sectors, args.minimize_number_sectors,
+                    args.convex_sectors,
+                    control_context, control_ctrl_socket, control_pub_socket, control_poller, 
+                    args.controller_enabled, args.data_dir,
+                    args.max_considered_aircraft,
+                    explainability_context,
+                    args.sequential_execution
+                    )
+            global_dto, optimization_dto = app.run()
+            
+            capacity_management_configs = 1
+            capacity_management_enabled = "False"
+
+            app = Main(args.graph_path, args.sectors_path, args.flights_path,
+                    args.airports_path, args.airplanes_path,
+                    args.airplane_flight_path, args.navaid_sector_path,
+                    args.encoding_path,
+                    args.seed, args.number_threads, args.timestep_granularity,
+                    args.max_explored_vertices, args.max_delay_per_iteration,
+                    args.max_time, args.verbosity,
+                    args.sector_capacity_factor,
+                    capacity_management_configs,
+                    capacity_management_enabled,
+                    composite_sector_function,
+                    experiment_name,
+                    wandb_log,
+                    args.optimizer, args.max_number_navpoints_per_sector, args.max_number_sectors, args.minimize_number_sectors,
+                    args.convex_sectors,
+                    control_context, control_ctrl_socket, control_pub_socket, control_poller, 
+                    args.controller_enabled, args.data_dir,
+                    args.max_considered_aircraft,
+                    explainability_context,
+                    False,
+                    injected_data=True
+                    )
+
+            app.inject_global_dto(global_dto)
+            app.injected_data = True
+            app._sequential_execution = False
+            app.capacity_management_enabled = False
+            app.number_capacity_management_configs = 1
+            if args.max_delay_per_iteration < 0:
+                app._max_delay_per_iteration = 20
+            else:
+                app._max_delay_per_iteration = args.max_delay_per_iteration
+            app.max_considered_aircraft = args.max_considered_aircraft
+            app._max_explored_vertices = args.max_explored_vertices
+
+            optimization_dto["counter_equal_solutions"] = 0
+            optimization_dto["additional_time_increase"] = 0
+            optimization_dto["original_max_explored_vertices"] = args.max_explored_vertices
+
+            app.inject_optimization_dto(optimization_dto)
+            
+            key, value = app.run()
 
         if args.controller_enabled is True:
             if key != "<LOAD>":

@@ -113,6 +113,8 @@ class Main:
         data_dir = None,
         max_considered_aircraft = 2,
         explainability_context = None,
+        sequential_execution = False,
+        injected_data = False
         ) -> None:
 
         self._graph_path: Optional[Path] = graph_path
@@ -134,6 +136,8 @@ class Main:
         self._control_pub_socket = control_pub_socket
         self._control_poller = control_poller
         self._controller_enabled = controller_enabled
+
+        self._sequential_execution = sequential_execution
 
         self._explainability_context = explainability_context
 
@@ -175,6 +179,13 @@ class Main:
 
         self.sector_capacity_factor = sector_capacity_factor
 
+        self.injected_data = injected_data
+
+    def inject_optimization_dto(self, optimization_dto):
+        self.optimization_dto = optimization_dto
+
+    def inject_global_dto(self, global_dto):
+        convert_dto_to_global_vars(self, global_dto)
 
     # ---------------------------------------------------------------------
     # Public API
@@ -184,8 +195,12 @@ class Main:
         """Run the application"""
         
         global_dto = convert_global_vars_to_dto(self)
-        optimization_dto, global_dto = SetupBeforeOptimization(global_dto).setup_before_optimization()
-        convert_dto_to_global_vars(self, global_dto)
+
+        if self.injected_data is False:
+            optimization_dto, global_dto = SetupBeforeOptimization(global_dto).setup_before_optimization()
+            convert_dto_to_global_vars(self, global_dto)
+        else:
+            optimization_dto = self.optimization_dto
                
         while np.any(optimization_dto["capacity_overload_mask"], where=True):
 
@@ -221,6 +236,8 @@ class Main:
                 continue
             elif len(command) == 2 and command[0].startswith("<LOAD>"):
                 return command
+            elif "SEQUENTIAL END" in command:
+                return global_dto, optimization_dto
 
             global_dto = convert_global_vars_to_dto(self)
             optimization_dto, global_dto = EvaluateSolution(global_dto).evaluate_solution(optimization_dto)

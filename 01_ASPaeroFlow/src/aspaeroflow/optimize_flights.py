@@ -65,6 +65,7 @@ class OptimizeFlights:
                  optimizer = "ASP",
                  max_number_sectors = -1,
                  convex_sectors = 0,
+                 sequential_execution = False
                  ):
 
         self.capacity_management_enabled = capacity_management_enabled
@@ -114,6 +115,8 @@ class OptimizeFlights:
         self.max_vertices_cutoff_value = max_vertices_cutoff_value
         self.max_delay_parameter = max_delay_parameter
         self.original_max_time = original_max_time
+
+        self._sequential_execution = sequential_execution
  
     def start(self):
 
@@ -205,7 +208,6 @@ class OptimizeFlights:
             paths = self.k_diverse_near_shortest_paths(unit_graphs[airplane_speed_kts], origin, destination, self.nearest_neighbors_lookup[airplane_speed_kts],
                                                 k=k, eps=0.1, jaccard_max=0.6, penalty_scale=0.1, max_tries=50, weight_key="weight",
                                                 filed_path=list(filed_flight_path[:,1]))
-            
 
             path_number = 0
 
@@ -217,10 +219,16 @@ class OptimizeFlights:
 
             for path in paths:
 
-                navpoint_trajectory = self.get_flight_navpoint_trajectory(flights_affected, networkx_graph, flight_index, actual_flight_departure_time, airplane_speed_kts, path, timestep_granularity)
+                if self._sequential_execution is True and path_number >= 1:
+                    break
 
+                navpoint_trajectory = self.get_flight_navpoint_trajectory(flights_affected, networkx_graph, flight_index, actual_flight_departure_time, airplane_speed_kts, path, timestep_granularity)
+                
                 for delay in range(additional_time_increase * time_window,time_window * (additional_time_increase + 1)):
-                    
+ 
+                    if self._sequential_execution is True and path_number >= 1:
+                        break                   
+
                     if self._optimizer == "Enumerate":
                         flight_path_dict[flight_index][path_number] = {
                             "navpoint_flight" : [],
@@ -477,7 +485,6 @@ class OptimizeFlights:
                     path_number += 1
 
             path_fact_instances.append(f"paths({flight_index},0..{path_number - 1}).")
-
 
         # 1.) Get config for sector sector_index and time_index
         #   a.) Check out what we can do with this sector
@@ -928,7 +935,8 @@ class OptimizeFlights:
 
         encoding = self.encoding
 
-        #open(f"20260524_test_instance_{self.iteration}_{time_index}_{sector_index}_{additional_time_increase}.lp","w").write(instance)
+        open(f"20260524_test_instance_{self.iteration}_{time_index}_{sector_index}_{additional_time_increase}.lp","w").write(instance)
+
 
         if self.verbosity == 3:
             open(f"20250410_test_instance_{additional_time_increase}.lp","w").write(instance)

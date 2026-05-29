@@ -65,6 +65,7 @@ class IterationStep:
         system_loads = optimization_dto["system_loads"]
         capacity_time_matrix = optimization_dto["capacity_time_matrix"]
         original_converted_instance_matrix = optimization_dto["original_converted_instance_matrix"]
+        original_converted_navpoint_matrix = optimization_dto["original_converted_navpoint_matrix"]
         original_navaid_sector_time_assignment = optimization_dto["original_navaid_sector_time_assignment"]
         capacity_demand_diff_matrix = optimization_dto["capacity_demand_diff_matrix"]
         capacity_overload_mask = optimization_dto["capacity_overload_mask"]
@@ -94,6 +95,9 @@ class IterationStep:
         iteration_backup = optimization_dto["iteration_backup"] 
         controller_sector_diff_dict = optimization_dto["controller_sector_diff_dict"] 
         default_number_capacity_management_configs = optimization_dto["default_number_capacity_management_configs"]
+
+
+        additional_return_parameters = []
 
         if self._explainability_context is None:
             if self._controller_enabled is True:
@@ -229,6 +233,8 @@ class IterationStep:
 
             start_time = time.time()
 
+            if len(time_bucket_tuples) == 0:
+                additional_return_parameters.append("SEQUENTIAL END")
 
             controller_sector_diff_dict = {}
 
@@ -239,6 +245,8 @@ class IterationStep:
                 time_bucket_updated = time_index
 
                 #print(capacity_demand_diff_matrix[sector_index, time_index])
+
+                self._sequential_execution_candidate_dict[(time_index,sector_index)] = True
                 
                 #_, _, flight_durations = self.flight_spans_contiguous(converted_instance_matrix, fill_value=-1)
                 job, candidates = self.build_job(time_index, sector_index, converted_instance_matrix, converted_navpoint_matrix,
@@ -247,7 +255,8 @@ class IterationStep:
                                 max_number_airplanes_considered_in_ASP, max_number_processors, original_max_time,
                                 self.networkx_navpoint_graph, self.unit_graphs, planned_arrival_times, self.airplane_flight,
                                 self.airplanes, navaid_sector_time_assignment, flight_durations,
-                                iteration, self.sector_capacity_factor, self.flights
+                                iteration, self.sector_capacity_factor, self.flights,
+                                self._sequential_execution
                                 )
 
                 controller_sector_diff_dict["time_index"] = int(time_index)
@@ -310,6 +319,7 @@ class IterationStep:
         optimization_dto["system_loads"] = system_loads
         optimization_dto["capacity_time_matrix"] = capacity_time_matrix
         optimization_dto["original_converted_instance_matrix"] = original_converted_instance_matrix
+        optimization_dto["original_converted_navpoint_matrix"] = original_converted_navpoint_matrix
         optimization_dto["original_navaid_sector_time_assignment"] = original_navaid_sector_time_assignment
         optimization_dto["capacity_demand_diff_matrix"] = capacity_demand_diff_matrix
         optimization_dto["capacity_overload_mask"] = capacity_overload_mask
@@ -340,7 +350,12 @@ class IterationStep:
         optimization_dto["sector_index"] = sector_index
 
         global_dto = convert_global_vars_to_dto(self)
-        return optimization_dto, global_dto, ""
+
+        last_return_string = ""
+        for parameter in additional_return_parameters:
+            last_return_string += parameter + ","
+
+        return optimization_dto, global_dto, last_return_string
 
     def first_overload(self, mask: np.ndarray):
         """
@@ -382,9 +397,10 @@ class IterationStep:
         for t in time_candidates:
             buckets = np.flatnonzero(mask[:, t])
             for b in buckets:
-                results.append((t, b))
-                if len(results) == k:
-                    return results
+                if self._sequential_execution is False or (t,b) not in self._sequential_execution_candidate_dict:
+                    results.append((t, b))
+                    if len(results) == k:
+                        return results
         return results 
 
     def build_job(self, time_index: int,
@@ -409,6 +425,7 @@ class IterationStep:
                 iteration,
                 sector_capacity_factor,
                 filed_flights,
+                sequential_execution
                 ):
         """
         Split the candidate rows into *n_proc* equally‑sized chunks
@@ -534,6 +551,7 @@ class IterationStep:
                                     self._optimizer,
                                     self.max_number_sectors,
                                     self._convex_sectors,
+                                    sequential_execution,
                                     )
 
         return job, rows_pool

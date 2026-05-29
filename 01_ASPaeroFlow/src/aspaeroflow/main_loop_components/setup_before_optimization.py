@@ -219,6 +219,7 @@ class SetupBeforeOptimization:
                 np.savetxt("20250826_initial_instance.csv", converted_instance_matrix,delimiter=",",fmt="%i")
 
             original_converted_instance_matrix = converted_instance_matrix.copy()
+            original_converted_navpoint_matrix = converted_navpoint_matrix.copy()
             original_navaid_sector_time_assignment = navaid_sector_time_assignment.copy()
 
             original_max_explored_vertices = self._max_explored_vertices
@@ -458,6 +459,7 @@ class SetupBeforeOptimization:
             system_loads = decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["SYSTEM-LOADS"])
             capacity_time_matrix = decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["CAPACITY-TIME-MATRIX"])
 
+            original_converted_navpoint_matrix = decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["ORIGINAL-CONVERTED-NAVPOINT-MATRIX"])
             original_converted_instance_matrix = decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["ORIGINAL-CONVERTED-INSTANCE-MATRIX"])
             original_navaid_sector_time_assignment = decode_ndarray(self._explainability_context["ITERATION-BACKUP"]["ORIGINAL-NAVAID-SECTOR-TIME-ASSIGNMENT"])
 
@@ -491,6 +493,7 @@ class SetupBeforeOptimization:
         optimization_dto["system_loads"] = system_loads
         optimization_dto["capacity_time_matrix"] = capacity_time_matrix
         optimization_dto["original_converted_instance_matrix"] = original_converted_instance_matrix
+        optimization_dto["original_converted_navpoint_matrix"] = original_converted_navpoint_matrix
         optimization_dto["original_navaid_sector_time_assignment"] = original_navaid_sector_time_assignment
         optimization_dto["capacity_demand_diff_matrix"] = capacity_demand_diff_matrix
         optimization_dto["capacity_overload_mask"] = capacity_overload_mask
@@ -518,6 +521,8 @@ class SetupBeforeOptimization:
         optimization_dto["iteration_backup"] = None
         optimization_dto["controller_sector_diff_dict"] = None
         optimization_dto["sector_index"] = None
+
+        self._sequential_execution_candidate_dict = {}
 
         global_dto = convert_global_vars_to_dto(self)
 

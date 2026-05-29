@@ -48,6 +48,7 @@ class EvaluateSolution:
         system_loads = optimization_dto["system_loads"]
         capacity_time_matrix = optimization_dto["capacity_time_matrix"]
         original_converted_instance_matrix = optimization_dto["original_converted_instance_matrix"]
+        original_converted_navpoint_matrix = optimization_dto["original_converted_navpoint_matrix"]
         original_navaid_sector_time_assignment = optimization_dto["original_navaid_sector_time_assignment"]
         capacity_demand_diff_matrix = optimization_dto["capacity_demand_diff_matrix"]
         capacity_overload_mask = optimization_dto["capacity_overload_mask"]
@@ -369,7 +370,7 @@ class EvaluateSolution:
         # HEURISTIC SELECTION OF COMPLEXITY OF TASK
         # -----------------------------------------------------------------------------
         if number_of_conflicts is not None and number_of_conflicts_prev is not None and self._explainability_context is None:
-            if number_of_conflicts >= number_of_conflicts_prev:
+            if number_of_conflicts >= number_of_conflicts_prev and self._sequential_execution is False:
                 controller_sector_diff_dict["accepted_solution"] = False
 
                 counter_equal_solutions += 1
@@ -467,7 +468,8 @@ class EvaluateSolution:
         number_sector_reconfigurations = np.count_nonzero(navaid_sector_time_assignment != tmp_navaid_sector_time_assignment)
 
         original_max_time_converted = original_converted_instance_matrix.shape[1]  # original_max_time
-        rerouted_mask = np.any(converted_instance_matrix[:, :original_max_time_converted] != original_converted_instance_matrix, axis=1)     # True if flight differs anywhere
+        #rerouted_mask = np.any(converted_instance_matrix[:, :original_max_time_converted] != original_converted_instance_matrix, axis=1)     # True if flight differs anywhere
+        rerouted_mask = np.any(converted_navpoint_matrix[:, :original_max_time_converted] != original_converted_navpoint_matrix, axis=1)     # True if flight differs anywhere
         number_reroutes = int(np.count_nonzero(rerouted_mask))
 
         if self._controller_enabled is True:
@@ -559,6 +561,7 @@ current_time -> {int(time_bucket_updated)}
         optimization_dto["system_loads"] = system_loads
         optimization_dto["capacity_time_matrix"] = capacity_time_matrix
         optimization_dto["original_converted_instance_matrix"] = original_converted_instance_matrix
+        optimization_dto["original_converted_navpoint_matrix"] = original_converted_navpoint_matrix
         optimization_dto["original_navaid_sector_time_assignment"] = original_navaid_sector_time_assignment
         optimization_dto["capacity_demand_diff_matrix"] = capacity_demand_diff_matrix
         optimization_dto["capacity_overload_mask"] = capacity_overload_mask

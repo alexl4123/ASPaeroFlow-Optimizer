@@ -46,6 +46,7 @@ class AfterOptimization:
         system_loads = optimization_dto["system_loads"]
         capacity_time_matrix = optimization_dto["capacity_time_matrix"]
         original_converted_instance_matrix = optimization_dto["original_converted_instance_matrix"]
+        original_converted_navpoint_matrix = optimization_dto["original_converted_navpoint_matrix"]
         original_navaid_sector_time_assignment = optimization_dto["original_navaid_sector_time_assignment"]
         capacity_demand_diff_matrix = optimization_dto["capacity_demand_diff_matrix"]
         capacity_overload_mask = optimization_dto["capacity_overload_mask"]
@@ -114,7 +115,8 @@ class AfterOptimization:
         number_sector_reconfigurations = np.count_nonzero(navaid_sector_time_assignment != tmp_navaid_sector_time_assignment)
 
         original_max_time_converted = original_converted_instance_matrix.shape[1]  # original_max_time
-        rerouted_mask = np.any(converted_instance_matrix[:, :original_max_time_converted] != original_converted_instance_matrix, axis=1)     # True if flight differs anywhere
+        rerouted_mask = np.any(converted_navpoint_matrix[:, :original_max_time_converted] != original_converted_navpoint_matrix, axis=1)     # True if flight differs anywhere
+        #rerouted_mask = np.any(converted_instance_matrix[:, :original_max_time_converted] != original_converted_instance_matrix, axis=1)     # True if flight differs anywhere
         number_reroutes = int(np.count_nonzero(rerouted_mask))
 
         if self._wandb_log is not None:
