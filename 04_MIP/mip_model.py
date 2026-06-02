@@ -360,20 +360,32 @@ class MIPModel:
                 # Origin
                 t_slot = current_time
 
-                if t_slot >= flights_affected.shape[1]:
-                    raise Exception("In optimize_flights max time exceeded current allowed time.")
+                #if t_slot >= flights_affected.shape[1]:
+                #    raise Exception("In optimize_flights max time exceeded current allowed time.")
 
             else:
                 # En-route/destination
                 prev_vertex = path[hop -1]
-                duration_in_unit_standards = networkx_graph[prev_vertex][vertex]["weight"]
+                #print(f"prev_vertex:{prev_vertex},vertex:{vertex}")
+                distance = networkx_graph[prev_vertex][vertex]["weight"]
+
+                # CONVERT SPEED TO m/s
+                airplane_speed_ms = airplane_speed_kts * 0.51444
+
+                # Compute duration from prev to vertex in unit time:
+                duration_in_seconds = distance/airplane_speed_ms
+                factor_to_unit_standard = 3600.00 / float(timestep_granularity)
+                duration_in_unit_standards = math.ceil(duration_in_seconds / factor_to_unit_standard)
+
+                if duration_in_unit_standards == 0:
+                    duration_in_unit_standards = 1
 
                 current_time = current_time + duration_in_unit_standards
 
                 t_slot=current_time
 
-                if t_slot >= flights_affected.shape[1]:
-                    raise Exception("In optimize_flights max time exceeded current allowed time.")
+                #if t_slot >= flights_affected.shape[1]:
+                #    raise Exception("In optimize_flights max time exceeded current allowed time.")
 
             traj.append((flight_index, vertex, t_slot))
 
