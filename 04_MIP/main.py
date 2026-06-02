@@ -251,6 +251,7 @@ class Main:
         start_time = time.time()
         
         original_converted_instance_matrix = converted_instance_matrix.copy()
+        original_converted_navpoint_matrix = converted_navpoint_matrix.copy()
         old_navaid_sector_time_assignment = navaid_sector_time_assignment.copy()
 
 
@@ -268,7 +269,7 @@ class Main:
         output_dict["TOTAL-TIME-TO-THIS-POINT"] =  int(current_time)
         output_dict["COMPUTATION-FINISHED"] = False
         output_string = json.dumps(output_dict)
-        print(output_string)
+        print(output_string, flush=True)
 
 
 
@@ -301,7 +302,8 @@ class Main:
             sector_diff = np.count_nonzero(navaid_sector_time_assignment[:, 1:] != navaid_sector_time_assignment[:, :-1])
 
             original_max_time_converted = original_converted_instance_matrix.shape[1]  # original_max_time
-            rerouted_mask = np.any(converted_instance_matrix[:, :original_max_time_converted] != original_converted_instance_matrix, axis=1)     # True if flight differs anywhere
+            #rerouted_mask = np.any(converted_instance_matrix[:, :original_max_time_converted] != original_converted_instance_matrix, axis=1)     # True if flight differs anywhere
+            rerouted_mask = np.any(converted_navpoint_matrix[:, :original_max_time_converted] != original_converted_navpoint_matrix, axis=1)     # True if flight differs anywhere
             number_reroutes = int(np.count_nonzero(rerouted_mask))
             number_sector_reconfigurations = np.count_nonzero(navaid_sector_time_assignment != old_navaid_sector_time_assignment)
         else:
@@ -324,7 +326,7 @@ class Main:
         output_dict["TOTAL-TIME-TO-THIS-POINT"] =  int(current_time)
         output_dict["COMPUTATION-FINISHED"] = True
         output_string = json.dumps(output_dict)
-        print(output_string)
+        print(output_string, flush=True)
 
         end_time = time.time()
         if self.verbosity > 0:
