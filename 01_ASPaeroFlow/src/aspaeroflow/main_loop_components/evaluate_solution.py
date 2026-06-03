@@ -417,7 +417,7 @@ class EvaluateSolution:
                 number_of_conflicts_prev = number_of_conflicts
 
 
-            else:
+            elif number_of_conflicts < number_of_conflicts_prev:
                 if self.verbosity > 1:
                     print(f">> ACCEPT SOLUTION| OLD = {number_of_conflicts_prev} > {number_of_conflicts} = NEW")
 
