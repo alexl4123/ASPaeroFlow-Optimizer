@@ -12,7 +12,6 @@ all_flightID(ID) :- navpoint_flight(ID,_,_).
 1{chosen_path(ID,P):paths(ID,P)}1 :- flightID(ID).
 
 reroute(ID) :- flightID(ID), not chosen_path(ID,0).
-reconfigure_sectors(CONFIG) :- chosen_config(CONFIG), CONFIG > 0.
 
 % GET CHOSEN SECTORS:
 navpoint_sector_assignment(NAV,SEC,TIME) :- chosen_config(CONFIG), possible_assignment(NAV,SEC,TIME,CONFIG).

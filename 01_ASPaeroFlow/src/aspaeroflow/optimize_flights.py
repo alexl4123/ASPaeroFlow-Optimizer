@@ -141,7 +141,6 @@ class OptimizeFlights:
         max_delay_parameter = self.max_delay_parameter
 
         flight_navpoint_instance = []
-        flight_times_instance = []
         
         needed_capacities_for_navpoint = {}
 
@@ -152,7 +151,6 @@ class OptimizeFlights:
         path_fact_instances = []
 
         planned_departure_time_instance = []
-        actual_departure_time_instance = []
         planned_arrival_time_instance = []
         actual_arrival_time_instance = []
 
@@ -211,7 +209,6 @@ class OptimizeFlights:
 
             path_number = 0
 
-            #actual_departure_time_instance.append(f"actualDepartureTime({airplane_id},{start_time}).")
             planned_arrival_time_instance.append(f"planned_arrival_time({flight_index},{planned_arrival_time}).")
 
             if self._optimizer == "Enumerate":
@@ -899,7 +896,6 @@ class OptimizeFlights:
         planned_arrival_time_instance = sorted(list(set(planned_arrival_time_instance)))
 
         flight_navpoint_instance = "\n".join(flight_navpoint_instance)
-        flight_times_instance = "\n".join(flight_times_instance)
 
         path_fact_instances = "\n".join(path_fact_instances)
 
@@ -913,7 +909,6 @@ class OptimizeFlights:
 
 
         planned_departure_time_instance = "\n".join(planned_departure_time_instance)
-        actual_departure_time_instance = "\n".join(actual_departure_time_instance)
         planned_arrival_time_instance = "\n".join(planned_arrival_time_instance)
         actual_arrival_time_instance = "\n".join(actual_arrival_time_instance)
 
@@ -922,7 +917,6 @@ class OptimizeFlights:
 {flight_navpoint_instance}
 {path_fact_instances}
 {planned_departure_time_instance}
-{actual_departure_time_instance}
 {planned_arrival_time_instance}
 {actual_arrival_time_instance}
 {sector_config_instance}
@@ -935,7 +929,7 @@ class OptimizeFlights:
 
         encoding = self.encoding
 
-        open(f"20260524_test_instance_{self.iteration}_{time_index}_{sector_index}_{additional_time_increase}.lp","w").write(instance)
+        #open(f"20260524_test_instance_{self.iteration}_{time_index}_{sector_index}_{additional_time_increase}.lp","w").write(instance)
 
 
         if self.verbosity == 3:
@@ -1513,28 +1507,7 @@ class OptimizeFlights:
                 break
 
         return timed_capacities
-
-    def create_filed_flight_plan_atoms(self, flight_sector_instance, flight_times_instance, sector_instance, graph_instance, flight_index, flight_affected, capacity_demand_diff_matrix, start_time, default_filed_path_number = 0):
-
-        for tmp_index in range(0,flight_affected.shape[0]):
-
-            current_sector = flight_affected[tmp_index]
-
-            flight_sector_instance.append(f"sectorFlight({flight_index},{tmp_index},{current_sector},{default_filed_path_number}).")
-            flight_times_instance.append(f"flightTime({flight_index},{tmp_index}).")
-
-            current_time = tmp_index + start_time
-
-            sector_instance.append(f"sector({current_sector},{current_time},{capacity_demand_diff_matrix[current_sector,current_time]}).")
-
-            if tmp_index > 0:
-                graph_instance.append(f"sectorEdge({flight_affected[tmp_index - 1]},{current_sector}).")
-            else:
-                graph_instance.append(f"sectorEdge({current_sector},{current_sector}).")
-
-
-        return flight_sector_instance, flight_times_instance, sector_instance, graph_instance
-    
+   
     def restrict_max_vertices(self, prev_vertices, vertex_ids, matching_vertices, flight_affected, from_origin_time, delay):
 
         max_vertices_cutoff_value = self.max_vertices_cutoff_value
