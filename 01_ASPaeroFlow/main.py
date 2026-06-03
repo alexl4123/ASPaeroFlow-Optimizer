@@ -737,52 +737,59 @@ def main(argv: Optional[List[str]] = None) -> None:
                     args.sequential_execution
                     )
             global_dto, optimization_dto = app.run()
-            
-            capacity_management_configs = 1
-            capacity_management_enabled = "False"
 
-            app = Main(args.graph_path, args.sectors_path, args.flights_path,
-                    args.airports_path, args.airplanes_path,
-                    args.airplane_flight_path, args.navaid_sector_path,
-                    args.encoding_path,
-                    args.seed, args.number_threads, args.timestep_granularity,
-                    args.max_explored_vertices, args.max_delay_per_iteration,
-                    args.max_time, args.verbosity,
-                    args.sector_capacity_factor,
-                    capacity_management_configs,
-                    capacity_management_enabled,
-                    composite_sector_function,
-                    experiment_name,
-                    wandb_log,
-                    args.optimizer, args.max_number_navpoints_per_sector, args.max_number_sectors, args.minimize_number_sectors,
-                    args.convex_sectors,
-                    control_context, control_ctrl_socket, control_pub_socket, control_poller, 
-                    args.controller_enabled, args.data_dir,
-                    args.max_considered_aircraft,
-                    explainability_context,
-                    False,
-                    injected_data=True
-                    )
 
-            app.inject_global_dto(global_dto)
-            app.injected_data = True
-            app._sequential_execution = False
-            app.capacity_management_enabled = False
-            app.number_capacity_management_configs = 1
-            if args.max_delay_per_iteration < 0:
-                app._max_delay_per_iteration = 20
+            if isinstance(global_dto, str) and isinstance(optimization_dto, str) and global_dto == "fin" and optimization_dto == "fin":
+                # ALREADY DONE
+                key, value = global_dto, optimization_dto
+
             else:
-                app._max_delay_per_iteration = args.max_delay_per_iteration
-            app.max_considered_aircraft = args.max_considered_aircraft
-            app._max_explored_vertices = args.max_explored_vertices
+                
+                capacity_management_configs = 1
+                capacity_management_enabled = "False"
 
-            optimization_dto["counter_equal_solutions"] = 0
-            optimization_dto["additional_time_increase"] = 0
-            optimization_dto["original_max_explored_vertices"] = args.max_explored_vertices
+                app = Main(args.graph_path, args.sectors_path, args.flights_path,
+                        args.airports_path, args.airplanes_path,
+                        args.airplane_flight_path, args.navaid_sector_path,
+                        args.encoding_path,
+                        args.seed, args.number_threads, args.timestep_granularity,
+                        args.max_explored_vertices, args.max_delay_per_iteration,
+                        args.max_time, args.verbosity,
+                        args.sector_capacity_factor,
+                        capacity_management_configs,
+                        capacity_management_enabled,
+                        composite_sector_function,
+                        experiment_name,
+                        wandb_log,
+                        args.optimizer, args.max_number_navpoints_per_sector, args.max_number_sectors, args.minimize_number_sectors,
+                        args.convex_sectors,
+                        control_context, control_ctrl_socket, control_pub_socket, control_poller, 
+                        args.controller_enabled, args.data_dir,
+                        args.max_considered_aircraft,
+                        explainability_context,
+                        False,
+                        injected_data=True
+                        )
 
-            app.inject_optimization_dto(optimization_dto)
-            
-            key, value = app.run()
+                app.inject_global_dto(global_dto)
+                app.injected_data = True
+                app._sequential_execution = False
+                app.capacity_management_enabled = False
+                app.number_capacity_management_configs = 1
+                if args.max_delay_per_iteration < 0:
+                    app._max_delay_per_iteration = 20
+                else:
+                    app._max_delay_per_iteration = args.max_delay_per_iteration
+                app.max_considered_aircraft = args.max_considered_aircraft
+                app._max_explored_vertices = args.max_explored_vertices
+
+                optimization_dto["counter_equal_solutions"] = 0
+                optimization_dto["additional_time_increase"] = 0
+                optimization_dto["original_max_explored_vertices"] = args.max_explored_vertices
+
+                app.inject_optimization_dto(optimization_dto)
+                
+                key, value = app.run()
 
         if args.controller_enabled is True:
             if key != "<LOAD>":
