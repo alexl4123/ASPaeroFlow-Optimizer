@@ -1015,7 +1015,7 @@ class MIPModel:
             #print(considered_rows_tmp)
 
             considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["V"]==destination)]
-            actual_delay = max_delay
+            actual_delay = max(all_flight_navpoint_dict[flight].keys())
 
             for _,row in considered_rows.iterrows():
 
