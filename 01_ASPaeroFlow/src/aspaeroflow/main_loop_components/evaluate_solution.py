@@ -441,6 +441,24 @@ class EvaluateSolution:
                     if self.verbosity > 1:
                         print(f">>> RESET PROCESSOR COUNT TO:{max_number_processors}; AIRPLANES TO: {max_number_airplanes_considered_in_ASP}")
 
+            else: # self._sequential_execution is True:
+                controller_sector_diff_dict["accepted_solution"] = False
+
+                navaid_sector_time_assignment = old_navaid_sector_time_assignment.copy()
+                converted_instance_matrix = old_converted_instance.copy()
+                converted_navpoint_matrix = old_converted_navpoint_matrix.copy()
+
+                system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+
+                capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor, composite_sector_function=self.composite_sector_function)
+                #capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, z = self.sector_capacity_factor)
+                capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+                capacity_overload_mask = capacity_demand_diff_matrix < 0
+
+                # Ensure: number_of_conflicts == number_of_conflicts_prev
+                number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
+                number_of_conflicts_prev = number_of_conflicts
+
         elif self._explainability_context is not None:
             controller_sector_diff_dict["accepted_solution"] = True
 
