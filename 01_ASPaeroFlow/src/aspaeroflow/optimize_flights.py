@@ -1361,19 +1361,28 @@ class OptimizeFlights:
             else:
                 # En-route/destination
                 prev_vertex = path[hop -1]
-                #print(f"prev_vertex:{prev_vertex},vertex:{vertex}")
                 distance = networkx_graph[prev_vertex][vertex]["weight"]
 
-                # CONVERT SPEED TO m/s
                 airplane_speed_ms = airplane_speed_kts * 0.51444
-
-                # Compute duration from prev to vertex in unit time:
                 duration_in_seconds = distance/airplane_speed_ms
                 factor_to_unit_standard = 3600.00 / float(timestep_granularity)
                 duration_in_unit_standards = math.ceil(duration_in_seconds / factor_to_unit_standard)
+                duration_in_unit_standards = max(duration_in_unit_standards, 1)
 
-                if duration_in_unit_standards == 0:
-                    duration_in_unit_standards = 1
+                """
+                def _slot_seconds(time_granularity: int) -> float:
+                    # factor_to_unit_standard = 3600 / time_granularity
+                    return 3600.0 / float(time_granularity)
+
+                airplane_speed_ms = float(airplane_speed_kts) * 0.51444
+                if airplane_speed_ms <= 0:
+                    return 1  # defensive
+                duration_seconds = float(distance) / airplane_speed_ms
+                slot_sec = _slot_seconds(timestep_granularity)
+                duration_in_unit_standards = int(math.ceil(duration_seconds / slot_sec))
+                duration_in_unit_standards = max(duration_in_unit_standards, 1)
+                """
+
 
                 current_time = current_time + duration_in_unit_standards
 
