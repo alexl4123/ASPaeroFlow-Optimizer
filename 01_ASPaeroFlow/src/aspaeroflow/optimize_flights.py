@@ -631,8 +631,6 @@ class OptimizeFlights:
 
                 parts = tmp_parts
 
-                self.max_number_sectors 
-
                 #if self.verbosity > 2:
                 #    print(parts)
 

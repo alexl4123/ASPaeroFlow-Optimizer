@@ -738,9 +738,6 @@ class MIPModel:
             model.addConstr(1 <= gp.quicksum(start_variables))
             model.addConstr(gp.quicksum(start_variables) <= 1)
 
-
-
-
     def add_valid_inequalities(self, model: gp.Model, flight_variables_pd, converted_instance_matrix,
                                                           edge_distances, max_delay, fill_value = -1):
 
@@ -870,8 +867,6 @@ class MIPModel:
 
         model.setObjectiveN(gp.quicksum(arrival_delay_optimization_variables), index=1, priority=10)
 
-
-
         last_t = {"t": -1e100}
 
 
@@ -943,7 +938,6 @@ class MIPModel:
                 output_string = json.dumps(output_dict)
                 print(output_string)
 
-
                 #print(converted_instance_matrix_tmp)
                 #print(converted_navpoint_matrix_tmp)
 
@@ -1014,9 +1008,10 @@ class MIPModel:
             #considered_rows_tmp = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd['V']==origin)&(flight_variables_pd['T']==start_time)]
             #print(considered_rows_tmp)
 
-            considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["V"]==destination)]
+            considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["V"]==origin)]
             actual_delay = max(all_flight_navpoint_dict[flight].keys())
 
+            actual_delay_found = False
             for _,row in considered_rows.iterrows():
 
                 #print(row["obj"])
@@ -1024,6 +1019,11 @@ class MIPModel:
 
                 if model.cbGetSolution(row["obj"]) >= 1:
                     actual_delay = row["D"]
+                    actual_delay_found = True
+
+            if actual_delay_found is False:
+                actual_delay = actual_delay = max(all_flight_navpoint_dict[flight].keys())
+                
 
             for navaid, current_time in all_flight_navpoint_dict[flight][actual_delay].items():
                 converted_navpoint_matrix[flight,current_time] = navaid
@@ -1031,17 +1031,8 @@ class MIPModel:
             considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]==actual_delay)]
 
             for _,row in considered_rows.iterrows():
-
-                if model.cbGetSolution(row["obj"]) >= 1:
-                    result_matrix[flight,row["T"]] = row["V"]
-
-            """
-            considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["V"]==origin)&(flight_variables_pd["D"]<actual_delay)]
-
-            for _,row in considered_rows.iterrows():
-                if row["obj"].X >= 1:
-                    result_matrix[flight,row["T"]] = row["V"]
-            """
+                #if model.cbGetSolution(row["obj"]) >= 1:
+                result_matrix[flight,row["T"]] = row["V"]
 
         return result_matrix, converted_navpoint_matrix
 
@@ -1077,7 +1068,7 @@ class MIPModel:
             #considered_rows_tmp = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd['V']==origin)&(flight_variables_pd['T']==start_time)]
             #print(considered_rows_tmp)
 
-            considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["V"]==destination)]
+            considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["V"]==origin)]
             actual_delay = max(all_flight_navpoint_dict[flight].keys())
 
             for _,row in considered_rows.iterrows():
@@ -1090,18 +1081,11 @@ class MIPModel:
         
             considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["D"]==actual_delay)]
 
+            actual_result_found = False
             for _,row in considered_rows.iterrows():
 
-                if row["obj"].X >= 1:
-                    result_matrix[flight,row["T"]] = row["V"]
-
-            """
-            considered_rows = flight_variables_pd.loc[(flight_variables_pd["F"]==flight)&(flight_variables_pd["V"]==origin)&(flight_variables_pd["D"]<actual_delay)]
-
-            for _,row in considered_rows.iterrows():
-                if row["obj"].X >= 1:
-                    result_matrix[flight,row["T"]] = row["V"]
-            """
+                #if row["obj"].X >= 1:
+                result_matrix[flight,row["T"]] = row["V"]
 
         return result_matrix, converted_navpoint_matrix
 
