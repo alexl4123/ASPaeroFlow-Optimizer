@@ -243,6 +243,18 @@ class Main:
             optimization_dto, global_dto = EvaluateSolution(global_dto).evaluate_solution(optimization_dto)
             convert_dto_to_global_vars(self, global_dto)
 
+            # Termination assurance:
+            additional_time_increase = optimization_dto["additional_time_increase"]
+            converted_instance_matrix = optimization_dto["converted_instance_matrix"]
+            # Locate column indices of all valid flight positions
+            _, col_indices = np.where(converted_instance_matrix != -1)
+            # Extract the absolute last time position
+            last_flight = col_indices.max()
+            max_number_airplanes_considered_in_ASP = optimization_dto["max_number_airplanes_considered_in_ASP"]
+            if (additional_time_increase-1) * self._max_delay_per_iteration > last_flight and max_number_airplanes_considered_in_ASP == 1:
+                # Terminate if not solvable:
+                break
+
         global_dto = convert_global_vars_to_dto(self)
         r0,r1,global_dto = AfterOptimization(global_dto).post_processing(optimization_dto)
         convert_dto_to_global_vars(self, global_dto)

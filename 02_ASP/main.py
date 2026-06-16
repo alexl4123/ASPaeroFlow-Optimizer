@@ -398,11 +398,13 @@ def main(argv: Optional[List[str]] = None) -> None:
 
 
     model = None
+    original_max_time = max_time
 
 
     while model is None:
 
-        asp_instance = TranslateCSVtoLogicProgram().main(graph_csv, flights_csv, sectors_csv,
+        transalte_to_logic_program = TranslateCSVtoLogicProgram()
+        asp_instance = transalte_to_logic_program.main(graph_csv, flights_csv, sectors_csv,
             airports_csv, airplanes_csv, airplane_flight_csv, navaid_sector_csv, encoding_path, timestep_granularity, max_time,
             sector_capacity_factor,
             regulation_ground_delay_active, regulation_rerouting_active, regulation_dynamic_sectorization_active)
@@ -411,7 +413,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         encoding = open(encoding_path, "r").read()
 
-        open("20260214_instance.lp","w").write(instance_asp_atoms)
+        #open("20260214_instance.lp","w").write(instance_asp_atoms)
         
         solver: Model = Solver(encoding, instance_asp_atoms, seed=seed, wandb_log = wandb_log)
         model = solver.solve()
@@ -430,6 +432,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             if regulation_ground_delay_active == 2:
                 max_time += 1
                 model = None
+
+        number_flights = transalte_to_logic_program.airplane_flight.shape[0]
+        if max_time > timestep_granularity * original_max_time * number_flights:
+            break
 
     if verbosity > 0:
         print(f"""

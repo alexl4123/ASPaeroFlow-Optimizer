@@ -1469,30 +1469,6 @@ class OptimizeFlights:
 
         return paths
 
-
-    def handle_sectors_instance_generation(self, capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, delay, from_origin_time, vertex_ids, flight_index, time_window):
-
-        timed_capacities = []
-
-        for additional_time in range(-time_window,time_window * (additional_time_increase + max_delay_parameter + delay)):
-            current_time = start_time + additional_time + from_origin_time
-            if current_time >= self.timestep_granularity * (self.original_max_time + additional_time_increase):
-                break
-            elif current_time < 0:
-                continue
-
-            if current_time >= capacity_demand_diff_matrix.shape[1]:
-                current_time = capacity_demand_diff_matrix.shape[1] - 1
-
-            sector_times = [f"sector({vertex_id},{current_time},{capacity_demand_diff_matrix[vertex_id,current_time]})." for vertex_id in vertex_ids]
-
-            if from_origin_time > 0:
-                if additional_time < -self.timestep_granularity+self.timestep_granularity * additional_time_increase:
-                    sector_times = [f":- flight({flight_index},{current_time},{vertex_id})." for vertex_id in vertex_ids]
-
-            timed_capacities += sector_times
-        return timed_capacities
-
     def handle_origin_sector_instance_generation(self, capacity_demand_diff_matrix, additional_time_increase, max_delay_parameter, start_time, origin, delay, time_window):
 
         timed_capacities = []

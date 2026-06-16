@@ -30,7 +30,7 @@ navpoint_sector(NAV,SEC,T) :- time(T), navpoint_sector(NAV,SEC,0), -regulation_d
 sector_len(SEC,T,CAP_LEN) :- time(T), navpoint(SEC), CAP_LEN = #count{NAV:navpoint_sector(NAV,SEC,T)}.
 sector(SEC,T,0) :- sector_len(SEC,T,CAP_LEN), CAP_LEN = 0. 
 sector(SEC,T,C) :- time(T), navpoint(SEC), C = #max{C',NAV:navpoint_sector(NAV,SEC,T),atomic_sector(NAV,C',T)}, sector_len(SEC,T,CAP_LEN), CAP_LEN > 0.
-sector_number(T,NUM) :- time(T), NUM = #count{SEC:sector(SEC,T,C), C > 0}.
+sector_number(T,NUM) :- time(T), NUM = #count{SEC:sector_len(SEC,T,C), C > 0}.
 
 % MINIMIZE NAVPOINT-SECTOR ASSIGNMENT CHANGES:
 navpoint_changed(NAV,T,1) :- navpoint_sector(NAV,SEC0,T), navpoint_sector(NAV,SEC1,T+1), SEC0 != SEC1.
