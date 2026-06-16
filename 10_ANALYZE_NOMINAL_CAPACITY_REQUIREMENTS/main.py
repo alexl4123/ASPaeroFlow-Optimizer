@@ -1098,7 +1098,8 @@ class Main:
 
             # --- 3. compute delays --------------------------------------------------------
             # Flights that disappear completely (-1 in *both* files) get a delay of 0
-            delay = np.where(t_init >= 0, t_final - t_init, 0)          # shape (|I|,)
+            delay = np.where(t_init >= 0, np.maximum(0, t_final - t_init), 0)
+
 
             # --- 4. aggregate in whichever way you need -----------------------------------
             total_delay  = delay.sum()
@@ -1206,7 +1207,7 @@ class Main:
 
         # --- 3. compute delays --------------------------------------------------------
         # Flights that disappear completely (-1 in *both* files) get a delay of 0
-        delay = np.where(t_init >= 0, t_final - t_init, 0)          # shape (|I|,)
+        delay = np.where(t_init >= 0, np.maximum(0, t_final - t_init), 0)
 
         # --- 4. aggregate in whichever way you need -----------------------------------
         total_delay  = delay.sum()

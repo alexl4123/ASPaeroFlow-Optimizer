@@ -149,7 +149,7 @@ class MIPModel:
                 if diff_tmp > 0:
                     self.navaid_sector_time_assignment = np.hstack([self.navaid_sector_time_assignment, np.repeat(self.navaid_sector_time_assignment[:, [-1]], diff_tmp, axis=1)])
 
-                delay = np.where(t_init >= 0, t_final - t_init, 0)          # shape (|I|,)
+                delay = np.where(t_init >= 0, np.maximum(0, t_final - t_init), 0)
                 system_loads = MIPModel.bucket_histogram(converted_instance_matrix_tmp, self.sectors, self.sectors.shape[0], converted_instance_matrix_tmp.shape[1], self._timestep_granularity)
                 capacity_time_matrix = MIPModel.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, self.navaid_sector_time_assignment, z = self._sector_capacity_factor, composite_sector_function=self._composite_sector_function)
                 capacity_demand_diff_matrix = capacity_time_matrix - system_loads
@@ -911,7 +911,7 @@ class MIPModel:
                 if diff_tmp > 0:
                     self.navaid_sector_time_assignment = np.hstack([self.navaid_sector_time_assignment, np.repeat(self.navaid_sector_time_assignment[:, [-1]], diff_tmp, axis=1)])
 
-                delay = np.where(t_init >= 0, t_final - t_init, 0)          # shape (|I|,)
+                delay = np.where(t_init >= 0, np.maximum(0, t_final - t_init), 0)
                 system_loads = MIPModel.bucket_histogram(converted_instance_matrix_tmp, self.sectors, self.sectors.shape[0], converted_instance_matrix_tmp.shape[1], self._timestep_granularity)
                 capacity_time_matrix = MIPModel.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, self.navaid_sector_time_assignment, z = self._sector_capacity_factor, composite_sector_function=self._composite_sector_function)
                 capacity_demand_diff_matrix = capacity_time_matrix - system_loads

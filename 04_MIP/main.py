@@ -285,7 +285,7 @@ class Main:
         old_navaid_sector_time_assignment = np.hstack([old_navaid_sector_time_assignment, np.repeat(old_navaid_sector_time_assignment[:, [-1]], diff_tmp, axis=1)])
 
         if t_final is not None:
-            delay = np.where(t_init >= 0, t_final - t_init, 0)          # shape (|I|,)
+            delay = np.where(t_init >= 0, np.maximum(0, t_final - t_init), 0)
 
             system_loads = MIPModel.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
 

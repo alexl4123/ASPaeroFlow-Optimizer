@@ -45,7 +45,7 @@ flight_occurs(ID) :- sector_flight(ID,_,_).
 :- flightID(ID), not flight_occurs(ID).
 
 
-arrival_delay(ID,Y-T) :- chosen_path(ID,P), planned_arrival_time(ID,T), actual_arrival_time(ID,Y,P).
+arrival_delay(ID,Y-T) :- chosen_path(ID,P), planned_arrival_time(ID,T), actual_arrival_time(ID,Y,P), Y > T.
 
 % ------------- OPTIMIZATION ----------------
 % ------------------------------------------------------------------------------

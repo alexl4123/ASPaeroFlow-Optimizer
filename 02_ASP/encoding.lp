@@ -124,7 +124,7 @@ flightOccurs(ID) :- navpoint_flight(ID,_,_).
 actual_departure_time(ID,TP) :- planned_departure_time(ID,TP), -regulation_delaying.
 
 planned_arrival_time(ID,T) :- flightID(ID), T = #max{T':navpoint_flight_plan(ID,_,T')}.
-arrival_delay(ID,Y-T) :- planned_arrival_time(ID,T), actual_arrival_time(ID,Y).
+arrival_delay(ID,Y-T) :- planned_arrival_time(ID,T), actual_arrival_time(ID,Y), Y > T.
 
 % NO GAPS:
 :- time(T), actual_departure_time(ID,T'), T > T', actual_arrival_time(ID,T''), T < T'', not flight(ID,_,T).

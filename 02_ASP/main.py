@@ -434,7 +434,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                 model = None
 
         number_flights = transalte_to_logic_program.airplane_flight.shape[0]
-        if max_time > timestep_granularity * original_max_time * number_flights:
+        up_bound_by_thm = (timestep_granularity * original_max_time) + int((1/2) * (timestep_granularity * original_max_time)  * number_flights * (number_flights + 1))
+        if max_time > up_bound_by_thm:
             break
 
     if verbosity > 0:
