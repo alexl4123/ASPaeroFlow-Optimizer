@@ -16,6 +16,10 @@ from typing import Any, List, Optional, Final
 from datetime import datetime, timezone
 
 from translate import TranslateCSVtoLogicProgram
+from arrival_delay_bootstrap import (
+    add_cli_argument as add_arrival_delay_metric_argument,
+    asp_metric_fact,
+)
 
 
 AFFIRMATIVE: Final[set[str]] = {"yes", "y"}
@@ -155,6 +159,8 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
                         help="0=no rerouting, 1=restricted rerouting, 2=full dynamic rerouting")
     parser.add_argument("--regulation-dynamic-sectorization", type=int, default=str(C("regulation-dynamic-sectorization", 2)),
                         help="0=no dynamic sectorization, 1=restricted dynamic sectorization, 2=full dynamic sectorization.")
+    add_arrival_delay_metric_argument(parser, default=C("arrival-delay-metric", None))
+
     parser.add_argument("--allow-overloads", type=str, default=str(C("allow-overloads", "false")),
                         help="true/false: Allow solutions with overload constraint violations.")
 
@@ -356,6 +362,8 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     allow_overloads = args.allow_overloads
 
+    arrival_delay_metric = args.arrival_delay_metric
+
     seed = args.seed
 
     timestep_granularity = args.timestep_granularity
@@ -412,6 +420,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         instance_asp_atoms = "\n".join(asp_instance)
 
         encoding = open(encoding_path, "r").read()
+        # Select the arrival-delay metric the encoding should score.
+        encoding += asp_metric_fact(arrival_delay_metric)
 
         #open("20260214_instance.lp","w").write(instance_asp_atoms)
         
@@ -422,7 +432,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             print(f"""
         Result of Answer:
         - Overload: {model.get_total_overload()}
-        - ATFM Delay: {model.get_total_atfm_delay()}
+        - ATFM Delay: {model.get_total_atfm_delay()} (metric: {arrival_delay_metric})
         - Computation time: {model.computation_time}s
         - Rerouted Airplanes: {model.get_rerouted_airplanes()}
             """)
@@ -441,7 +451,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     if verbosity > 0:
         print(f"""
     Result of Answer:
-    - ATFM Delay: {model.get_total_atfm_delay()}
+    - ATFM Delay: {model.get_total_atfm_delay()} (metric: {arrival_delay_metric})
     - Computation time: {model.computation_time}s
     - Rerouted Airplanes: {model.get_rerouted_airplanes()}
         """)

@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+from src.aspaeroflow.arrival_delay_bootstrap import (
+    DEFAULT_ARRIVAL_DELAY_METRIC,
+    apply as apply_arrival_delay_metric,
+    normalise as normalise_arrival_delay_metric,
+)
+
 import time
 import math
 
@@ -65,7 +71,8 @@ class OptimizeFlights:
                  optimizer = "ASP",
                  max_number_sectors = -1,
                  convex_sectors = 0,
-                 sequential_execution = False
+                 sequential_execution = False,
+                 arrival_delay_metric = DEFAULT_ARRIVAL_DELAY_METRIC
                  ):
 
         self.capacity_management_enabled = capacity_management_enabled
@@ -74,6 +81,9 @@ class OptimizeFlights:
 
         self.max_number_sectors = max_number_sectors
         self._optimizer = optimizer
+
+        # How the signed difference t_actarr - t_exparr is scored; see common/arrival_delay.py.
+        self._arrival_delay_metric = normalise_arrival_delay_metric(arrival_delay_metric)
 
         self.encoding = encoding
         self.capacity = capacity
@@ -187,6 +197,9 @@ class OptimizeFlights:
             actual_arrival_time = np.flatnonzero(flight_affected >= 0)[-1] 
 
             planned_arrival_time = self.planned_arrival_times[flight_index]
+            # NOTE: unused. Kept only because the line below documents the intended
+            # departure-time relation. It is the raw signed difference and is deliberately NOT
+            # put through the arrival-delay metric: nothing reads it.
             actual_delay = actual_arrival_time - planned_arrival_time
 
             # TURNAROUND TIME:
@@ -1003,7 +1016,8 @@ class OptimizeFlights:
 
                 planned_arrival_time = flight_path_dict[flight_index][path_number]["planned_arrival_time"]
                 actual_arrival_time = flight_path_dict[flight_index][path_number]["actual_arrival_time"]
-                delay += (actual_arrival_time - planned_arrival_time)
+                delay += apply_arrival_delay_metric(
+                    actual_arrival_time - planned_arrival_time, self._arrival_delay_metric)
 
                 # Affected flights:
 
@@ -1051,7 +1065,8 @@ class OptimizeFlights:
 
                     planned_arrival_time = flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight]["planned_arrival_time"]
                     actual_arrival_time = flight_path_dict[flight_index][path_number]["potential_flights_affected"][potentially_affected_flight]["actual_arrival_time"]
-                    delay += (actual_arrival_time - planned_arrival_time)
+                    delay += apply_arrival_delay_metric(
+                    actual_arrival_time - planned_arrival_time, self._arrival_delay_metric)
 
                 
             capacity_sum = 0
@@ -1883,6 +1898,12 @@ class OptimizeFlights:
     @classmethod
     def _remainder_distribution_table(slc, T: int) -> np.ndarray:
         """
+        UNUSED. Kept for reference only.
+
+        This belongs to the superseded reading of sectors.csv::Capacity as a per-HOUR budget
+        that had to be spread over the T timesteps of the hour. Capacity is per-timestep, so
+        there is no remainder to distribute. Do not wire this back into capacity_time_matrix.
+
         Build a (T+1, T) table where row r gives, for remainder r,
         the number of extra +1 drops that land at each index k∈[0..T-1]
         when stepping by ceil(T/r) and wrapping mod T, for r steps.
@@ -1933,7 +1954,7 @@ class OptimizeFlights:
         Same I/O and validations as before. Now we:
         1) scatter-add to get per-(sector,time) SUM and COUNT,
         2) call cls.compute_sector_capacity(avg, count, z)  <-- explicit rule, vectorized,
-        3) distribute remainder over T slots.
+        3) broadcast the per-timestep capacity across time (no division by T).
         """
         N = cap.shape[0]
         T = int(time_granularity)
@@ -1983,15 +2004,12 @@ class OptimizeFlights:
         total_capacity = cls.compute_sector_capacity(contrib_count, float(z), avg_ = avg,
                                                             max_ = max_atomic, sum_=total_atomic_sum, function = composite_sector_function)
 
-        # ---- 3) Distribute per-block capacity across T slots (unchanged)
-        base = total_capacity // T
-        rem  = total_capacity - base * T
-
-        rem_table = cls._remainder_distribution_table(T)   # (T+1, T)
-        k_mod     = np.arange(n_times, dtype=np.int64) % T
-
-        extra      = rem_table[rem, k_mod[None, :]]
-        sector_cap = (base + extra).astype(np.int64, copy=False)
+        # ---- 3) sectors.csv::Capacity is the capacity of ONE timestep, not of one hour.
+        # The data generator writes the maximum number of flights concurrently present in a
+        # sector in a single timestep (ASPaeroFlow-DataGenerator/06_capacity_sweep.py), so the
+        # value is already expressed in the unit this matrix uses. It is broadcast across time
+        # unchanged: dividing it by T would under-state every capacity by a factor of T.
+        sector_cap = total_capacity.astype(np.int64, copy=False)
 
         return sector_cap
     

@@ -12,6 +12,11 @@ import base64
 import zmq
 
 import numpy as np
+
+from src.aspaeroflow.arrival_delay_bootstrap import (
+    DEFAULT_ARRIVAL_DELAY_METRIC,
+    normalise as normalise_arrival_delay_metric,
+)
 import warnings
 
 import pickle
@@ -114,7 +119,8 @@ class Main:
         max_considered_aircraft = 2,
         explainability_context = None,
         sequential_execution = False,
-        injected_data = False
+        injected_data = False,
+        arrival_delay_metric = DEFAULT_ARRIVAL_DELAY_METRIC
         ) -> None:
 
         self._graph_path: Optional[Path] = graph_path
@@ -142,6 +148,9 @@ class Main:
         self._explainability_context = explainability_context
 
         self._optimizer = optimizer
+
+        # How the signed difference t_actarr - t_exparr is scored; see common/arrival_delay.py.
+        self._arrival_delay_metric = normalise_arrival_delay_metric(arrival_delay_metric)
 
         self._wandb_log = wandb_log
 
@@ -373,28 +382,11 @@ class Main:
 
                 if total_capacity > 0:
 
-                    #total_capacity = np.sum(cap[atomic_sector_boolean_matrix[0],1])
-                    sample_array = np.zeros(((time_granularity)))
-                    per_timestep_capacity = math.floor(total_capacity / time_granularity)
-                    sample_array = sample_array[:] + per_timestep_capacity
-
-                    # rem_cap < time_granularity per construction
-                    rem_cap = total_capacity - (per_timestep_capacity * time_granularity)
-
-
-                    if rem_cap > 0:
-                        step_size = math.ceil(time_granularity / rem_cap)
-                        time_index = 0
-
-                        while rem_cap > 0:
-
-                            sample_array[time_index] += 1
-                            rem_cap -= 1
-
-                            time_index += step_size
-                            time_index = time_index % time_granularity
-
-                    template_matrix[cap_index, timestep_t] = sample_array[timestep_t % time_granularity]
+                    # sectors.csv::Capacity is the capacity of ONE timestep (see
+                    # capacity_time_matrix), so it is used as-is at every t. The previous
+                    # version floored it to total_capacity/time_granularity and spread the
+                    # remainder, which under-stated capacity by a factor of time_granularity.
+                    template_matrix[cap_index, timestep_t] = total_capacity
 
         # DEBUG ONLY:
         np.savetxt("20251004_cap_mat.csv", template_matrix, delimiter=",",fmt="%i")

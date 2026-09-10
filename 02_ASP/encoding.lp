@@ -124,7 +124,29 @@ flightOccurs(ID) :- navpoint_flight(ID,_,_).
 actual_departure_time(ID,TP) :- planned_departure_time(ID,TP), -regulation_delaying.
 
 planned_arrival_time(ID,T) :- flightID(ID), T = #max{T':navpoint_flight_plan(ID,_,T')}.
-arrival_delay(ID,Y-T) :- planned_arrival_time(ID,T), actual_arrival_time(ID,Y), Y > T.
+% ---------------- ARRIVAL DELAY ----------------
+% delta = t_actarr - t_exparr. Which reading of delta is scored is selected at run time by the
+% arrival_delay_metric/1 fact that the Python layer appends to this encoding (see
+% common/arrival_delay.py):
+%   signed    delta            -- the definition used in the publications; an early arrival
+%                                 carries a NEGATIVE weight and offsets lateness. THE DEFAULT.
+%   floored   max(0, delta)    -- lateness only; what this encoding did before the metric existed
+%   absolute  |delta|          -- earliness and lateness penalised equally
+% At most one of the rules below fires per flight, so the weak constraint counts each flight
+% once. If no fact is supplied -- running this encoding by hand with clingo, say -- the default
+% applies, and it is the same default as common/arrival_delay.py: keep the two in step.
+#defined arrival_delay_metric/1.
+arrival_delay_scoring(M) :- arrival_delay_metric(M).
+arrival_delay_scoring(signed) :- not arrival_delay_metric(_).
+
+% `signed` excludes Y = T deliberately: a zero difference contributes nothing to the weak
+% constraint, and omitting it keeps the grounding identical to `floored` on instances with no
+% early arrivals, so the choice of metric cannot perturb the search where it cannot change the
+% score.
+arrival_delay(ID,Y-T) :- arrival_delay_scoring(signed),   planned_arrival_time(ID,T), actual_arrival_time(ID,Y), Y != T.
+arrival_delay(ID,Y-T) :- arrival_delay_scoring(floored),  planned_arrival_time(ID,T), actual_arrival_time(ID,Y), Y > T.
+arrival_delay(ID,Y-T) :- arrival_delay_scoring(absolute), planned_arrival_time(ID,T), actual_arrival_time(ID,Y), Y > T.
+arrival_delay(ID,T-Y) :- arrival_delay_scoring(absolute), planned_arrival_time(ID,T), actual_arrival_time(ID,Y), T > Y.
 
 % NO GAPS:
 :- time(T), actual_departure_time(ID,T'), T > T', actual_arrival_time(ID,T''), T < T'', not flight(ID,_,T).

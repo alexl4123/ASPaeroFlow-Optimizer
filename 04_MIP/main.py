@@ -11,6 +11,13 @@ Extend the :py:meth:`Main.run` method to add your application logic.
 """
 from __future__ import annotations
 
+from arrival_delay_bootstrap import (
+    DEFAULT_ARRIVAL_DELAY_METRIC,
+    add_cli_argument as add_arrival_delay_metric_argument,
+    delay_matrix as arrival_delay_matrix,
+    normalise as normalise_arrival_delay_metric,
+)
+
 import argparse
 import sys
 import time
@@ -104,6 +111,7 @@ class Main:
         verbosity: Optional[int],
         composite_sector_function,
         sector_capacity_factor,
+        arrival_delay_metric=DEFAULT_ARRIVAL_DELAY_METRIC,
     ) -> None:
 
         self._graph_path: Optional[Path] = graph_path
@@ -116,6 +124,9 @@ class Main:
 
         self._composite_sector_function = composite_sector_function
         self._sector_capacity_factor = sector_capacity_factor
+
+        # How the signed difference t_actarr - t_exparr is scored; see common/arrival_delay.py.
+        self._arrival_delay_metric = normalise_arrival_delay_metric(arrival_delay_metric)
 
         self._encoding_path: Optional[Path] = encoding_path
 
@@ -285,7 +296,7 @@ class Main:
         old_navaid_sector_time_assignment = np.hstack([old_navaid_sector_time_assignment, np.repeat(old_navaid_sector_time_assignment[:, [-1]], diff_tmp, axis=1)])
 
         if t_final is not None:
-            delay = np.where(t_init >= 0, np.maximum(0, t_final - t_init), 0)
+            delay = arrival_delay_matrix(t_init, t_final, self._arrival_delay_metric)
 
             system_loads = MIPModel.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
 
@@ -325,6 +336,9 @@ class Main:
         output_dict["RECONFIG"] = int(number_sector_reconfigurations)
         output_dict["TOTAL-TIME-TO-THIS-POINT"] =  int(current_time)
         output_dict["COMPUTATION-FINISHED"] = True
+        # Make the result self-describing: which reading of t_actarr - t_exparr produced
+        # ARRIVAL-DELAY above.
+        output_dict["ARRIVAL-DELAY-METRIC"] = str(self._arrival_delay_metric)
         output_string = json.dumps(output_dict)
         print(output_string, flush=True)
 
@@ -373,7 +387,7 @@ class Main:
 
         max_delay = 24
 
-        mipModel = MIPModel(self.sectors, self.airports, max_time, self._max_explored_vertices, self._seed, self._timestep_granularity, self.verbosity, self._number_threads, navaid_sector_lookup, self._composite_sector_function, self._sector_capacity_factor,original_converted_instance_matrix, navaid_sector_time_assignment, old_navaid_sector_time_assignment, start_time)
+        mipModel = MIPModel(self.sectors, self.airports, max_time, self._max_explored_vertices, self._seed, self._timestep_granularity, self.verbosity, self._number_threads, navaid_sector_lookup, self._composite_sector_function, self._sector_capacity_factor,original_converted_instance_matrix, navaid_sector_time_assignment, old_navaid_sector_time_assignment, start_time, arrival_delay_metric=self._arrival_delay_metric)
 
         converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix = mipModel.create_model(converted_instance_matrix, capacity_time_matrix, unit_graphs, self.airplanes, max_delay, planned_arrival_times, airplane_flight, self.flights, navaid_sector_time_assignment, converted_navpoint_matrix)
 
@@ -743,6 +757,8 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
         help="File format for matrices: 'csv' (default, uncompressed), 'csv.gz', or 'npz'.",
     )
 
+    add_arrival_delay_metric_argument(parser, default=C("arrival-delay-metric", None))
+
     parser.add_argument("--composite-sector-function", type=str, default=str(C("composite-sector-function", "max")),
                         help="Defines the function of the composite sector - available: max, triangular, linear")
 
@@ -996,7 +1012,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                args.seed,args.number_threads, args.timestep_granularity,
                args.max_explored_vertices, args.max_delay_per_iteration,
                args.max_time, args.verbosity,
-               composite_sector_function, args.sector_capacity_factor)
+               composite_sector_function, args.sector_capacity_factor,
+               arrival_delay_metric=args.arrival_delay_metric)
     app.run()
 
     if run is not None:

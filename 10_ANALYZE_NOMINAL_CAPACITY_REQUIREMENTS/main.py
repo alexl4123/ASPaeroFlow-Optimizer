@@ -11,6 +11,14 @@ Extend the :py:meth:`Main.run` method to add your application logic.
 """
 from __future__ import annotations
 
+from arrival_delay_bootstrap import (
+    DEFAULT_ARRIVAL_DELAY_METRIC,
+    add_cli_argument as add_arrival_delay_metric_argument,
+    asp_metric_fact,
+    delay_matrix as arrival_delay_matrix,
+    normalise as normalise_arrival_delay_metric,
+)
+
 import argparse
 import sys
 import time
@@ -137,7 +145,8 @@ class Main:
         control_poller = None,
         controller_enabled = False,
         data_dir = None,
-        max_considered_aircraft = 2
+        max_considered_aircraft = 2,
+        arrival_delay_metric = DEFAULT_ARRIVAL_DELAY_METRIC
         ) -> None:
 
         self._graph_path: Optional[Path] = graph_path
@@ -161,6 +170,9 @@ class Main:
         self._controller_enabled = controller_enabled
 
         self._optimizer = optimizer
+
+        # How the signed difference t_actarr - t_exparr is scored; see common/arrival_delay.py.
+        self._arrival_delay_metric = normalise_arrival_delay_metric(arrival_delay_metric)
 
         self._wandb_log = wandb_log
 
@@ -223,6 +235,8 @@ class Main:
         if self._encoding_path is not None:
             with open(self._encoding_path, "r") as file:
                 self.encoding = file.read()
+                # Select the arrival-delay metric the encoding should score.
+                self.encoding += asp_metric_fact(self._arrival_delay_metric)
 
     def run(self) -> None:  
         """Run the application"""
@@ -1098,7 +1112,7 @@ class Main:
 
             # --- 3. compute delays --------------------------------------------------------
             # Flights that disappear completely (-1 in *both* files) get a delay of 0
-            delay = np.where(t_init >= 0, np.maximum(0, t_final - t_init), 0)
+            delay = arrival_delay_matrix(t_init, t_final, self._arrival_delay_metric)
 
 
             # --- 4. aggregate in whichever way you need -----------------------------------
@@ -1207,7 +1221,7 @@ class Main:
 
         # --- 3. compute delays --------------------------------------------------------
         # Flights that disappear completely (-1 in *both* files) get a delay of 0
-        delay = np.where(t_init >= 0, np.maximum(0, t_final - t_init), 0)
+        delay = arrival_delay_matrix(t_init, t_final, self._arrival_delay_metric)
 
         # --- 4. aggregate in whichever way you need -----------------------------------
         total_delay  = delay.sum()
@@ -1443,6 +1457,7 @@ class Main:
                                     self._optimizer,
                                     self.max_number_sectors,
                                     self._convex_sectors,
+                                    self._arrival_delay_metric,
                                     )
 
         return job, rows_pool
@@ -1772,28 +1787,11 @@ class Main:
 
                 if total_capacity > 0:
 
-                    #total_capacity = np.sum(cap[atomic_sector_boolean_matrix[0],1])
-                    sample_array = np.zeros(((time_granularity)))
-                    per_timestep_capacity = math.floor(total_capacity / time_granularity)
-                    sample_array = sample_array[:] + per_timestep_capacity
-
-                    # rem_cap < time_granularity per construction
-                    rem_cap = total_capacity - (per_timestep_capacity * time_granularity)
-
-
-                    if rem_cap > 0:
-                        step_size = math.ceil(time_granularity / rem_cap)
-                        time_index = 0
-
-                        while rem_cap > 0:
-
-                            sample_array[time_index] += 1
-                            rem_cap -= 1
-
-                            time_index += step_size
-                            time_index = time_index % time_granularity
-
-                    template_matrix[cap_index, timestep_t] = sample_array[timestep_t % time_granularity]
+                    # sectors.csv::Capacity is the capacity of ONE timestep (see
+                    # capacity_time_matrix), so it is used as-is at every t. The previous
+                    # version floored it to total_capacity/time_granularity and spread the
+                    # remainder, which under-stated capacity by a factor of time_granularity.
+                    template_matrix[cap_index, timestep_t] = total_capacity
 
         # DEBUG ONLY:
         np.savetxt("20251004_cap_mat.csv", template_matrix, delimiter=",",fmt="%i")
@@ -2379,6 +2377,8 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
     
     parser.add_argument("--optimizer", type=str, default=C("optimizer","ASP"), help="Either ASP or Enumerate")
 
+    add_arrival_delay_metric_argument(parser, default=C("arrival-delay-metric", None))
+
     return parser
 
 def _apply_data_dir_defaults(args: argparse.Namespace, folder=None) -> argparse.Namespace:
@@ -2824,7 +2824,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                 args.convex_sectors,
                 control_context, control_ctrl_socket, control_pub_socket, control_poller, 
                 args.controller_enabled, args.data_dir,
-                args.max_considered_aircraft
+                args.max_considered_aircraft,
+                arrival_delay_metric=args.arrival_delay_metric
                 )
         key, value = app.run()
 

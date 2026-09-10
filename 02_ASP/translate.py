@@ -117,7 +117,7 @@ class TranslateCSVtoLogicProgram:
         Same I/O and validations as before. Now we:
         1) scatter-add to get per-(sector,time) SUM and COUNT,
         2) call cls.compute_sector_capacity(avg, count, z)  <-- explicit rule, vectorized,
-        3) distribute remainder over T slots.
+        3) broadcast the per-timestep capacity across time (no division by T).
         """
         N = cap.shape[0]
         T = int(time_granularity)
@@ -167,15 +167,12 @@ class TranslateCSVtoLogicProgram:
         total_capacity = cls.compute_sector_capacity(contrib_count, float(z), avg_ = avg,
                                                             max_ = max_atomic, sum_=total_atomic_sum, function = composite_sector_function)
 
-        # ---- 3) Distribute per-block capacity across T slots (unchanged)
-        base = total_capacity // T
-        rem  = total_capacity - base * T
-
-        rem_table = cls._remainder_distribution_table(T)   # (T+1, T)
-        k_mod     = np.arange(n_times, dtype=np.int64) % T
-
-        extra      = rem_table[rem, k_mod[None, :]]
-        sector_cap = (base + extra).astype(np.int64, copy=False)
+        # ---- 3) sectors.csv::Capacity is the capacity of ONE timestep, not of one hour.
+        # The data generator writes the maximum number of flights concurrently present in a
+        # sector in a single timestep (ASPaeroFlow-DataGenerator/06_capacity_sweep.py), so the
+        # value is already expressed in the unit this matrix uses. It is broadcast across time
+        # unchanged: dividing it by T would under-state every capacity by a factor of T.
+        sector_cap = total_capacity.astype(np.int64, copy=False)
 
         return sector_cap
 
@@ -778,6 +775,12 @@ class TranslateCSVtoLogicProgram:
     @classmethod
     def _remainder_distribution_table(slc, T: int) -> np.ndarray:
         """
+        UNUSED. Kept for reference only.
+
+        This belongs to the superseded reading of sectors.csv::Capacity as a per-HOUR budget
+        that had to be spread over the T timesteps of the hour. Capacity is per-timestep, so
+        there is no remainder to distribute. Do not wire this back into capacity_time_matrix.
+
         Build a (T+1, T) table where row r gives, for remainder r,
         the number of extra +1 drops that land at each index k∈[0..T-1]
         when stepping by ceil(T/r) and wrapping mod T, for r steps.

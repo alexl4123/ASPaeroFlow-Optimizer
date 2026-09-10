@@ -1,5 +1,7 @@
 import types
 
+from src.aspaeroflow.arrival_delay_bootstrap import delay_matrix as arrival_delay_matrix
+
 import argparse
 import sys
 import time
@@ -468,7 +470,7 @@ class EvaluateSolution:
 
         # --- 3. compute delays --------------------------------------------------------
         # Flights that disappear completely (-1 in *both* files) get a delay of 0
-        delay = np.where(t_init >= 0, np.maximum(0, t_final - t_init), 0)
+        delay = arrival_delay_matrix(t_init, t_final, self._arrival_delay_metric)
 
         # --- 4. aggregate in whichever way you need -----------------------------------
         total_delay  = delay.sum()

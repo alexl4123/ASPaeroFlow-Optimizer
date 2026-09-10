@@ -26,6 +26,9 @@ from datetime import datetime, timezone
 
 from src.aspaeroflow.main_optimizer_loop import Main
 from src.aspaeroflow.optimize_flights import MAX, TRIANGULAR, LINEAR
+from src.aspaeroflow.arrival_delay_bootstrap import (
+    add_cli_argument as add_arrival_delay_metric_argument,
+)
 
 # ---------------------------------------------------------------------------
 # CLI utilities (with config + bundle directory support)
@@ -184,6 +187,8 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
                         help="Weights & Biases entity (username or team/organization). Leave empty to use your default entity.")
     
     parser.add_argument("--optimizer", type=str, default=C("optimizer","ASP"), help="Either ASP or Enumerate")
+
+    add_arrival_delay_metric_argument(parser, default=C("arrival-delay-metric", None))
 
     return parser
 
@@ -362,6 +367,7 @@ def _save_results(args: argparse.Namespace, app) -> None:
             "data_dir": str(args.data_dir) if args.data_dir else None,
             "seed": args.seed,
             "timestep_granularity": args.timestep_granularity,
+            "arrival_delay_metric": args.arrival_delay_metric,
         }
     }
     with open(out_dir / "manifest.json", "w", encoding="utf-8") as fh:
@@ -634,6 +640,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         print(f"    airplane-flight: {args.airplane_flight_path}")
         print(f"    navaid-sector:   {args.navaid_sector_path}")
         print(f"    encoding:        {args.encoding_path}")
+        print(f"    arrival-delay:   {args.arrival_delay_metric}")
         if args.data_dir:
             print(f"    data-dir:        {args.data_dir}")
         if args.config:
@@ -707,7 +714,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                     args.controller_enabled, args.data_dir,
                     args.max_considered_aircraft,
                     explainability_context,
-                    args.sequential_execution
+                    args.sequential_execution,
+                    arrival_delay_metric=args.arrival_delay_metric
                     )
             key, value = app.run()
         else:
@@ -734,7 +742,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                     args.controller_enabled, args.data_dir,
                     args.max_considered_aircraft,
                     explainability_context,
-                    args.sequential_execution
+                    args.sequential_execution,
+                    arrival_delay_metric=args.arrival_delay_metric
                     )
             global_dto, optimization_dto = app.run()
 
@@ -768,7 +777,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                         args.max_considered_aircraft,
                         explainability_context,
                         False,
-                        injected_data=True
+                        injected_data=True,
+                        arrival_delay_metric=args.arrival_delay_metric
                         )
 
                 app.inject_global_dto(global_dto)

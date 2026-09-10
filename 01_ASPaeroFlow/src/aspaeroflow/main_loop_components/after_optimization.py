@@ -1,5 +1,7 @@
 import types
 
+from src.aspaeroflow.arrival_delay_bootstrap import delay_matrix as arrival_delay_matrix
+
 import argparse
 import sys
 import time
@@ -98,7 +100,8 @@ class AfterOptimization:
 
         # --- 3. compute delays --------------------------------------------------------
         # Flights that disappear completely (-1 in *both* files) get a delay of 0
-        delay = np.where(t_init >= 0, np.maximum(0, t_final - t_init), 0)
+        delay = arrival_delay_matrix(t_init, t_final, self._arrival_delay_metric)
+
 
         # --- 4. aggregate in whichever way you need -----------------------------------
         total_delay  = delay.sum()
@@ -143,6 +146,9 @@ class AfterOptimization:
         output_dict["RECONFIG"] = int(number_sector_reconfigurations)
         output_dict["TOTAL-TIME-TO-THIS-POINT"] =  int(current_time)
         output_dict["COMPUTATION-FINISHED"] = True
+        # Make the result self-describing: which reading of t_actarr - t_exparr produced
+        # ARRIVAL-DELAY above.
+        output_dict["ARRIVAL-DELAY-METRIC"] = str(self._arrival_delay_metric)
         output_dict["DIFF"] = {}
         output_dict["DIFF"]["ACCEPTED_SOLUTION"] = False
         output_string = json.dumps(output_dict)
@@ -152,7 +158,9 @@ class AfterOptimization:
 
         if self.verbosity > 0:
 
-            number_flights_delayed = sum([1 if cur_delay > 0 else 0 for cur_delay in delay])
+            # Under `signed` an early flight has cur_delay < 0 and is still a flight whose
+            # arrival moved, so count any non-zero deviation rather than only lateness.
+            number_flights_delayed = sum([1 if cur_delay != 0 else 0 for cur_delay in delay])
 
             print("<<<<<<<<<<<<<<<<----------------->>>>>>>>>>>>>>>>")
             print("                  FINAL RESULTS")
@@ -161,6 +169,7 @@ class AfterOptimization:
             print(f"Total delay (all flights): {total_delay}")
             print(f"Average delay per flight:  {mean_delay:.2f}")
             print(f"Maximum single-flight delay: {max_delay}")
+            print(f"Arrival-delay metric: {self._arrival_delay_metric}")
 
         self.total_atfm_delay = total_delay
         self.navaid_sector_time_assignment = navaid_sector_time_assignment

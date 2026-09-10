@@ -8,7 +8,7 @@ def generate_relative_capacity_instances(
     base_dir: str, 
     nominal_caps_file: str, 
     output_root_dir: str, 
-    time_granularity: int = 4
+    time_granularity: int = 4   # retained for call compatibility; capacity is per timestep
 ):
     base_path = Path(base_dir)
     out_root_path = Path(output_root_dir)
@@ -58,8 +58,14 @@ def generate_relative_capacity_instances(
                     print(f"Warning: Key {csv_header_key} or flight {flight_inst} not found. Skipping.")
                     continue
                 
-                # Calculate new capacity
-                new_cap = math.ceil(nom_cap * pct * time_granularity)
+                # Calculate new capacity.
+                # sectors.csv::Capacity is PER TIMESTEP, and nom_cap already comes from
+                # main.py as max(system_loads), which is a per-timestep peak. There is
+                # therefore no multiplication by time_granularity here -- that factor used to
+                # compensate for the optimizer reading Capacity as a per-hour budget, and
+                # would now be applied twice. This matches
+                # ASPaeroFlow-DataGenerator/06_capacity_sweep.py, which supersedes this script.
+                new_cap = max(1, math.ceil(nom_cap * pct))
                 
                 # Create destination directory structure
                 dest_dir = pct_out_dir / graph_dir.name / flight_dir.name

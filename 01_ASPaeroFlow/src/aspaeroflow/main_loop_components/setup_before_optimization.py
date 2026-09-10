@@ -1,5 +1,7 @@
 import types
 
+from src.aspaeroflow.arrival_delay_bootstrap import asp_metric_fact
+
 import argparse
 import sys
 import time
@@ -448,6 +450,8 @@ class SetupBeforeOptimization:
             if self._encoding_path is not None:
                 with open(self._encoding_path, "r") as file:
                     self.encoding = file.read()
+                # Select the arrival-delay metric the encoding should score.
+                self.encoding += asp_metric_fact(self._arrival_delay_metric)
 
             global_t_start = 1
             time_bucket_updated = 0
@@ -548,6 +552,8 @@ class SetupBeforeOptimization:
         if self._encoding_path is not None:
             with open(self._encoding_path, "r") as file:
                 self.encoding = file.read()
+            # Select the arrival-delay metric the encoding should score.
+            self.encoding += asp_metric_fact(self._arrival_delay_metric)
 
     def create_initial_navpoint_sector_assignment(self,
                                     flights: np.ndarray,

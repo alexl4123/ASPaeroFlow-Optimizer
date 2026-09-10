@@ -1,5 +1,12 @@
 
 import gurobipy as gp
+
+from arrival_delay_bootstrap import (
+    DEFAULT_ARRIVAL_DELAY_METRIC,
+    apply as apply_arrival_delay_metric,
+    delay_matrix as arrival_delay_matrix,
+    normalise as normalise_arrival_delay_metric,
+)
 from gurobipy import GRB
 
 import pandas as pd
@@ -23,7 +30,8 @@ def _save_csv(path: Path, arr):
 
 class MIPModel:
 
-    def __init__(self, sectors, airport_vertices, max_time, max_explored_vertices, seed, timestep_granularity, verbosity, number_threads, navaid_sector_lookup, composite_sector_function, sector_capacity_factor, original_converted_instance_matrix, navaid_sector_time_assignment, old_navaid_sector_time_assignment, start_time):
+    def __init__(self, sectors, airport_vertices, max_time, max_explored_vertices, seed, timestep_granularity, verbosity, number_threads, navaid_sector_lookup, composite_sector_function, sector_capacity_factor, original_converted_instance_matrix, navaid_sector_time_assignment, old_navaid_sector_time_assignment, start_time,
+                 arrival_delay_metric=DEFAULT_ARRIVAL_DELAY_METRIC):
         
         self.sectors = sectors
         self.airport_vertices = airport_vertices
@@ -33,6 +41,9 @@ class MIPModel:
         self._timestep_granularity = timestep_granularity
         self._composite_sector_function = composite_sector_function
         self._sector_capacity_factor = sector_capacity_factor
+
+        # How the signed difference t_actarr - t_exparr is scored; see common/arrival_delay.py.
+        self._arrival_delay_metric = normalise_arrival_delay_metric(arrival_delay_metric)
 
         self.original_converted_instance_matrix = original_converted_instance_matrix
         self.navaid_sector_time_assignment = navaid_sector_time_assignment
@@ -81,7 +92,8 @@ class MIPModel:
 
                     arrival_variable = actual_arrival_row['obj']
 
-                    real_delay = actual_arrival_time - planned_arrival_time
+                    real_delay = apply_arrival_delay_metric(
+                        actual_arrival_time - planned_arrival_time, self._arrival_delay_metric)
 
                     optimization_variables.append(real_delay * arrival_variable)
 
@@ -149,7 +161,7 @@ class MIPModel:
                 if diff_tmp > 0:
                     self.navaid_sector_time_assignment = np.hstack([self.navaid_sector_time_assignment, np.repeat(self.navaid_sector_time_assignment[:, [-1]], diff_tmp, axis=1)])
 
-                delay = np.where(t_init >= 0, np.maximum(0, t_final - t_init), 0)
+                delay = arrival_delay_matrix(t_init, t_final, self._arrival_delay_metric)
                 system_loads = MIPModel.bucket_histogram(converted_instance_matrix_tmp, self.sectors, self.sectors.shape[0], converted_instance_matrix_tmp.shape[1], self._timestep_granularity)
                 capacity_time_matrix = MIPModel.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, self.navaid_sector_time_assignment, z = self._sector_capacity_factor, composite_sector_function=self._composite_sector_function)
                 capacity_demand_diff_matrix = capacity_time_matrix - system_loads
@@ -911,7 +923,7 @@ class MIPModel:
                 if diff_tmp > 0:
                     self.navaid_sector_time_assignment = np.hstack([self.navaid_sector_time_assignment, np.repeat(self.navaid_sector_time_assignment[:, [-1]], diff_tmp, axis=1)])
 
-                delay = np.where(t_init >= 0, np.maximum(0, t_final - t_init), 0)
+                delay = arrival_delay_matrix(t_init, t_final, self._arrival_delay_metric)
                 system_loads = MIPModel.bucket_histogram(converted_instance_matrix_tmp, self.sectors, self.sectors.shape[0], converted_instance_matrix_tmp.shape[1], self._timestep_granularity)
                 capacity_time_matrix = MIPModel.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, self.navaid_sector_time_assignment, z = self._sector_capacity_factor, composite_sector_function=self._composite_sector_function)
                 capacity_demand_diff_matrix = capacity_time_matrix - system_loads
@@ -1202,7 +1214,7 @@ class MIPModel:
         Same I/O and validations as before. Now we:
         1) scatter-add to get per-(sector,time) SUM and COUNT,
         2) call cls.compute_sector_capacity(avg, count, z)  <-- explicit rule, vectorized,
-        3) distribute remainder over T slots.
+        3) broadcast the per-timestep capacity across time (no division by T).
         """
         N = cap.shape[0]
         T = int(time_granularity)
@@ -1252,15 +1264,12 @@ class MIPModel:
         total_capacity = cls.compute_sector_capacity(contrib_count, float(z), avg_ = avg,
                                                             max_ = max_atomic, sum_=total_atomic_sum, function = composite_sector_function)
 
-        # ---- 3) Distribute per-block capacity across T slots (unchanged)
-        base = total_capacity // T
-        rem  = total_capacity - base * T
-
-        rem_table = cls._remainder_distribution_table(T)   # (T+1, T)
-        k_mod     = np.arange(n_times, dtype=np.int64) % T
-
-        extra      = rem_table[rem, k_mod[None, :]]
-        sector_cap = (base + extra).astype(np.int64, copy=False)
+        # ---- 3) sectors.csv::Capacity is the capacity of ONE timestep, not of one hour.
+        # The data generator writes the maximum number of flights concurrently present in a
+        # sector in a single timestep (ASPaeroFlow-DataGenerator/06_capacity_sweep.py), so the
+        # value is already expressed in the unit this matrix uses. It is broadcast across time
+        # unchanged: dividing it by T would under-state every capacity by a factor of T.
+        sector_cap = total_capacity.astype(np.int64, copy=False)
 
         return sector_cap
 
@@ -1406,6 +1415,12 @@ class MIPModel:
     @classmethod
     def _remainder_distribution_table(slc, T: int) -> np.ndarray:
         """
+        UNUSED. Kept for reference only.
+
+        This belongs to the superseded reading of sectors.csv::Capacity as a per-HOUR budget
+        that had to be spread over the T timesteps of the hour. Capacity is per-timestep, so
+        there is no remainder to distribute. Do not wire this back into capacity_time_matrix.
+
         Build a (T+1, T) table where row r gives, for remainder r,
         the number of extra +1 drops that land at each index k∈[0..T-1]
         when stepping by ceil(T/r) and wrapping mod T, for r steps.

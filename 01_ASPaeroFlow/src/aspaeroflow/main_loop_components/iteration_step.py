@@ -552,6 +552,7 @@ class IterationStep:
                                     self.max_number_sectors,
                                     self._convex_sectors,
                                     sequential_execution,
+                                    self._arrival_delay_metric,
                                     )
 
         return job, rows_pool
