@@ -4,6 +4,13 @@
 #SBATCH -N 1 -n 1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=40G
+# --mem is the binding constraint on how many tasks share a node, since the solver's own cap is
+# 35 GiB and 40G leaves headroom for the interpreter. Tasks per node is therefore
+#     min(node_memory / 40G, node_cores / cpus-per-task)
+# and the array's %N should be 13 x that, not 13. Check the nodes with:
+#     sinfo -N -p broadwell -o "%n %c %m"
+# At 1800 s the campaign is ~40,800 core-hours worst case: ~131 days at 13 concurrent,
+# ~44 at 39, ~33 at 52. Packing matters more than anything else here.
 #SBATCH -J v2bench
 #SBATCH -o logs/%x-%A_%a.out
 #
@@ -39,8 +46,12 @@ set -euo pipefail
 FOLDER="${FOLDER:-$(date +%Y%m%d)_V2}"       # output namespace; override with FOLDER=... sbatch
 INSTANCE_ROOT="../05_instances"
 MANIFEST="${INSTANCE_ROOT}/problems.tsv"
-TIME_LIMIT="${TIME_LIMIT:-600}"              # seconds per solver run
-MEMORY_LIMIT="${MEMORY_LIMIT:-35}"           # GiB, must stay below --mem above
+TIME_LIMIT="${TIME_LIMIT:-1800}"             # seconds per solver run -- the value used in the
+                                             # LPNMR/ATMOS papers, and start_benchmark_caller.py's
+                                             # own default. The ATMOS starter scripts overrode it
+                                             # to 600; matching the papers keeps these numbers
+                                             # comparable with the published ones.
+MEMORY_LIMIT="${MEMORY_LIMIT:-35}"           # GiB, as in the papers; must stay below --mem above
 WANDB_ENABLED="${WANDB_ENABLED:-False}"      # see the note below before turning this on
 RESULTS_FORMAT="${RESULTS_FORMAT:-csv.gz}"   # uncompressed would be ~2.9 TB across the full grid
 RUN_MIP="${RUN_MIP:-auto}"                   # auto | yes | no | only -- see the Gurobi note below
