@@ -876,6 +876,13 @@ def main() -> None:
                         and sol_value[inst_name][system_name] in (TIMEOUT_CODE, MEMOUT_CODE, ERROR_CODE, UNPARSE_CODE)
                     ):
                         first_failure[system_name] = sol_value[inst_name][system_name]
+                    # Count reused results too, or a resumed run (e.g. the MIP-only second
+                    # pass, where almost everything comes from hot-start) reports a position
+                    # and ETA computed from a handful of fresh runs.
+                    _note_progress(inst_name, system_name,
+                                   exec_time[inst_name][system_name],
+                                   ram_usage[inst_name][system_name],
+                                   sol_value[inst_name][system_name], reused=True)
                     continue
 
 
