@@ -38,7 +38,18 @@ def main():
 
     files = sorted(root.glob("output_*/progress.jsonl"))
     if not files:
-        raise SystemExit(f"no progress.jsonl under {root} -- nothing has started yet")
+        # Distinguish "not started" from "started, nothing finished yet". progress.jsonl gets
+        # its first line when the first (instance, solver) COMPLETES, so a pass whose solvers
+        # each take up to the time limit looks identical to one that never launched.
+        started = sorted(root.glob("output_*"))
+        if started:
+            raise SystemExit(
+                f"{len(started)} task(s) have started under {root}, but no solver run has "
+                f"finished yet, so there is nothing to summarise.\n"
+                f"That is normal early on when the time limit is high -- the first line "
+                f"appears when the first (instance, solver) completes.\n"
+                f"Follow a task directly meanwhile:  tail -f logs/v2bench-*_1.out")
+        raise SystemExit(f"nothing under {root} yet -- no task has started")
 
     per_task, outcomes, failures = {}, Counter(), []
     newest = 0.0
