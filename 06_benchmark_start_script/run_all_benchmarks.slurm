@@ -164,9 +164,16 @@ mkdir -p "output/${FOLDER}" "logs"
 # The recommended pattern is TWO submissions, into SEPARATE output folders:
 #   sbatch --export=ALL,RUN_MIP=no,FOLDER=20260912_V2 \
 #          --array=1-325%13 run_all_benchmarks.slurm
-#   sbatch -p sunnycove -w coppernode[25-28] \
+#   sbatch -p sunnycove -x coppernode[21-24,29-30] \
 #          --export=ALL,RUN_MIP=only,FOLDER=20260912_V2_MIP \
-#          --array=1-325%2 run_all_benchmarks.slurm      # all 325, full limits, %2 = WLS cap
+#          --array=1-325%48 run_all_benchmarks.slurm     # all 325, full limits
+#
+# Note -x (exclude), NOT -w (nodelist). This script requests "#SBATCH -N 1", and -w asks for a
+# job spanning ALL the listed nodes, so `-w coppernode[25-28]` fails with
+#     sbatch: error: invalid number of nodes (-N 4-1)
+# What an array wants is one node per task, chosen FROM a set -- which is expressed by excluding
+# everything else in the partition. sunnycove is coppernode[21-30] and the licensed nodes are
+# 25-28, so exclude 21-24 and 29-30.
 #
 # SEPARATE folders, and this matters: hot-start state lives at
 # output/<FOLDER>/output_<PROBLEM>/hotstart_state.json, one file per problem. Two passes
