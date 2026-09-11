@@ -77,19 +77,41 @@ mkdir -p "output/${FOLDER}" "logs"
   echo "started=$(date -Is)"
 } > "output/${FOLDER}/run_provenance_${PROBLEM}.txt"
 
-# ---- the experiment selection ---------------------------------------------------------------
-# Copied verbatim from the ATMOS starter scripts so this run is comparable with those. Every
-# flag defaults to 1 in start_benchmark_caller.py, so the ones listed here are the ones being
-# switched OFF; edit this list to change which solvers run.
-EXPERIMENTS=(
-  --experiment-asp-r-d-s=0    --experiment-asp-r-d-ns=0
-  --experiment-asp-r-nd-s=0   --experiment-asp-nr-d-s=0
-  --experiment-asp-r-nd-ns=0  --experiment-asp-nr-nd-s=0
-  --experiment-asp-nr-d-ns=0  --experiment-asp-nr-nd-ns=0
-  --experiment-mip=0
-  --experiment-asp-r-d-sp=0   --experiment-asp-nr-d-sp=0
-  --experiment-asp-r-nd-sp=0  --experiment-asp-nr-nd-sp=0
-)
+# ---- the experiment selection ------------------------------------------------------------
+# Every flag defaults to 1 in start_benchmark_caller.py, so what is listed here is what gets
+# switched OFF.
+#
+# The 27 exact-ASP variants (--experiment-all-asp-variants expands ground-delay x rerouting x
+# dynamic-sectorisation, each in {none, partial, full}) plus the two 05_ASP_rp_*_sp systems all
+# run 02_ASP/main.py, the EXACT solver. They belong on the small-scaling family, which exists
+# precisely so exact methods can close instances. On a 31,622-flight TG=60 instance they would
+# time out essentially every time, which is 600 seconds per run of predictable non-information.
+#
+# The manifest distinguishes the two families: small-scaling rows carry capacity_level=NONE
+# because that family has no PCAP sweep (cap-enroute is already 1).
+if [ "$CAP_LEVEL" = "NONE" ]; then
+  # SMALL family: heuristics, baselines AND all 27 exact-ASP variants -> 38 systems/instance
+  FAMILY="small (exact ASP included)"
+  EXPERIMENTS=(
+    --experiment-mip=0
+  )
+else
+  # LARGE family: heuristics and baselines only -> 9 systems/instance
+  FAMILY="large (heuristics and baselines only)"
+  EXPERIMENTS=(
+    --experiment-all-asp-variants=0
+    --experiment-asp-rp-dp-sp=0 --experiment-asp-rp-d-sp=0
+    --experiment-mip=0
+    --experiment-asp-r-d-s=0    --experiment-asp-r-d-ns=0
+    --experiment-asp-r-nd-s=0   --experiment-asp-nr-d-s=0
+    --experiment-asp-r-nd-ns=0  --experiment-asp-nr-nd-s=0
+    --experiment-asp-nr-d-ns=0  --experiment-asp-nr-nd-ns=0
+    --experiment-asp-r-d-sp=0   --experiment-asp-nr-d-sp=0
+    --experiment-asp-r-nd-sp=0  --experiment-asp-nr-nd-sp=0
+  )
+fi
+echo "Family:    $FAMILY"
+echo "experiment_family=${FAMILY}" >> "output/${FOLDER}/run_provenance_${PROBLEM}.txt"
 
 ./start_benchmark_caller.py "${INSTANCE_ROOT}/${PROBLEM}" \
   --output-root=output \
