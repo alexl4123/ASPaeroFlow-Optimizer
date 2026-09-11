@@ -74,8 +74,8 @@ source "$HOME/miniconda3/etc/profile.d/conda.sh"
 conda activate potassco
 export GRB_LICENSE_FILE="$HOME/gurobi_wls.lic"
 
-# Weights & Biases is OFF for this run, deliberately. With ~76,000 solver runs across the full
-# grid it would mean 76,000 logged W&B runs, network traffic from every compute node, and an
+# Weights & Biases is OFF for this run, deliberately. With tens of thousands of solver runs
+# across the full grid it would mean as many logged W&B runs, network traffic from every node, and an
 # unusable workspace. It is also a hard failure mode rather than a soft one:
 # 01_ASPaeroFlow/main.py raises FileNotFoundError when wandb.key is absent, before wandb is
 # ever consulted, so WANDB_MODE=disabled does NOT protect you -- the flag below does.
@@ -116,10 +116,20 @@ mkdir -p "output/${FOLDER}" "logs"
 #
 # RUN_MIP=only exists because the licensed nodes (coppernode25-28) are in sunnycove, while the
 # campaign has to stay on broadwell or the admin cancels it. A MIP-only task is 21 instances x
-# 1 solver, so at a 600 s limit it caps at ~3.5 h -- short enough to run on sunnycove without
-# being the kind of long job that gets cancelled. It also removes any ordering dependency on
-# the main sweep, which RUN_MIP=yes would have (it relies on hot-start to skip work already
-# done, so it is only short if the main pass finished that problem first).
+# 1 solver, so at the published 1800 s limit it caps at ~10.5 h. It also removes any ordering
+# dependency on the main sweep, which RUN_MIP=yes would have (that relies on hot-start to skip
+# work already done, so it is only short if the main pass finished that problem first).
+#
+# MIP RUNS ON EVERY INSTANCE. The pass covers the full --array=1-325, i.e. all 6,920 instances
+# of both families, at the same 1800 s / 35 GiB as the papers -- the limits are NOT shortened
+# for MIP. --scaling-experiments=0 is passed unconditionally below, which matters here: with
+# scaling experiments enabled the caller stops attempting a solver after its first failure, so
+# one early timeout would silently truncate MIP's coverage. It is off, so every instance is
+# attempted regardless of what happened on the previous one.
+#
+# Worst case that is ~71 days at %2, but it will not come to that: on the larger instances MIP
+# reaches the 35 GiB cap within minutes and returns MEMOUT, so the 1800 s only ever binds where
+# the model actually fits.
 #
 #   NOTE on auto: this script exports GRB_LICENSE_FILE=$HOME/gurobi_wls.lic before probing, and
 #   $HOME is shared, so a WLS (network) licence validates on ANY node. If WLS works for you,
@@ -131,7 +141,7 @@ mkdir -p "output/${FOLDER}" "logs"
 #          --array=1-325%13 run_all_benchmarks.slurm
 #   sbatch -p sunnycove -w coppernode[25-28] \
 #          --export=ALL,RUN_MIP=only,FOLDER=20260912_V2_MIP \
-#          --array=1-325%2 run_all_benchmarks.slurm
+#          --array=1-325%2 run_all_benchmarks.slurm      # all 325, full limits, %2 = WLS cap
 #
 # SEPARATE folders, and this matters: hot-start state lives at
 # output/<FOLDER>/output_<PROBLEM>/hotstart_state.json, one file per problem. Two passes
@@ -180,7 +190,7 @@ echo "MIP:       ${MIP_FLAG#--experiment-mip=} -- ${MIP_WHY}"
 # x dynamic-sectorisation, each in {none, partial, full}), all running 02_ASP/main.py -- the
 # EXACT solver. The full 27 belong on the small-scaling family, which exists precisely so exact
 # methods can close instances; on a 31,622-flight TG=60 instance they would time out essentially
-# every time, at 600 seconds per run of predictable non-information.
+# every time, at 1800 seconds per run of predictable non-information.
 #
 # TWO of them are kept on the large family as well, because they are the best-performing exact
 # configurations and are worth having a large-scale profile for:
