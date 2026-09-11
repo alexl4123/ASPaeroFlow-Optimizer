@@ -121,6 +121,21 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
     # Encoding + knobs
     parser.add_argument("--encoding-path", type=Path, default=Path(C("encoding-path", DEFAULT_FILENAMES["encoding_path"])),
                         metavar="FILE", help="Location of the encoding for the optimization problem.")
+
+    # Export the grounded instance so that other groups can run their own solvers against
+    # exactly the program this pipeline builds, without reimplementing the CSV -> ASP
+    # translation. --export-instance-lp gives the facts alone; --export-program-lp gives a
+    # self-contained file (encoding + arrival-delay metric fact + facts) that clingo can run
+    # directly. Both write and then continue solving as normal; neither changes the search.
+    parser.add_argument("--export-instance-lp", type=Path, default=None, metavar="FILE",
+                        help="Write the translated instance facts to FILE (ASP, one atom per "
+                             "line) and continue.")
+    parser.add_argument("--export-program-lp", type=Path, default=None, metavar="FILE",
+                        help="Write a self-contained program (encoding + metric fact + instance "
+                             "facts) to FILE and continue. Runnable with: clingo FILE")
+    parser.add_argument("--export-only", action="store_true",
+                        help="With one of the --export-*-lp options, write the file(s) and exit "
+                             "without solving.")
     parser.add_argument("--seed", type=int, default=int(C("seed", 11904657)),
                         help="Set the random seed.")
     parser.add_argument("--number-threads", type=int, default=int(C("number-threads", 20)),
@@ -423,8 +438,34 @@ def main(argv: Optional[List[str]] = None) -> None:
         # Select the arrival-delay metric the encoding should score.
         encoding += asp_metric_fact(arrival_delay_metric)
 
-        #open("20260214_instance.lp","w").write(instance_asp_atoms)
-        
+        if args.export_instance_lp is not None:
+            args.export_instance_lp.parent.mkdir(parents=True, exist_ok=True)
+            args.export_instance_lp.write_text(instance_asp_atoms + "\n", encoding="utf-8")
+            print(f"[export] instance facts -> {args.export_instance_lp} "
+                  f"({len(asp_instance):,} atoms)", flush=True)
+
+        if args.export_program_lp is not None:
+            args.export_program_lp.parent.mkdir(parents=True, exist_ok=True)
+            header = (
+                f"% ASPaeroFlow instance, exported by 02_ASP/main.py\n"
+                f"% encoding:              {encoding_path}\n"
+                f"% arrival-delay metric:  {arrival_delay_metric}\n"
+                f"% timestep granularity:  {timestep_granularity}\n"
+                f"% max time:              {max_time}\n"
+                f"% sector capacity factor:{sector_capacity_factor}\n"
+                f"% regulations: ground-delay={regulation_ground_delay_active} "
+                f"rerouting={regulation_rerouting_active} "
+                f"dynamic-sectorization={regulation_dynamic_sectorization_active}\n"
+                f"% Self-contained: run with `clingo {args.export_program_lp.name}`.\n\n")
+            args.export_program_lp.write_text(header + encoding + "\n" + instance_asp_atoms + "\n",
+                                              encoding="utf-8")
+            print(f"[export] self-contained program -> {args.export_program_lp}", flush=True)
+
+        if args.export_only and (args.export_instance_lp is not None
+                                 or args.export_program_lp is not None):
+            print("[export] --export-only given; not solving.", flush=True)
+            return 0
+
         solver: Model = Solver(encoding, instance_asp_atoms, seed=seed, wandb_log = wandb_log)
         model = solver.solve()
             

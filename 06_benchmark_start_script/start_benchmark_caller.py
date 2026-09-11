@@ -211,8 +211,9 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--number-capacity-management-configs=2",
                 "--sector-capacity-factor=6",
                 "--convex-sectors=0",
+                f"--results-format={args.results_format}",
                 f"--results-root={output_path}/solver_outputs/01_ASPaeroFlow",
-                "--wandb-enabled=True",
+                f"--wandb-enabled={args.wandb_enabled}",
                 "--wandb-experiment-name-suffix=_01_ASPaeroFlow",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
@@ -235,8 +236,9 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--number-capacity-management-configs=2",
                 "--sector-capacity-factor=6",
                 "--convex-sectors=0",
+                f"--results-format={args.results_format}",
                 f"--results-root={output_path}/solver_outputs/0A_ASPaeroFlow_NoConvex",
-                "--wandb-enabled=True",
+                f"--wandb-enabled={args.wandb_enabled}",
                 "--wandb-experiment-name-suffix=_0A_ASPaeroFlow_NoConvex",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
@@ -259,8 +261,9 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--number-capacity-management-configs=2",
                 "--sector-capacity-factor=6",
                 "--convex-sectors=0",
+                f"--results-format={args.results_format}",
                 f"--results-root={output_path}/solver_outputs/0B_Sector_NoReroute_NoDelay",
-                "--wandb-enabled=True",
+                f"--wandb-enabled={args.wandb_enabled}",
                 "--wandb-experiment-name-suffix=_0B_Sector_NoReroute_NoDelay",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
@@ -283,8 +286,9 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--number-capacity-management-configs=2",
                 "--sector-capacity-factor=6",
                 "--convex-sectors=0",
+                f"--results-format={args.results_format}",
                 f"--results-root={output_path}/solver_outputs/0C_Sector_NoReroute_Delay",
-                "--wandb-enabled=True",
+                f"--wandb-enabled={args.wandb_enabled}",
                 "--wandb-experiment-name-suffix=_0C_Sector_NoReroute_NoDelay",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
@@ -307,8 +311,9 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--number-capacity-management-configs=2",
                 "--sector-capacity-factor=6",
                 "--convex-sectors=0",
+                f"--results-format={args.results_format}",
                 f"--results-root={output_path}/solver_outputs/0D_Sector_Reroute_NoDelay",
-                "--wandb-enabled=True",
+                f"--wandb-enabled={args.wandb_enabled}",
                 "--wandb-experiment-name-suffix=_0D_Sector_Reroute_NoDelay",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
@@ -332,8 +337,9 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--max-delay-per-iteration=5",
                 "--capacity-management-enabled=False",
                 "--number-capacity-management-configs=1",
+                f"--results-format={args.results_format}",
                 f"--results-root={output_path}/solver_outputs/02_RerouteDelay",
-                "--wandb-enabled=True",
+                f"--wandb-enabled={args.wandb_enabled}",
                 "--wandb-experiment-name-suffix=_02_RerouteDelay",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
@@ -354,8 +360,9 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--max-delay-per-iteration=1",
                 "--capacity-management-enabled=False",
                 "--number-capacity-management-configs=1",
+                f"--results-format={args.results_format}",
                 f"--results-root={output_path}/solver_outputs/0A_Reroute",
-                "--wandb-enabled=True",
+                f"--wandb-enabled={args.wandb_enabled}",
                 "--wandb-experiment-name-suffix=_2A_Reroute",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
@@ -376,8 +383,9 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--max-delay-per-iteration=5",
                 "--capacity-management-enabled=False",
                 "--number-capacity-management-configs=1",
+                f"--results-format={args.results_format}",
                 f"--results-root={output_path}/solver_outputs/03_DELAY",
-                "--wandb-enabled=True",
+                f"--wandb-enabled={args.wandb_enabled}",
                 "--wandb-experiment-name-suffix=_03_Delay",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
@@ -399,8 +407,9 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--max-delay-per-iteration=10",
                 "--capacity-management-enabled=False",
                 "--number-capacity-management-configs=1",
+                f"--results-format={args.results_format}",
                 f"--results-root={output_path}/solver_outputs/03_DELAY",
-                "--wandb-enabled=True",
+                f"--wandb-enabled={args.wandb_enabled}",
                 "--wandb-experiment-name-suffix=_03_Delay",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
@@ -418,8 +427,9 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
             "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
             "verbosity": None,
             "cmd": [
+                f"--results-format={args.results_format}",
                 f"--results-root={output_path}/solver_outputs/04_MIP",
-                "--wandb-enabled=True",
+                f"--wandb-enabled={args.wandb_enabled}",
                 "--wandb-experiment-name-suffix=_05_MIP",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
@@ -467,8 +477,9 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                         "encoding": base_dir / "../02_ASP/encoding.lp",
                         "verbosity": None,
                         "cmd": [
-                            f"--results-root={output_path}/solver_outputs/" + experiment_key,
-                            "--wandb-enabled=True",
+                            f"--results-format={args.results_format}",
+                f"--results-root={output_path}/solver_outputs/" + experiment_key,
+                            f"--wandb-enabled={args.wandb_enabled}",
                             "--wandb-experiment-name-suffix=_" + experiment_key,
                             f"--wandb-experiment-name-prefix={experiment_name}_",
                             "--wandb-entity=thinklex",
@@ -489,8 +500,9 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
             "encoding": base_dir / "../02_ASP/encoding.lp",
             "verbosity": None,
             "cmd": [
+                f"--results-format={args.results_format}",
                 f"--results-root={output_path}/solver_outputs/05_ASP_rp_dp_sp",
-                "--wandb-enabled=True",
+                f"--wandb-enabled={args.wandb_enabled}",
                 "--wandb-experiment-name-suffix=_05_ASP_rp_dp_sp",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
@@ -508,8 +520,9 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
             "encoding": base_dir / "../02_ASP/encoding.lp",
             "verbosity": None,
             "cmd": [
+                f"--results-format={args.results_format}",
                 f"--results-root={output_path}/solver_outputs/05_ASP_rp_d_sp",
-                "--wandb-enabled=True",
+                f"--wandb-enabled={args.wandb_enabled}",
                 "--wandb-experiment-name-suffix=_05_ASP_rp_d_sp",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
                 "--wandb-entity=thinklex",
@@ -701,6 +714,27 @@ def main() -> None:
 
     parser.add_argument("--scaling-experiments", type=int, default=0, help="true (val!=0), false (val=0)")
 
+    # Weights & Biases was hard-coded on for every solver. That is fine for a handful of runs and
+    # a problem for a full benchmark: 01_ASPaeroFlow/main.py RAISES FileNotFoundError when the
+    # wandb.key file is missing, and wandb.login(relogin=True) needs network from the compute
+    # node. Setting WANDB_MODE=disabled does not help, because the key file is checked before
+    # wandb is consulted. Default stays True so existing scripts are unaffected.
+    # A full benchmark writes one set of result matrices per (instance, solver). Uncompressed
+    # those are ~38 MB for a DACH TG=60 run, i.e. ~2.9 TB across the full grid -- far past a
+    # 100 GB quota. They compress ~254x (37.6 MB -> 0.15 MB) because they are highly repetitive,
+    # so compressing is strictly better than switching them off: ~11 GB for the whole grid, and
+    # the solutions stay verifiable. csv.gz is preferred over npz for published results because
+    # pandas and every other tool read it directly.
+    parser.add_argument("--results-format", type=str, default="csv",
+                        choices=["csv", "csv.gz", "npz"],
+                        help="Format for the per-run result matrices. Use csv.gz for large runs.")
+
+    parser.add_argument("--wandb-enabled", type=str, default="True",
+                        choices=["True", "False"],
+                        help="Pass False for large unattended benchmark runs: no key file "
+                             "needed, no network dependency, no thousands of logged runs. "
+                             "The CSVs in --output-dir are the authoritative results either way.")
+
     parser.add_argument("--experiment-asp-aero-flow", type=int, default=1, help="true (val!=0), false (val=0)")
     parser.add_argument("--experiment-asp-aero-flow-no-convex", type=int, default=1, help="true (val!=0), false (val=0)")
     parser.add_argument("--experiment-asp-aero-flow-nr-nd", type=int, default=1, help="true (val!=0), false (val=0)")
@@ -782,6 +816,45 @@ def main() -> None:
 
     timestep_granularity = args.timestep_granularity
 
+    # ---- progress accounting -------------------------------------------------------------
+    # The only previous output was "[system] instance: running ...", with no outcome, no
+    # counters and no timing -- unreadable over SSH on a run this size. We now emit one line
+    # per finished (instance, solver) with position, wall time, outcome and a running ETA, and
+    # append the same to progress.jsonl so the aggregator can summarise across array tasks.
+    _total_runs = len(instances) * len(systems)
+    _done_runs = 0
+    _t_start = time.time()
+    _progress_path = Path(output_path) / "progress.jsonl"
+    _progress_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _fmt_hms(seconds: float) -> str:
+        seconds = int(max(0, seconds))
+        return f"{seconds // 3600:d}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
+
+    def _note_progress(inst_name, system_name, rt, peak, sol, reused=False):
+        nonlocal _done_runs
+        _done_runs += 1
+        elapsed = time.time() - _t_start
+        eta = (elapsed / _done_runs) * (_total_runs - _done_runs) if _done_runs else 0.0
+        outcome = {TIMEOUT_CODE: "TIMEOUT", MEMOUT_CODE: "MEMOUT",
+                   ERROR_CODE: "ERROR", UNPARSE_CODE: "UNPARSED"}.get(rt, "ok")
+        rt_str = f"{rt:8.1f}s" if outcome == "ok" else " " * 9
+        print(f"[{_done_runs:>5}/{_total_runs}] {(_done_runs / _total_runs) * 100:5.1f}%  "
+              f"{system_name:<28} {inst_name:<22} {outcome:<8} {rt_str} "
+              f"obj={sol}  elapsed {_fmt_hms(elapsed)}  eta {_fmt_hms(eta)}"
+              f"{'  (hot-start)' if reused else ''}", flush=True)
+        try:
+            with _progress_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "ts": datetime.now().isoformat(timespec="seconds"),
+                    "instance": inst_name, "system": system_name, "outcome": outcome,
+                    "runtime_s": rt, "ram_mb": peak, "objective": sol,
+                    "done": _done_runs, "total": _total_runs, "reused": reused,
+                }) + "\n")
+        except OSError:
+            pass   # progress logging must never take the benchmark down
+
+
 
     # Main loops (solver outermost ⇒ better CPU cache locality, easier skip logic)
     for inst_path in instances:
@@ -861,6 +934,11 @@ def main() -> None:
 
             if rt in (TIMEOUT_CODE, MEMOUT_CODE, ERROR_CODE, UNPARSE_CODE):
                 first_failure[system_name] = sol
+
+            _note_progress(inst_name, system_name,
+                           exec_time[inst_name][system_name],
+                           ram_usage[inst_name][system_name],
+                           sol_value[inst_name][system_name], reused=False)
 
             # Persist progress after every (instance, solver) is decided (run or failure-propagated)
             if hot_state is not None:

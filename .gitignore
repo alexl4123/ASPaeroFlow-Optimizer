@@ -203,3 +203,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Solver output trees (multi-GB; published via Zenodo, not tracked here)
+experiment_output/
+06_benchmark_start_script/output/
+06_benchmark_start_script/logs/
