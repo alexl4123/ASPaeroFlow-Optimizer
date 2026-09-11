@@ -31,6 +31,7 @@ TIME_LIMIT="${TIME_LIMIT:-600}"              # seconds per solver run
 MEMORY_LIMIT="${MEMORY_LIMIT:-35}"           # GiB, must stay below --mem above
 WANDB_ENABLED="${WANDB_ENABLED:-False}"      # see the note below before turning this on
 RESULTS_FORMAT="${RESULTS_FORMAT:-csv.gz}"   # uncompressed would be ~2.9 TB across the full grid
+RUN_MIP="${RUN_MIP:-auto}"                   # auto | yes | no -- see the Gurobi note below
 
 [ -f "$MANIFEST" ] || { echo "[ERROR] $MANIFEST not found -- run the expansion script first" >&2; exit 1; }
 
@@ -77,6 +78,52 @@ mkdir -p "output/${FOLDER}" "logs"
   echo "started=$(date -Is)"
 } > "output/${FOLDER}/run_provenance_${PROBLEM}.txt"
 
+# ---- Gurobi: only some nodes carry a licence --------------------------------------------
+# 04_MIP needs Gurobi, and the licence is installed on a SUBSET of the nodes. A 325-task array
+# scatters across the partition, so most tasks would land on a node without one. If MIP simply
+# failed there, the result set would carry 04_MIP ERROR rows that look like solver failures but
+# are really scheduling accidents -- and MIP coverage would depend on where SLURM happened to
+# put each task, which is not something to publish.
+#
+# So MIP is decided explicitly, never accidentally:
+#   RUN_MIP=auto  probe this node for a usable licence; run MIP only if one is found (default)
+#   RUN_MIP=yes   force MIP on  -- use with -w/--nodelist or -C/--constraint on licensed nodes
+#   RUN_MIP=no    force MIP off -- the sweep across the whole partition
+#
+# The recommended pattern is TWO submissions:
+#   RUN_MIP=no  sbatch --array=1-325%40 run_all_benchmarks.slurm
+#   RUN_MIP=yes sbatch --array=1-325%N -w <licensed nodes> \
+#               --export=ALL,FOLDER=$FOLDER run_all_benchmarks.slurm
+# which gives complete, deliberate coverage for every solver including MIP.
+mip_licence_found() {
+  # A FUNCTIONAL check, not a file check. $HOME is shared across the whole cluster, so testing
+  # for $HOME/gurobi_wls.lic would succeed on every node and defeat the entire point -- the
+  # licences that matter here are the node-local ones. gurobi_cl actually validates, so it is
+  # authoritative when present; otherwise fall back to node-local paths only, never $HOME.
+  if command -v gurobi_cl >/dev/null 2>&1; then
+    gurobi_cl --license >/dev/null 2>&1 && return 0
+    return 1
+  fi
+  for f in /opt/gurobi/gurobi.lic /opt/gurobi*/gurobi.lic \
+           /usr/local/gurobi/gurobi.lic /usr/local/gurobi*/gurobi.lic; do
+    [ -f "$f" ] && return 0
+  done
+  return 1
+}
+
+case "$RUN_MIP" in
+  yes) MIP_FLAG="--experiment-mip=1"; MIP_WHY="forced on (RUN_MIP=yes)" ;;
+  no)  MIP_FLAG="--experiment-mip=0"; MIP_WHY="forced off (RUN_MIP=no)" ;;
+  auto)
+    if mip_licence_found; then
+      MIP_FLAG="--experiment-mip=1"; MIP_WHY="licence found on $(hostname)"
+    else
+      MIP_FLAG="--experiment-mip=0"; MIP_WHY="no licence on $(hostname); MIP skipped, not failed"
+    fi ;;
+  *) echo "[ERROR] RUN_MIP must be auto, yes or no (got: $RUN_MIP)" >&2; exit 1 ;;
+esac
+echo "MIP:       ${MIP_FLAG#--experiment-mip=} -- ${MIP_WHY}"
+
 # ---- the experiment selection ------------------------------------------------------------
 # Every flag defaults to 1 in start_benchmark_caller.py, so what is listed here is what gets
 # switched OFF.
@@ -98,12 +145,13 @@ if [ "$CAP_LEVEL" = "NONE" ]; then
   # SMALL family: everything -- heuristics, baselines, MIP and all 27 exact-ASP variants
   # -> 39 systems per instance
   FAMILY="small (everything: heuristics + MIP + 27 exact-ASP variants)"
-  EXPERIMENTS=()
+  EXPERIMENTS=( "$MIP_FLAG" )
 else
   # LARGE family: heuristics, baselines, MIP and the two best exact-ASP
   # configurations -> 12 systems per instance
   FAMILY="large (heuristics + MIP + ASP rp_dp_sp and rp_d_sp)"
   EXPERIMENTS=(
+    "$MIP_FLAG"
     --experiment-all-asp-variants=0
     # ENABLED here on purpose: the ASPaeroFlow heuristics and baselines, the MIP, and
     # 05_ASP_rp_dp_sp / 05_ASP_rp_d_sp -- the two best-performing exact configurations.
@@ -133,5 +181,6 @@ echo "experiment_family=${FAMILY}" >> "output/${FOLDER}/run_provenance_${PROBLEM
 
 echo "finished=$(date -Is)" >> "output/${FOLDER}/run_provenance_${PROBLEM}.txt"
 echo "results_format=${RESULTS_FORMAT}" >> "output/${FOLDER}/run_provenance_${PROBLEM}.txt"
+echo "mip=${MIP_FLAG#--experiment-mip=} (${MIP_WHY})" >> "output/${FOLDER}/run_provenance_${PROBLEM}.txt"
 echo "wandb_enabled=${WANDB_ENABLED}" >> "output/${FOLDER}/run_provenance_${PROBLEM}.txt"
 echo "[DONE] ${PROBLEM}"
