@@ -72,27 +72,29 @@ echo "Output:    output/${FOLDER}/output_${PROBLEM}/"
 
 source "$HOME/miniconda3/etc/profile.d/conda.sh"
 conda activate potassco
-# ---- Gurobi licence selection: node-local beats WLS ---------------------------------------
+# ---- Gurobi licence selection: the per-node licence beats WLS -----------------------------
 # GRB_LICENSE_FILE takes precedence over Gurobi's own search path, so exporting the WLS file
-# unconditionally would force WLS even on nodes carrying a manually installed licence -- and
-# with it the WLS limit of 2 concurrent sessions, on precisely the nodes that have no such
-# limit. So: prefer a node-local licence, fall back to WLS only when there is none.
+# unconditionally would force WLS even on the nodes carrying a manually installed licence --
+# and with it the WLS limit of 2 concurrent sessions, on precisely the nodes that have no such
+# limit.
 #
-# Override the search with GRB_LOCAL_LIC=/path/to/gurobi.lic if yours lives elsewhere.
-GRB_LOCAL=""
-for f in ${GRB_LOCAL_LIC:-} /opt/gurobi/gurobi.lic /opt/gurobi*/gurobi.lic \
-         /usr/local/gurobi/gurobi.lic /usr/local/gurobi*/gurobi.lic \
-         /opt/gurobi.lic /etc/gurobi.lic; do
-  [ -n "$f" ] && [ -f "$f" ] && { GRB_LOCAL="$f"; break; }
-done
-if [ -n "$GRB_LOCAL" ]; then
-  export GRB_LICENSE_FILE="$GRB_LOCAL"
-  GRB_WHY="node-local licence at $GRB_LOCAL -- no session cap"
+# The per-node licences live in the SHARED home, named after the node:
+#     $HOME/gurobi_<hostname>.lic/gurobi.lic     e.g. gurobi_coppernode25.lic/gurobi.lic
+# Because $HOME is shared, the existence of any of those files says nothing about the node this
+# task landed on -- only the one matching this hostname does. Hence the hostname-keyed lookup
+# rather than a path search.
+#
+# Override with GRB_LOCAL_LIC=/path/to/gurobi.lic if needed.
+GRB_HOST="$(hostname -s 2>/dev/null || hostname)"
+GRB_NODE_LIC="${GRB_LOCAL_LIC:-$HOME/gurobi_${GRB_HOST}.lic/gurobi.lic}"
+if [ -f "$GRB_NODE_LIC" ]; then
+  export GRB_LICENSE_FILE="$GRB_NODE_LIC"
+  GRB_WHY="per-node licence $GRB_NODE_LIC -- no session cap"
 elif [ -f "$HOME/gurobi_wls.lic" ]; then
   export GRB_LICENSE_FILE="$HOME/gurobi_wls.lic"
   GRB_WHY="WLS licence (shared \$HOME) -- capped at 2 concurrent sessions"
 else
-  GRB_WHY="no licence found; MIP will not run here"
+  GRB_WHY="no licence found for ${GRB_HOST}; MIP will not run here"
 fi
 echo "Gurobi:    ${GRB_WHY}"
 
