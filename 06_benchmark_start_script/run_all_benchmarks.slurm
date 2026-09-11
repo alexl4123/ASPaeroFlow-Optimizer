@@ -1,11 +1,23 @@
 #!/usr/bin/env bash
-#SBATCH -p sunnycove
+#SBATCH -p broadwell
 #SBATCH -t 720:00:00
 #SBATCH -N 1 -n 1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=40G
 #SBATCH -J v2bench
 #SBATCH -o logs/%x-%A_%a.out
+#
+# PARTITION: broadwell ONLY. Long-running jobs elsewhere get cancelled by the admin, and a task
+# here can run for tens of hours. If `broadwell` is a node FEATURE on this cluster rather than a
+# partition, keep your usual partition above and add `#SBATCH -C broadwell` instead. Check with:
+#     sinfo -o "%P %N %f" | head
+# Either can be overridden per submission without editing this file:
+#     sbatch -p <partition> -C broadwell --array=... run_all_benchmarks.slurm
+#
+# Two consequences of pinning to broadwell, both worth checking before the full launch:
+#   * these cores are older than sunnycove, so wall-clock estimates made elsewhere scale up;
+#   * concurrency is bounded by the number of broadwell nodes -- `%40` is pointless if there
+#     are fewer, and the MIP pass additionally needs licensed nodes WITHIN broadwell.
 #
 # Run the whole V2 benchmark as ONE job array -- one array task per problem directory
 # (region x time granularity x capacity level).
