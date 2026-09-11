@@ -115,11 +115,22 @@ mkdir -p "output/${FOLDER}" "logs"
 #   that is fine and auto is right. If it does not, auto will claim a licence where MIP then
 #   fails -- verify with a real solve before trusting it, and use no/only instead.
 #
-# The recommended pattern is TWO submissions:
-#   RUN_MIP=no  sbatch --array=1-325%40 run_all_benchmarks.slurm
-#   RUN_MIP=yes sbatch --array=1-325%N -w <licensed nodes> \
-#               --export=ALL,FOLDER=$FOLDER run_all_benchmarks.slurm
-# which gives complete, deliberate coverage for every solver including MIP.
+# The recommended pattern is TWO submissions, into SEPARATE output folders:
+#   sbatch --export=ALL,RUN_MIP=no,FOLDER=20260912_V2 \
+#          --array=1-325%13 run_all_benchmarks.slurm
+#   sbatch -p sunnycove -w coppernode[25-28] \
+#          --export=ALL,RUN_MIP=only,FOLDER=20260912_V2_MIP \
+#          --array=1-325%2 run_all_benchmarks.slurm
+#
+# SEPARATE folders, and this matters: hot-start state lives at
+# output/<FOLDER>/output_<PROBLEM>/hotstart_state.json, one file per problem. Two passes
+# running CONCURRENTLY against the same FOLDER would both write it, and the last writer wins
+# -- one pass's entries would vanish from the other's state. Sequential passes can share a
+# folder safely (that is what makes RUN_MIP=yes resumable); concurrent ones must not. Merge
+# the two result sets afterwards.
+#
+# The %2 on the MIP pass is not the node count: a WLS licence permits only 2 concurrent
+# Gurobi sessions, so more tasks would simply fail to acquire one.
 mip_licence_found() {
   # A FUNCTIONAL check, not a file check. $HOME is shared across the whole cluster, so testing
   # for $HOME/gurobi_wls.lic would succeed on every node and defeat the entire point -- the
