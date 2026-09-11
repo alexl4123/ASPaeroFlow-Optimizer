@@ -43,7 +43,7 @@ TIME_LIMIT="${TIME_LIMIT:-600}"              # seconds per solver run
 MEMORY_LIMIT="${MEMORY_LIMIT:-35}"           # GiB, must stay below --mem above
 WANDB_ENABLED="${WANDB_ENABLED:-False}"      # see the note below before turning this on
 RESULTS_FORMAT="${RESULTS_FORMAT:-csv.gz}"   # uncompressed would be ~2.9 TB across the full grid
-RUN_MIP="${RUN_MIP:-auto}"                   # auto | yes | no -- see the Gurobi note below
+RUN_MIP="${RUN_MIP:-auto}"                   # auto | yes | no | only -- see the Gurobi note below
 
 [ -f "$MANIFEST" ] || { echo "[ERROR] $MANIFEST not found -- run the expansion script first" >&2; exit 1; }
 
@@ -99,8 +99,21 @@ mkdir -p "output/${FOLDER}" "logs"
 #
 # So MIP is decided explicitly, never accidentally:
 #   RUN_MIP=auto  probe this node for a usable licence; run MIP only if one is found (default)
-#   RUN_MIP=yes   force MIP on  -- use with -w/--nodelist or -C/--constraint on licensed nodes
+#   RUN_MIP=yes   force MIP on, alongside every other solver
 #   RUN_MIP=no    force MIP off -- the sweep across the whole partition
+#   RUN_MIP=only  run NOTHING BUT MIP
+#
+# RUN_MIP=only exists because the licensed nodes (coppernode25-28) are in sunnycove, while the
+# campaign has to stay on broadwell or the admin cancels it. A MIP-only task is 21 instances x
+# 1 solver, so at a 600 s limit it caps at ~3.5 h -- short enough to run on sunnycove without
+# being the kind of long job that gets cancelled. It also removes any ordering dependency on
+# the main sweep, which RUN_MIP=yes would have (it relies on hot-start to skip work already
+# done, so it is only short if the main pass finished that problem first).
+#
+#   NOTE on auto: this script exports GRB_LICENSE_FILE=$HOME/gurobi_wls.lic before probing, and
+#   $HOME is shared, so a WLS (network) licence validates on ANY node. If WLS works for you,
+#   that is fine and auto is right. If it does not, auto will claim a licence where MIP then
+#   fails -- verify with a real solve before trusting it, and use no/only instead.
 #
 # The recommended pattern is TWO submissions:
 #   RUN_MIP=no  sbatch --array=1-325%40 run_all_benchmarks.slurm
@@ -124,15 +137,16 @@ mip_licence_found() {
 }
 
 case "$RUN_MIP" in
-  yes) MIP_FLAG="--experiment-mip=1"; MIP_WHY="forced on (RUN_MIP=yes)" ;;
-  no)  MIP_FLAG="--experiment-mip=0"; MIP_WHY="forced off (RUN_MIP=no)" ;;
+  yes)  MIP_FLAG="--experiment-mip=1"; MIP_WHY="forced on (RUN_MIP=yes)" ;;
+  no)   MIP_FLAG="--experiment-mip=0"; MIP_WHY="forced off (RUN_MIP=no)" ;;
+  only) MIP_FLAG="--experiment-mip=1"; MIP_WHY="MIP ONLY (RUN_MIP=only)" ;;
   auto)
     if mip_licence_found; then
       MIP_FLAG="--experiment-mip=1"; MIP_WHY="licence found on $(hostname)"
     else
       MIP_FLAG="--experiment-mip=0"; MIP_WHY="no licence on $(hostname); MIP skipped, not failed"
     fi ;;
-  *) echo "[ERROR] RUN_MIP must be auto, yes or no (got: $RUN_MIP)" >&2; exit 1 ;;
+  *) echo "[ERROR] RUN_MIP must be auto, yes, no or only (got: $RUN_MIP)" >&2; exit 1 ;;
 esac
 echo "MIP:       ${MIP_FLAG#--experiment-mip=} -- ${MIP_WHY}"
 
@@ -153,7 +167,19 @@ echo "MIP:       ${MIP_FLAG#--experiment-mip=} -- ${MIP_WHY}"
 #
 # The manifest distinguishes the two families: small-scaling rows carry capacity_level=NONE
 # because that family has no PCAP sweep (cap-enroute is already 1).
-if [ "$CAP_LEVEL" = "NONE" ]; then
+if [ "$RUN_MIP" = "only" ]; then
+  # Everything except 04_MIP switched off.
+  FAMILY="MIP only"
+  EXPERIMENTS=(
+    "$MIP_FLAG"
+    --experiment-asp-aero-flow=0 --experiment-asp-aero-flow-no-convex=0
+    --experiment-asp-aero-flow-nr-nd=0 --experiment-asp-aero-flow-nr-d=0
+    --experiment-asp-aero-flow-r-nd=0
+    --experiment-casa=0 --experiment-route-delay=0 --experiment-route=0 --experiment-delay=0
+    --experiment-all-asp-variants=0
+    --experiment-asp-rp-dp-sp=0 --experiment-asp-rp-d-sp=0
+  )
+elif [ "$CAP_LEVEL" = "NONE" ]; then
   # SMALL family: everything -- heuristics, baselines, MIP and all 27 exact-ASP variants
   # -> 39 systems per instance
   FAMILY="small (everything: heuristics + MIP + 27 exact-ASP variants)"
