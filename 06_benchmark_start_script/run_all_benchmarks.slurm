@@ -72,7 +72,29 @@ echo "Output:    output/${FOLDER}/output_${PROBLEM}/"
 
 source "$HOME/miniconda3/etc/profile.d/conda.sh"
 conda activate potassco
-export GRB_LICENSE_FILE="$HOME/gurobi_wls.lic"
+# ---- Gurobi licence selection: node-local beats WLS ---------------------------------------
+# GRB_LICENSE_FILE takes precedence over Gurobi's own search path, so exporting the WLS file
+# unconditionally would force WLS even on nodes carrying a manually installed licence -- and
+# with it the WLS limit of 2 concurrent sessions, on precisely the nodes that have no such
+# limit. So: prefer a node-local licence, fall back to WLS only when there is none.
+#
+# Override the search with GRB_LOCAL_LIC=/path/to/gurobi.lic if yours lives elsewhere.
+GRB_LOCAL=""
+for f in ${GRB_LOCAL_LIC:-} /opt/gurobi/gurobi.lic /opt/gurobi*/gurobi.lic \
+         /usr/local/gurobi/gurobi.lic /usr/local/gurobi*/gurobi.lic \
+         /opt/gurobi.lic /etc/gurobi.lic; do
+  [ -n "$f" ] && [ -f "$f" ] && { GRB_LOCAL="$f"; break; }
+done
+if [ -n "$GRB_LOCAL" ]; then
+  export GRB_LICENSE_FILE="$GRB_LOCAL"
+  GRB_WHY="node-local licence at $GRB_LOCAL -- no session cap"
+elif [ -f "$HOME/gurobi_wls.lic" ]; then
+  export GRB_LICENSE_FILE="$HOME/gurobi_wls.lic"
+  GRB_WHY="WLS licence (shared \$HOME) -- capped at 2 concurrent sessions"
+else
+  GRB_WHY="no licence found; MIP will not run here"
+fi
+echo "Gurobi:    ${GRB_WHY}"
 
 # Weights & Biases is OFF for this run, deliberately. With tens of thousands of solver runs
 # across the full grid it would mean as many logged W&B runs, network traffic from every node, and an
@@ -99,6 +121,7 @@ mkdir -p "output/${FOLDER}" "logs"
   echo "slurm_job=${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
   echo "host=$(hostname)"
   echo "started=$(date -Is)"
+  echo "gurobi_licence=${GRB_WHY}"
 } > "output/${FOLDER}/run_provenance_${PROBLEM}.txt"
 
 # ---- Gurobi: only some nodes carry a licence --------------------------------------------
@@ -150,8 +173,11 @@ mkdir -p "output/${FOLDER}" "logs"
 # folder safely (that is what makes RUN_MIP=yes resumable); concurrent ones must not. Merge
 # the two result sets afterwards.
 #
-# The %2 on the MIP pass is not the node count: a WLS licence permits only 2 concurrent
-# Gurobi sessions, so more tasks would simply fail to acquire one.
+# Concurrency on the MIP pass depends on WHICH licence the node uses. A WLS licence permits
+# only 2 concurrent Gurobi sessions, so %2 there. Nodes with a manually installed local
+# licence have no such cap, and concurrency is bounded by memory and cores exactly as on the
+# broadwell sweep: min(node_memory / 40G, cores / cpus-per-task) per node. Check which licence
+# a node actually picked in the job log ("Gurobi: ...") or in the provenance file.
 mip_licence_found() {
   # A FUNCTIONAL check, not a file check. $HOME is shared across the whole cluster, so testing
   # for $HOME/gurobi_wls.lic would succeed on every node and defeat the entire point -- the
