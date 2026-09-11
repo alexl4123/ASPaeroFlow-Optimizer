@@ -81,27 +81,32 @@ mkdir -p "output/${FOLDER}" "logs"
 # Every flag defaults to 1 in start_benchmark_caller.py, so what is listed here is what gets
 # switched OFF.
 #
-# The 27 exact-ASP variants (--experiment-all-asp-variants expands ground-delay x rerouting x
-# dynamic-sectorisation, each in {none, partial, full}) plus the two 05_ASP_rp_*_sp systems all
-# run 02_ASP/main.py, the EXACT solver. They belong on the small-scaling family, which exists
-# precisely so exact methods can close instances. On a 31,622-flight TG=60 instance they would
-# time out essentially every time, which is 600 seconds per run of predictable non-information.
+# --experiment-all-asp-variants expands to 27 exact-ASP configurations (ground-delay x rerouting
+# x dynamic-sectorisation, each in {none, partial, full}), all running 02_ASP/main.py -- the
+# EXACT solver. The full 27 belong on the small-scaling family, which exists precisely so exact
+# methods can close instances; on a 31,622-flight TG=60 instance they would time out essentially
+# every time, at 600 seconds per run of predictable non-information.
+#
+# TWO of them are kept on the large family as well, because they are the best-performing exact
+# configurations and are worth having a large-scale profile for:
+#     05_ASP_rp_dp_sp  =  ASP(r_p, d_p, s_p)   partial rerouting, partial delay, partial DAC
+#     05_ASP_rp_d_sp   =  ASP(r_p, d,   s_p)   partial rerouting, full delay,    partial DAC
 #
 # The manifest distinguishes the two families: small-scaling rows carry capacity_level=NONE
 # because that family has no PCAP sweep (cap-enroute is already 1).
 if [ "$CAP_LEVEL" = "NONE" ]; then
-  # SMALL family: heuristics, baselines AND all 27 exact-ASP variants -> 38 systems/instance
-  FAMILY="small (exact ASP included)"
-  EXPERIMENTS=(
-    --experiment-mip=0
-  )
+  # SMALL family: everything -- heuristics, baselines, MIP and all 27 exact-ASP variants
+  # -> 39 systems per instance
+  FAMILY="small (everything: heuristics + MIP + 27 exact-ASP variants)"
+  EXPERIMENTS=()
 else
-  # LARGE family: heuristics and baselines only -> 9 systems/instance
-  FAMILY="large (heuristics and baselines only)"
+  # LARGE family: heuristics, baselines, MIP and the two best exact-ASP
+  # configurations -> 12 systems per instance
+  FAMILY="large (heuristics + MIP + ASP rp_dp_sp and rp_d_sp)"
   EXPERIMENTS=(
     --experiment-all-asp-variants=0
-    --experiment-asp-rp-dp-sp=0 --experiment-asp-rp-d-sp=0
-    --experiment-mip=0
+    # ENABLED here on purpose: the ASPaeroFlow heuristics and baselines, the MIP, and
+    # 05_ASP_rp_dp_sp / 05_ASP_rp_d_sp -- the two best-performing exact configurations.
     --experiment-asp-r-d-s=0    --experiment-asp-r-d-ns=0
     --experiment-asp-r-nd-s=0   --experiment-asp-nr-d-s=0
     --experiment-asp-r-nd-ns=0  --experiment-asp-nr-nd-s=0
@@ -124,7 +129,7 @@ echo "experiment_family=${FAMILY}" >> "output/${FOLDER}/run_provenance_${PROBLEM
   --hot-start \
   --wandb-enabled="${WANDB_ENABLED}" \
   --results-format="${RESULTS_FORMAT}" \
-  "${EXPERIMENTS[@]}"
+  ${EXPERIMENTS[@]+"${EXPERIMENTS[@]}"}
 
 echo "finished=$(date -Is)" >> "output/${FOLDER}/run_provenance_${PROBLEM}.txt"
 echo "results_format=${RESULTS_FORMAT}" >> "output/${FOLDER}/run_provenance_${PROBLEM}.txt"
