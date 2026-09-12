@@ -15,6 +15,25 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 
+CODES = {"T": "TIMEOUT", "M": "MEMOUT", "E": "ERROR", "P": "UNPARSED"}
+
+
+def _true_outcome(row):
+    """Outcome from the solver's ERROR key, falling back to the recorded label."""
+    err = row.get("error_code")
+    if err is None:
+        sol = row.get("objective")
+        if isinstance(sol, list) and sol and isinstance(sol[-1], dict):
+            err = sol[-1].get("ERROR")
+        elif isinstance(sol, str):
+            err = sol
+    if err in CODES:
+        return CODES[err]
+    if err in ("", None):
+        return row.get("outcome", "ok") if err is None else "ok"
+    return row.get("outcome", "?")
+
+
 def hms(sec):
     sec = int(max(0, sec))
     return f"{sec // 3600}:{(sec % 3600) // 60:02d}:{sec % 60:02d}"
@@ -66,9 +85,15 @@ def main():
             except json.JSONDecodeError:
                 continue        # a half-written last line while a job is running
             rows.append(r)
-            outcomes[r.get("outcome", "?")] += 1
-            if r.get("outcome") not in ("ok", None):
-                failures.append((task, r.get("instance"), r.get("system"), r.get("outcome")))
+            # Recover the true outcome from the solver's own ERROR key. Rows written before
+            # 2026-09-12 recorded outcome="ok" unconditionally, because the writer keyed off
+            # the runtime -- which is always a float -- instead of the output's ERROR field.
+            # The raw output is stored under "objective", so those rows can still be read
+            # correctly rather than discarded.
+            outcome = _true_outcome(r)
+            outcomes[outcome] += 1
+            if outcome != "ok":
+                failures.append((task, r.get("instance"), r.get("system"), outcome))
         if rows:
             done, total = rows[-1].get("done", len(rows)), rows[-1].get("total", 0)
         per_task[task] = (done, total)

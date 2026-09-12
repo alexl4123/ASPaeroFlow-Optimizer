@@ -836,12 +836,23 @@ def main() -> None:
         _done_runs += 1
         elapsed = time.time() - _t_start
         eta = (elapsed / _done_runs) * (_total_runs - _done_runs) if _done_runs else 0.0
+        # The outcome lives in the LAST output dict's "ERROR" key, not in the runtime.
+        # run_process always returns a float runtime -- the codes never appear there -- so
+        # keying off rt silently reported every timeout and memout as "ok".
+        err = None
+        if isinstance(sol, list) and sol and isinstance(sol[-1], dict):
+            err = sol[-1].get("ERROR")
+        elif isinstance(sol, str):
+            err = sol
         outcome = {TIMEOUT_CODE: "TIMEOUT", MEMOUT_CODE: "MEMOUT",
-                   ERROR_CODE: "ERROR", UNPARSE_CODE: "UNPARSED"}.get(rt, "ok")
+                   ERROR_CODE: "ERROR", UNPARSE_CODE: "UNPARSED"}.get(err, "ok")
+        last = sol[-1] if isinstance(sol, list) and sol and isinstance(sol[-1], dict) else {}
+        obj = " ".join(f"{k.lower()}={last[k]}" for k in ("OVERLOAD", "ARRIVAL-DELAY")
+                       if k in last) or "-"
         rt_str = f"{rt:8.1f}s" if outcome == "ok" else " " * 9
         print(f"[{_done_runs:>5}/{_total_runs}] {(_done_runs / _total_runs) * 100:5.1f}%  "
               f"{system_name:<28} {inst_name:<22} {outcome:<8} {rt_str} "
-              f"obj={sol}  elapsed {_fmt_hms(elapsed)}  eta {_fmt_hms(eta)}"
+              f"{obj}  elapsed {_fmt_hms(elapsed)}  eta {_fmt_hms(eta)}"
               f"{'  (hot-start)' if reused else ''}", flush=True)
         try:
             with _progress_path.open("a", encoding="utf-8") as fh:
@@ -849,6 +860,7 @@ def main() -> None:
                     "ts": datetime.now().isoformat(timespec="seconds"),
                     "instance": inst_name, "system": system_name, "outcome": outcome,
                     "runtime_s": rt, "ram_mb": peak, "objective": sol,
+                    "error_code": err,
                     "done": _done_runs, "total": _total_runs, "reused": reused,
                 }) + "\n")
         except OSError:
