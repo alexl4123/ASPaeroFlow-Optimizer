@@ -39,12 +39,57 @@ def hms(sec):
     return f"{sec // 3600}:{(sec % 3600) // 60:02d}:{sec % 60:02d}"
 
 
+def expected_runs(manifest, root, sys_small, sys_large):
+    """Solver runs the WHOLE campaign implies, read from the problem index.
+
+    The other denominator in this report -- the sum of each task's own "total" -- only
+    covers tasks that have STARTED, because progress.jsonl is what carries it. That
+    number therefore reports how far the launched work has got, not how far the campaign
+    has got, and it grows as tasks launch. This reads ../05_instances/problems.tsv
+    instead, which lists every problem whether or not it has run.
+
+    Columns: problem_dir, time_granularity, region, capacity_level, n_instances.
+    capacity_level == "NONE" marks the small-scaling family, which runs 39 systems per
+    instance against the large family's 12. A MIP-only pass runs exactly one.
+    """
+    if not manifest.exists():
+        return None, None
+    rows = []
+    with open(manifest) as fh:
+        header = fh.readline().rstrip("\n").split("\t")
+        try:
+            i_cap, i_n = header.index("capacity_level"), header.index("n_instances")
+        except ValueError:
+            return None, None
+        for line in fh:
+            f = line.rstrip("\n").split("\t")
+            if len(f) > max(i_cap, i_n):
+                try:
+                    rows.append((f[i_cap], int(f[i_n])))
+                except ValueError:
+                    continue
+    if not rows:
+        return None, None
+    # RUN_MIP=only writes "MIP ONLY" into the provenance; that pass runs one system.
+    mip_only = any("MIP ONLY" in prov.read_text(errors="replace")
+                   for prov in root.glob("run_provenance_*.txt"))
+    total = sum(n * (1 if mip_only else (sys_small if cap == "NONE" else sys_large))
+                for cap, n in rows)
+    return total, len(rows)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--output-root", type=Path, default=Path("output"))
     ap.add_argument("--folder", default=None, help="default: most recently modified")
     ap.add_argument("--detail", action="store_true")
     ap.add_argument("--failures", action="store_true")
+    ap.add_argument("--manifest", type=Path, default=Path("../05_instances/problems.tsv"),
+                    help="problem index, for the true campaign denominator")
+    ap.add_argument("--systems-small", type=int, default=39,
+                    help="solver systems per small-family instance (capacity_level NONE)")
+    ap.add_argument("--systems-large", type=int, default=12,
+                    help="solver systems per large-family instance")
     a = ap.parse_args()
 
     root = a.output_root / a.folder if a.folder else None
@@ -104,9 +149,20 @@ def main():
     finished = sum(1 for d, t in per_task.values() if t and d >= t)
     pct = 100 * tot_done / tot_all if tot_all else 0
 
-    print(f"  tasks started      {len(per_task)}")
+    exp_runs, n_problems = expected_runs(a.manifest, root, a.systems_small, a.systems_large)
+
+    started = f"{len(per_task)}" + (f" / {n_problems}" if n_problems else "")
+    print(f"  tasks started      {started}")
     print(f"  tasks finished     {finished}")
-    print(f"  solver runs        {tot_done:,} / {tot_all:,}  ({pct:.1f}%)")
+    if exp_runs:
+        print(f"  solver runs        {tot_done:,} / {exp_runs:,}  "
+              f"({100 * tot_done / exp_runs:.1f}%)  OF THE CAMPAIGN")
+        print(f"                     {tot_done:,} / {tot_all:,}  ({pct:.1f}%)  "
+              f"of the {len(per_task)} started task(s)")
+    else:
+        print(f"  solver runs        {tot_done:,} / {tot_all:,}  ({pct:.1f}%)  "
+              f"of the {len(per_task)} started task(s)")
+        print(f"  campaign total     unknown -- {a.manifest} not found; pass --manifest")
     print(f"  last activity      {hms(time.time() - newest)} ago")
     print(f"\n  outcomes: " + "  ".join(f"{k}={v:,}" for k, v in outcomes.most_common()))
     if tot_all and tot_done:
