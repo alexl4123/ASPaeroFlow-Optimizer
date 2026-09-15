@@ -593,7 +593,10 @@ def main(argv: Optional[List[str]] = None) -> None:
     if verbosity > 0:
         print(model.get_rerouted_airplanes())
 
-    model.computation_finished = True
+    # COMPUTATION-FINISHED now comes from clingo's SolveResult.exhausted, set in Solver.solve().
+    # It used to be forced True here, which made the field meaningless: every completed run said
+    # "finished" whether or not the optimum had been proven, and every line a timeout could see
+    # said False. Do not reinstate the assignment.
     print(model.get_model_optimization_string())
     #np.savetxt(sys.stdout, converted_instance_matrix, delimiter=",", fmt="%i") 
 

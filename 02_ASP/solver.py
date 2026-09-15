@@ -76,12 +76,20 @@ class Solver:
         self.best_cost = None
         self.models_reported = 0
 
+        # clingo's SolveResult.exhausted for the last solve(): the search space was closed, so
+        # the optimum is PROVEN. This is the only reliable signal for that. Model.optimality_
+        # proven is not: it is false on every model under the default --opt-mode=opt, even for a
+        # run that exhausted the space, because clingo only flags a model optimal under
+        # --opt-mode=optN. Measured both ways before this was written.
+        self.search_exhausted = False
+
 
     def solve(self):
         
         self.final_model = None
         self.best_cost = None
         self.models_reported = 0
+        self.search_exhausted = False
 
         start_time = time.time()
         self.total_time_start = start_time
@@ -111,7 +119,8 @@ class Solver:
 
                     self.grounding_time = grd_time_end - grd_time_start
 
-                    ctl.solve(on_model=self.on_model)
+                    solve_result = ctl.solve(on_model=self.on_model)
+                    self.search_exhausted = bool(solve_result.exhausted)
             finally:
                 os.dup2(saved_fd2,fd2)
                 os.close(saved_fd2)
@@ -129,6 +138,14 @@ class Solver:
             return None
         
         self.final_model.set_computation_time(runtime)
+        # Whether this run actually finished, rather than "we got here". The caller used to set
+        # this to True unconditionally just before printing, so the field said "finished" for a
+        # run that had merely stopped. LIMITATION: the benchmark's time limit arrives as an
+        # external SIGKILL, so a run that overruns never reaches this line -- and never prints a
+        # final result line either. This makes the field meaningful for runs that COMPLETE within
+        # the limit; it cannot rescue the killed ones, whose last visible line is an intermediate
+        # model still carrying False.
+        self.final_model.computation_finished = self.search_exhausted
         if self.report_solver_stats:
             self.final_model.set_solver_summary(_solver_summary(ctl, self.models_reported))
 
