@@ -9,8 +9,6 @@
 
 navpoint(NAV) :- navpoint_sector(NAV,_,_).
 
-
-
 % Dynamic Sector Allocation:
 navpoint_sector(SEC,SEC,T) :- navpoint(SEC), time(T), airport(SEC).
 1{navpoint_sector(NAV,SEC,T):navpoint_sector(_,SEC,0)}1:- navpoint(NAV), time(T), not airport(NAV), regulation_dynamic_sector_allocation.
@@ -171,6 +169,10 @@ flight(ID,S,T') :- flightT(ID,TT,T',1), navpoint_flight(ID,XX,TT), navpoint_sect
 :~ arrival_delay(ID,DIFF). [DIFF@9,ID]
 % TERTIARY WEAK CONSTRAINT:
 :~ sector_number(T,NUM). [NUM@8,T]
+
+sector_open(SEC,T) :- navpoint_sector(SEC,SEC,T).
+%:- #count{ SEC,T : sector_open(SEC,T) } > 450.
+
 % OPTIMIZE FOR LEAST SECTOR CHANGES:
 :~ sector_diff(T,DIFF). [DIFF@7,T]
 % OPTIMIZE FOR LEAST REROUTES/DELAYS:
@@ -183,6 +185,11 @@ flight(ID,S,T') :- flightT(ID,TT,T',1), navpoint_flight(ID,XX,TT), navpoint_sect
 %#heuristic reroute(ID):navpoint_flight_plan(ID,_,_). [1,sign]
 %#heuristic actual_departure_time(ID,TP) : planned_departure_time(ID,TP). [1,sign]
 
+% Drives sector_number, which is objective level @8. INERT unless clingo is run with
+% --heuristic=Domain: without it the grounder emits the directive and clasp discards it. Measured
+% on 20260915_test.lp at a fixed conflict budget, adding or removing this line changes no search
+% statistic whatsoever under the default heuristic. Use --solver-profile domain or usc-domain.
+#heuristic navpoint_sector_decision(SEC,0,T) : initial_sector(SEC), time(T), not airport(SEC). [1,true]
 
 
 %output_sec_len(X,Y,Z) :- sector_len(X,Y,Z), Y = 12.

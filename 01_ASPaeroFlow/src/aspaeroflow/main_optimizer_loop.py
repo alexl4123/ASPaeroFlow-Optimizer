@@ -120,7 +120,8 @@ class Main:
         explainability_context = None,
         sequential_execution = False,
         injected_data = False,
-        arrival_delay_metric = DEFAULT_ARRIVAL_DELAY_METRIC
+        arrival_delay_metric = DEFAULT_ARRIVAL_DELAY_METRIC,
+        solver_options = None
         ) -> None:
 
         self._graph_path: Optional[Path] = graph_path
@@ -151,6 +152,11 @@ class Main:
 
         # How the signed difference t_actarr - t_exparr is scored; see common/arrival_delay.py.
         self._arrival_delay_metric = normalise_arrival_delay_metric(arrival_delay_metric)
+
+        # Extra clingo flags, selected by name via --solver-profile; see
+        # common/clingo_options.py. Empty list => every Control is built as it always was.
+        # convert_global_vars_to_dto() copies vars(self), so this reaches IterationStep too.
+        self._solver_options = list(solver_options) if solver_options else []
 
         self._wandb_log = wandb_log
 

@@ -18,11 +18,24 @@ REROUTED: Final[str] = "reroute"
 SECTOR_CONFIG: Final[str] = "chosen_config"
 SIGNATURES: Final[set[str]] = {ARRIVAL_DELAY, SECTOR_FLIGHT, NAVPOINT_FLIGHT, REROUTED, SECTOR_CONFIG}
 
+#: The seed this file used to hard-code. It is kept as the fallback so that a caller which does
+#: not pass a seed produces exactly the runs it always did. It is also the default of
+#: 01_ASPaeroFlow/main.py's --seed and of the benchmark caller's build_command(), so the value
+#: reaching clingo does not move for any existing invocation -- but --seed now actually reaches
+#: these sub-solves, which it never did before.
+LEGACY_SEED: Final[int] = 11904657
+
 class Solver:
-    def __init__(self, encoding, instance):
+    def __init__(self, encoding, instance, seed = None, solver_options = None):
 
         self.encoding = encoding
         self.instance = instance
+
+        # None => the seed this file hard-coded. The heuristic's ASP sub-calls used to run at
+        # 11904657 no matter what --seed the experiment asked for.
+        self.seed = LEGACY_SEED if seed is None else int(seed)
+        # Extra clingo flags chosen by name; see common/clingo_options.py. Empty by default.
+        self.solver_options = list(solver_options) if solver_options else []
 
         self.final_model = None
 
@@ -34,7 +47,7 @@ class Solver:
 
         start_time = time.time()
 
-        ctl = clingo.Control(["--seed=11904657"])
+        ctl = clingo.Control([f"--seed={self.seed}"] + self.solver_options)
 
         ##########################################################
         # SILENCE CLINGO (all stdout/warnings directly to devnull):

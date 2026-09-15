@@ -541,7 +541,38 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
 # Benchmarking logic
 # ---------------------------------------------
 
-def build_command(system: Dict, paths: Dict[str, Path], python_bin: str, timestep_granularity, seed:int = 11904657) -> List[str]:
+#: Solver folders whose main.py understands --solver-profile / --solver-arg. 03_Delay, 04_MIP
+#: and CASA do not run clingo at all, and their argparse would reject the flag outright.
+ASP_SOLVER_FOLDERS: Tuple[str, ...] = ("01_ASPaeroFlow", "02_ASP")
+
+
+def solver_option_cli(system: Dict, args) -> List[str]:
+    """The --solver-* flags this system should receive, if any.
+
+    Returns [] for the default profile with no extra args, so a benchmark that does not ask for
+    a solver strategy produces exactly the command line it always produced. That matters: the
+    published results and any campaign in flight were produced by that command line.
+
+    To run an ablation, invoke this script once per strategy INTO ITS OWN --output-dir:
+        ./start_benchmark_caller.py <instances> --output-dir=<f>_bb
+        ./start_benchmark_caller.py <instances> --output-dir=<f>_usc_domain --solver-profile=usc-domain
+    """
+    script = str(system.get("script", ""))
+    if not any(folder in script for folder in ASP_SOLVER_FOLDERS):
+        return []
+
+    cli: List[str] = []
+    if args.solver_profile != "default":
+        cli.append(f"--solver-profile={args.solver_profile}")
+    for raw in (args.solver_arg or []):
+        cli.append(f"--solver-arg={raw}")
+    # --solver-stats exists only on 02_ASP/main.py, which is where the JSON result line is built.
+    if args.solver_stats == "True" and "02_ASP" in script:
+        cli.append("--solver-stats=true")
+    return cli
+
+
+def build_command(system: Dict, paths: Dict[str, Path], python_bin: str, timestep_granularity, seed:int = 11904657, solver_cli: List[str] | None = None) -> List[str]:
     """Assemble the command‑line for one solver run."""
     cmd = [
         python_bin,
@@ -567,6 +598,10 @@ def build_command(system: Dict, paths: Dict[str, Path], python_bin: str, timeste
 
     if system["encoding"] is not None:
         cmd.append(f"--encoding-path={system['encoding']}")
+
+    # Empty unless --solver-profile / --solver-arg / --solver-stats were passed to this script.
+    if solver_cli:
+        cmd.extend(solver_cli)
     return cmd
 
 
@@ -767,6 +802,31 @@ def main() -> None:
     parser.add_argument("--experiment-asp-r-nd-sp", type=int, default=1, help="true (val!=0), false (val=0)")
     parser.add_argument("--experiment-asp-nr-nd-sp", type=int, default=1, help="true (val!=0), false (val=0)")
 
+    # Clingo search strategy for the ASP systems (01_ASPaeroFlow, 02_ASP), selected by NAME so a
+    # benchmark configuration does not carry raw solver flags. "default" passes nothing at all,
+    # which is what every previous campaign did -- the published LPNMR/ATMOS numbers and any run
+    # in flight are produced by that path. See common/clingo_options.py for the flag lists.
+    #
+    # "usc-domain" is the combination measured to solve instances in seconds that branch-and-bound
+    # does not close in 30 minutes; it needs --heuristic=Domain for the encoding's #heuristic
+    # directive to have any effect at all.
+    #
+    # NOTE when comparing across profiles at a TIMEOUT: core-guided (usc) search optimises the
+    # objective levels roughly top-down and can report ONE model and then nothing for the rest of
+    # the budget, while branch-and-bound improves every level together. A timed-out usc number and
+    # a timed-out bb number are therefore not like-for-like. --solver-stats adds the solver's own
+    # LOWER BOUND to each result line, which is what makes the two comparable.
+    parser.add_argument("--solver-profile", type=str, default="default",
+                        choices=["default", "usc", "domain", "usc-domain"],
+                        help="Named clingo search configuration for the ASP systems. "
+                             "'default' passes no flags (what every previous campaign did).")
+    parser.add_argument("--solver-arg", type=str, action="append", default=None, metavar="FLAG",
+                        help="Extra raw clingo flag for the ASP systems, repeatable, e.g. "
+                             "--solver-arg=--parallel-mode=5. Appended after the profile's flags.")
+    parser.add_argument("--solver-stats", type=str, default="False", choices=["True", "False"],
+                        help="Add clingo diagnostics (cost vector, lower bound, models reported, "
+                             "whether the search was exhausted) to 02_ASP's JSON result lines.")
+
     parser.add_argument(
         "--hot-start",
         action="store_true",
@@ -815,6 +875,13 @@ def main() -> None:
     first_failure: Dict[str, str | None] = {sys_["key"]: None for sys_ in systems}
 
     timestep_granularity = args.timestep_granularity
+
+    # Say which solver configuration produced these numbers, so the log identifies the run.
+    _solver_desc = args.solver_profile
+    if args.solver_arg:
+        _solver_desc += " + " + " ".join(args.solver_arg)
+    print(f"[config] clingo solver profile: {_solver_desc}"
+          f"{' (+ --solver-stats)' if args.solver_stats == 'True' else ''}", flush=True)
 
     # ---- progress accounting -------------------------------------------------------------
     # The only previous output was "[system] instance: running ...", with no outcome, no
@@ -937,7 +1004,8 @@ def main() -> None:
             }
 
 
-            cmd = build_command(system, paths, args.python_bin, timestep_granularity)
+            cmd = build_command(system, paths, args.python_bin, timestep_granularity,
+                                solver_cli=solver_option_cli(system, args))
             cmd += system["cmd"]
 
             #print(" ".join(cmd))

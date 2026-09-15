@@ -306,7 +306,9 @@ class IterationStep:
             instance = self._explainability_context["ITERATION-BACKUP"]["ASP-INSTANCE"]
             encoding = self.encoding
 
-            solver: Model = Solver(encoding, instance)
+            solver: Model = Solver(encoding, instance,
+                                   seed=getattr(self, "_seed", None),
+                                   solver_options=getattr(self, "_solver_options", None))
             model = solver.solve()
 
             solutions = [(model, sector_config_restore_dict, instance)]
@@ -553,6 +555,7 @@ class IterationStep:
                                     self._convex_sectors,
                                     sequential_execution,
                                     self._arrival_delay_metric,
+                                    getattr(self, "_solver_options", None),
                                     )
 
         return job, rows_pool

@@ -24,24 +24,69 @@ NAVPOINT_FLIGHT: Final[str] = "navpoint_flight"
 NAVAID_SECTOR: Final[str] = "navaid_sector"
 SIGNATURES: Final[set[str]] = {ARRIVAL_DELAY, FLIGHT, REROUTE, NAVPOINT_FLIGHT, NAVAID_SECTOR, OVERLOAD, SECTOR_NUMBER, SECTOR_DIFF, RECONFIG}
 
+def _solver_summary(ctl, models_reported):
+    """Clingo's own view of the finished search.
+
+    Reported only under --solver-stats, and worth having under --opt-strategy=usc: core-guided
+    search can report ONE model and then spend the rest of the budget raising the LOWER bound
+    with nothing to show on stdout (measured: 1 on_model call in 25 s on 20260915_test2.lp with
+    usc-domain). SOLVER-LOWER-BOUND is where that work is visible, and it is what says whether an
+    incumbent is near-optimal or merely the first thing found.
+
+    SOLVER-OPTIMALITY-PROVEN is clingo's per-model flag and is ALWAYS false under the default
+    --opt-mode=opt, even for a run that exhausted the search space; SOLVER-EXHAUSTED and
+    SOLVER-OPTIMAL-MODELS are the fields that actually answer "was this proved optimal?".
+    """
+    summary = {"SOLVER-MODELS-REPORTED": models_reported}
+    try:
+        stats = ctl.statistics.get("summary", {})
+        models = stats.get("models", {})
+        summary["SOLVER-COSTS"] = stats.get("costs")
+        summary["SOLVER-LOWER-BOUND"] = stats.get("lower")
+        summary["SOLVER-MODELS-ENUMERATED"] = models.get("enumerated")
+        summary["SOLVER-OPTIMAL-MODELS"] = models.get("optimal")
+        summary["SOLVER-EXHAUSTED"] = bool(models.get("optimal"))
+    except Exception:                       # statistics are diagnostics; never fail a solve
+        pass
+    return summary
+
+
 class Solver:
-    def __init__(self, encoding, instance, seed = 1, wandb_log = None):
+    def __init__(self, encoding, instance, seed = 1, wandb_log = None,
+                 solver_options = None, report_solver_stats = False):
         self.encoding = encoding
         self.instance = instance
         self.seed = seed
         self.wandb_log = wandb_log
 
+        # Extra clingo flags, chosen by name via --solver-profile (see common/clingo_options.py).
+        # An empty list is what this class always used: clingo.Control([]) is clingo.Control().
+        self.solver_options = list(solver_options) if solver_options else []
+        # Emit the solver diagnostics below as extra JSON keys. OFF by default, so the reported
+        # line is byte-for-byte what it has always been and a running benchmark keeps parsing it.
+        self.report_solver_stats = bool(report_solver_stats)
+
         self.final_model = None
+
+        # Best cost seen across ALL on_model calls, not merely the last one. clasp reports a
+        # monotonically improving sequence under branch-and-bound AND under --opt-strategy=usc,
+        # measured on 02_ASP/20260915_test{,2}.lp at 1 and 4 threads, so this never fires today.
+        # It is here so that a strategy which ever reported a non-improving model could not
+        # silently replace a good incumbent with a worse one at a timeout.
+        self.best_cost = None
+        self.models_reported = 0
 
 
     def solve(self):
         
         self.final_model = None
+        self.best_cost = None
+        self.models_reported = 0
 
         start_time = time.time()
         self.total_time_start = start_time
 
-        ctl = clingo.Control()
+        ctl = clingo.Control(self.solver_options)
         ctl.configuration.solver.seed = self.seed
 
         ##########################################################
@@ -84,10 +129,19 @@ class Solver:
             return None
         
         self.final_model.set_computation_time(runtime)
+        if self.report_solver_stats:
+            self.final_model.set_solver_summary(_solver_summary(ctl, self.models_reported))
 
         return self.final_model
 
     def on_model(self, model):
+
+        # Keep the BEST model, not just the most recent one. See the note on self.best_cost.
+        cost = tuple(model.cost)
+        self.models_reported += 1
+        if self.best_cost is not None and cost > self.best_cost:
+            return
+        self.best_cost = cost
 
         parsed = [symbol for symbol in model.symbols(atoms=True) if symbol.name in SIGNATURES]
 
@@ -105,6 +159,13 @@ class Solver:
         
         current_time = time.time() - self.total_time_start
         self.final_model = Model(overload, arrival_delay, sector_number, sector_diff, reroute, reconfig, flights, navpoint_flights, navaid_sector_time, self.grounding_time, current_time, model.optimality_proven)
+        if self.report_solver_stats:
+            self.final_model.set_solver_summary({
+                "SOLVER-COST": list(model.cost),
+                "SOLVER-MODEL-INDEX": model.number,
+                "SOLVER-MODELS-REPORTED": self.models_reported,
+                "SOLVER-OPTIMALITY-PROVEN": model.optimality_proven,
+            })
         
         output_string = self.final_model.get_model_optimization_string()
         tmp = os.dup(self.tmp_fd)
@@ -147,6 +208,18 @@ class Model:
         self.current_time = current_time
         self.computation_finished = computation_finished
 
+        # Optional clingo diagnostics, emitted only under --solver-stats. None => the JSON line
+        # below is exactly the six objective keys plus timings that it has always been.
+        self.solver_summary = None
+
+    def set_solver_summary(self, summary):
+        """Merge clingo diagnostics into this model (see Solver.report_solver_stats)."""
+        if not summary:
+            return
+        if self.solver_summary is None:
+            self.solver_summary = {}
+        self.solver_summary.update(summary)
+
     def get_model_optimization_string(self):
 
         output_dict = {}
@@ -159,6 +232,8 @@ class Model:
         output_dict["GROUNDING-TIME"] = self.grounding_time
         output_dict["TOTAL-TIME-TO-THIS-POINT"] = self.current_time
         output_dict["COMPUTATION-FINISHED"] = self.computation_finished
+        if self.solver_summary:
+            output_dict.update(self.solver_summary)
 
         output_string = json.dumps(output_dict)
 

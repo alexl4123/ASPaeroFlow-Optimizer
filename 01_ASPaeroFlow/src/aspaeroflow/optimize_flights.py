@@ -72,7 +72,8 @@ class OptimizeFlights:
                  max_number_sectors = -1,
                  convex_sectors = 0,
                  sequential_execution = False,
-                 arrival_delay_metric = DEFAULT_ARRIVAL_DELAY_METRIC
+                 arrival_delay_metric = DEFAULT_ARRIVAL_DELAY_METRIC,
+                 solver_options = None
                  ):
 
         self.capacity_management_enabled = capacity_management_enabled
@@ -84,6 +85,9 @@ class OptimizeFlights:
 
         # How the signed difference t_actarr - t_exparr is scored; see common/arrival_delay.py.
         self._arrival_delay_metric = normalise_arrival_delay_metric(arrival_delay_metric)
+
+        # Extra clingo flags (--solver-profile / --solver-arg); empty unless asked for.
+        self._solver_options = list(solver_options) if solver_options else []
 
         self.encoding = encoding
         self.capacity = capacity
@@ -955,7 +959,8 @@ class OptimizeFlights:
             #    quit()
             #quit()
 
-        solver: Model = Solver(encoding, instance)
+        solver: Model = Solver(encoding, instance, seed=self.seed,
+                               solver_options=self._solver_options)
         model = solver.solve()
 
         return model, config_restore_dict, instance

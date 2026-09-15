@@ -29,6 +29,11 @@ from src.aspaeroflow.optimize_flights import MAX, TRIANGULAR, LINEAR
 from src.aspaeroflow.arrival_delay_bootstrap import (
     add_cli_argument as add_arrival_delay_metric_argument,
 )
+from src.aspaeroflow.clingo_options_bootstrap import (
+    add_cli_arguments as add_solver_option_arguments,
+    describe as describe_solver_options,
+    options_from_args as solver_options_from_args,
+)
 
 # ---------------------------------------------------------------------------
 # CLI utilities (with config + bundle directory support)
@@ -189,6 +194,12 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
     parser.add_argument("--optimizer", type=str, default=C("optimizer","ASP"), help="Either ASP or Enumerate")
 
     add_arrival_delay_metric_argument(parser, default=C("arrival-delay-metric", None))
+
+    # Clingo search configuration, by name. Default profile = no flags, i.e. exactly the
+    # Control(["--seed=..."]) this pipeline has always built. See common/clingo_options.py.
+    add_solver_option_arguments(parser,
+                                default_profile=C("solver-profile", None),
+                                default_args=C("solver-arg", None))
 
     return parser
 
@@ -641,6 +652,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         print(f"    navaid-sector:   {args.navaid_sector_path}")
         print(f"    encoding:        {args.encoding_path}")
         print(f"    arrival-delay:   {args.arrival_delay_metric}")
+        print(f"    clingo solver:   {describe_solver_options(args.solver_profile, args.solver_arg)}")
         if args.data_dir:
             print(f"    data-dir:        {args.data_dir}")
         if args.config:
@@ -715,7 +727,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                     args.max_considered_aircraft,
                     explainability_context,
                     args.sequential_execution,
-                    arrival_delay_metric=args.arrival_delay_metric
+                    arrival_delay_metric=args.arrival_delay_metric,
+                    solver_options=solver_options_from_args(args)
                     )
             key, value = app.run()
         else:
@@ -743,7 +756,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                     args.max_considered_aircraft,
                     explainability_context,
                     args.sequential_execution,
-                    arrival_delay_metric=args.arrival_delay_metric
+                    arrival_delay_metric=args.arrival_delay_metric,
+                    solver_options=solver_options_from_args(args)
                     )
             global_dto, optimization_dto = app.run()
 
@@ -778,7 +792,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                         explainability_context,
                         False,
                         injected_data=True,
-                        arrival_delay_metric=args.arrival_delay_metric
+                        arrival_delay_metric=args.arrival_delay_metric,
+                        solver_options=solver_options_from_args(args)
                         )
 
                 app.inject_global_dto(global_dto)

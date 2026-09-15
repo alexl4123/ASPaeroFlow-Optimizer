@@ -20,6 +20,11 @@ from arrival_delay_bootstrap import (
     add_cli_argument as add_arrival_delay_metric_argument,
     asp_metric_fact,
 )
+from clingo_options_bootstrap import (
+    add_cli_arguments as add_solver_option_arguments,
+    describe as describe_solver_options,
+    options_from_args as solver_options_from_args,
+)
 
 
 AFFIRMATIVE: Final[set[str]] = {"yes", "y"}
@@ -179,6 +184,20 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
     parser.add_argument("--allow-overloads", type=str, default=str(C("allow-overloads", "false")),
                         help="true/false: Allow solutions with overload constraint violations.")
 
+    # Clingo search configuration, selected by name. The default profile is the empty flag list,
+    # i.e. exactly the clingo.Control() this script has always built, so an invocation that does
+    # not mention these options is unchanged. See common/clingo_options.py.
+    add_solver_option_arguments(parser,
+                                default_profile=C("solver-profile", None),
+                                default_args=C("solver-arg", None))
+    parser.add_argument("--solver-stats", type=str, default=str(C("solver-stats", "false")),
+                        help="true/false: add clingo diagnostics (cost vector, LOWER BOUND, "
+                             "models reported, whether the search was exhausted) to each JSON "
+                             "line. Off by default so the reported line stays exactly what "
+                             "downstream parsers expect. Worth turning on with "
+                             "--solver-profile usc, where the incumbent alone does not say how "
+                             "much of the gap has been closed.")
+
     return parser
 
 def _apply_data_dir_defaults(args: argparse.Namespace) -> argparse.Namespace:
@@ -254,6 +273,7 @@ def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
         return s in ("1","true","t","yes","y","on")
     args.save_results = _str2bool(args.save_results)
     args.wandb_enabled = _str2bool(args.wandb_enabled)
+    args.solver_stats = _str2bool(args.solver_stats)
     
     #args.regulation_ground_delay_active = _str2bool(args.regulation_ground_delay_active)
     #args.regulation_rerouting_active = _str2bool(args.regulation_rerouting_active)
@@ -379,6 +399,9 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     arrival_delay_metric = args.arrival_delay_metric
 
+    # [] unless --solver-profile / --solver-arg were given.
+    solver_options = solver_options_from_args(args)
+
     seed = args.seed
 
     timestep_granularity = args.timestep_granularity
@@ -386,6 +409,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     max_time = args.max_time
 
     experiment_name = _derive_output_name(args)
+    if verbosity > 0:
+        print(f"    clingo solver:   {describe_solver_options(args.solver_profile, args.solver_arg)}")
     # WANDB (W&B) setup (optional)
     run = None
     wandb_log = None
@@ -466,8 +491,19 @@ def main(argv: Optional[List[str]] = None) -> None:
             print("[export] --export-only given; not solving.", flush=True)
             return 0
 
-        solver: Model = Solver(encoding, instance_asp_atoms, seed=seed, wandb_log = wandb_log)
+        solver: Model = Solver(encoding, instance_asp_atoms, seed=seed, wandb_log = wandb_log,
+                               solver_options=solver_options,
+                               report_solver_stats=args.solver_stats)
         model = solver.solve()
+
+        if model is None:
+            # clingo returned without ever calling on_model: unsatisfiable, or cancelled before
+            # a first model. More likely under --solver-profile usc, whose first model can take
+            # seconds. Without this the next line fails with an opaque AttributeError on None.
+            raise RuntimeError(
+                "the solver returned no model "
+                f"(solver options: {describe_solver_options(args.solver_profile, args.solver_arg)}). "
+                "The program is unsatisfiable, or the search was stopped before a first model.")
             
         if verbosity > 0:
             print(f"""
