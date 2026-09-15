@@ -132,8 +132,17 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
                         metavar="FILE", help="Location of the encoding for the optimization problem.")
     parser.add_argument("--seed", type=int, default=int(C("seed", 11904657)),
                         help="Set the random seed.")
+    # NOT a clasp thread count, and deliberately not wired to one. Here --number-threads becomes
+    # `max_number_processors`, the outer Python loop's own processor accounting
+    # (setup_before_optimization.py:96). It is not even used as given: iteration_step.py:231
+    # overwrites it with 1 before its only real consumer, the joblib Parallel() call that would
+    # have used it is commented out, and evaluate_solution.py treats it as an adaptive counter it
+    # halves on repeated failure and resets to a hard-coded 20. 02_ASP's option of the same name
+    # DOES mean clasp search threads as of this branch; these two are unrelated, and turning this
+    # one into a clasp thread count would change the outer loop's behaviour, not just the search.
     parser.add_argument("--number-threads", type=int, default=int(C("number-threads", 20)),
-                        help="Number of parallel ASP solving threads.")
+                        help="Number of parallel processors for the outer optimisation loop. "
+                             "NOT clasp search threads -- see 02_ASP/main.py for that.")
     parser.add_argument("--timestep-granularity", type=int, default=int(C("timestep-granularity", 1)),
                         help="Granularity: 1=1h, 4=15min, etc.")
     parser.add_argument("--max-explored-vertices", type=int, default=int(C("max-explored-vertices", 6)),

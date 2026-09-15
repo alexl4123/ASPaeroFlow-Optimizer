@@ -25,11 +25,13 @@ import clingo  # noqa: E402
 
 from common.clingo_options import (  # noqa: E402
     DEFAULT_SOLVER_PROFILE,
+    DEFAULT_SOLVER_THREADS,
     SOLVER_PROFILES,
     build_options,
     normalise_profile,
     options_from_args,
     profile_options,
+    thread_options,
 )
 
 #: The flags the 01_ASPaeroFlow Solver hard-coded before it took a seed.
@@ -78,6 +80,73 @@ class TestDefaultChangesNothing(unittest.TestCase):
         class Bare:
             pass
         self.assertEqual(options_from_args(Bare()), [])
+
+
+class TestThreadCount(unittest.TestCase):
+    """--number-threads reaches clasp, and the default of 1 changes nothing."""
+
+    def test_default_is_one_thread(self):
+        self.assertEqual(DEFAULT_SOLVER_THREADS, 1)
+
+    def test_one_thread_is_indistinguishable_from_no_flag(self):
+        """An explicit --parallel-mode=1 must not be a DIFFERENT single-threaded setup."""
+        plain = clingo.Control([])
+        explicit = clingo.Control(["--parallel-mode=1"])
+        for node in ("solve", "solver"):
+            for key in getattr(plain.configuration, node).keys:
+                with self.subTest(key=f"{node}.{key}"):
+                    self.assertEqual(getattr(getattr(plain.configuration, node), key),
+                                     getattr(getattr(explicit.configuration, node), key))
+
+    def test_thread_count_reaches_clasp(self):
+        for n in (1, 2, 8):
+            with self.subTest(threads=n):
+                cfg = configuration(build_options(threads=n))
+                self.assertTrue(str(cfg["solve.parallel_mode"]).startswith(f"{n},"))
+
+    def test_no_threads_argument_says_nothing(self):
+        self.assertEqual(thread_options(None), [])
+
+    def test_a_thread_count_below_one_is_rejected(self):
+        for bad in (0, -1):
+            with self.subTest(threads=bad):
+                with self.assertRaises(ValueError):
+                    thread_options(bad)
+
+    def test_options_from_args_does_not_read_number_threads_itself(self):
+        """--number-threads means clasp threads ONLY in 02_ASP; 01 and 04_MIP differ."""
+        import argparse
+        args = argparse.Namespace(solver_profile="default", solver_arg=None, number_threads=16)
+        self.assertEqual(options_from_args(args), [])
+        self.assertEqual(options_from_args(args, threads=16), ["--parallel-mode=16"])
+
+
+class TestNoDuplicateOptionsReachClingo(unittest.TestCase):
+    """clingo REJECTS a repeated option, so a later flag has to replace an earlier one."""
+
+    def test_raw_flag_replaces_the_generated_thread_count(self):
+        opts = build_options(threads=1, extra=["--parallel-mode=4"])
+        self.assertEqual(opts.count("--parallel-mode=1"), 0)
+        self.assertTrue(str(configuration(opts)["solve.parallel_mode"]).startswith("4,"))
+
+    def test_short_form_also_replaces_it(self):
+        opts = build_options(threads=1, extra=["-t", "4"])
+        self.assertNotIn("--parallel-mode=1", opts)
+        self.assertTrue(str(configuration(opts)["solve.parallel_mode"]).startswith("4,"))
+
+    def test_raw_flag_replaces_a_profile_flag(self):
+        opts = build_options("usc", ["--opt-strategy=bb,lin"], threads=1)
+        self.assertEqual(opts.count("--opt-strategy=usc,oll"), 0)
+        self.assertTrue(str(configuration(opts)["solver.opt_strategy"]).startswith("bb"))
+
+    def test_every_combination_is_accepted_by_clingo(self):
+        extras = [None, ["--parallel-mode=4"], ["-t", "4"], ["--opt-strategy=bb,lin"],
+                  ["--heuristic=Vsids"], ["--solve-limit=100"]]
+        for name in SOLVER_PROFILES:
+            for extra in extras:
+                for threads in (None, 1, 4):
+                    with self.subTest(profile=name, extra=extra, threads=threads):
+                        clingo.Control(build_options(name, extra, threads))
 
 
 class TestProfilesReachClasp(unittest.TestCase):

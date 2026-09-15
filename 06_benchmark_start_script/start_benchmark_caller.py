@@ -541,6 +541,34 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
 # Benchmarking logic
 # ---------------------------------------------
 
+#: --number-threads is passed to every system, and it means A DIFFERENT THING in each one:
+#:
+#:   02_ASP          clasp SEARCH threads. Dropped on the floor until this branch wired it to
+#:                   clingo's --parallel-mode; every ASP run to date was therefore single-
+#:                   threaded whatever this said. Now set to 1 EXPLICITLY, so the effective
+#:                   configuration is exactly what produced the published LPNMR/ATMOS numbers
+#:                   and the knob is real and available for a future solver-configuration sweep.
+#:   01_ASPaeroFlow  `max_number_processors`, the outer Python loop's own processor accounting.
+#:                   Not a clasp thread count. LEFT AT 5, unchanged.
+#:   04_MIP          Gurobi's `model.Params.Threads` (04_MIP/mip_model.py:119). LEFT AT 5,
+#:                   unchanged -- dropping Gurobi to one thread would change every MIP number in
+#:                   the campaign, which is the opposite of the comparability this is protecting.
+#:
+#: So the count is per system rather than one shared literal. Only 02_ASP's entry is a clasp
+#: setting; change the others only if you mean to change what those solvers do.
+SOLVER_SEARCH_THREADS: Dict[str, int] = {"02_ASP": 1}
+DEFAULT_SYSTEM_THREADS = 5
+
+
+def thread_count_for(system: Dict) -> int:
+    """--number-threads for one system. See SOLVER_SEARCH_THREADS for why it is not shared."""
+    script = str(system.get("script", ""))
+    for folder, count in SOLVER_SEARCH_THREADS.items():
+        if folder in script:
+            return count
+    return DEFAULT_SYSTEM_THREADS
+
+
 #: Solver folders whose main.py understands --solver-profile / --solver-arg. 03_Delay, 04_MIP
 #: and CASA do not run clingo at all, and their argparse would reject the flag outright.
 ASP_SOLVER_FOLDERS: Tuple[str, ...] = ("01_ASPaeroFlow", "02_ASP")
@@ -587,7 +615,7 @@ def build_command(system: Dict, paths: Dict[str, Path], python_bin: str, timeste
         f"--navaid-sector-path={paths['navaid-sector']}",
         f"--seed={seed}",
         f"--timestep-granularity={timestep_granularity}",
-        "--number-threads=5",
+        f"--number-threads={thread_count_for(system)}",
     ]
 
     if system["verbosity"] is not None:

@@ -29,6 +29,7 @@ _bootstrap()
 
 from common.clingo_options import (  # noqa: E402
     DEFAULT_SOLVER_PROFILE,
+    DEFAULT_SOLVER_THREADS,
     SOLVER_ARG_HELP,
     SOLVER_PROFILE_HELP,
     SOLVER_PROFILES,
@@ -38,4 +39,5 @@ from common.clingo_options import (  # noqa: E402
     normalise_profile,
     options_from_args,
     profile_options,
+    thread_options,
 )

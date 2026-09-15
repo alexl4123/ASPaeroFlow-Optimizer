@@ -143,8 +143,17 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
                              "without solving.")
     parser.add_argument("--seed", type=int, default=int(C("seed", 11904657)),
                         help="Set the random seed.")
-    parser.add_argument("--number-threads", type=int, default=int(C("number-threads", 20)),
-                        help="Number of parallel ASP solving threads.")
+    # This used to be parsed and then dropped: it reached nothing but the W&B config dict, so
+    # every ASP run ever made was single-threaded whatever it said. It now reaches clasp as
+    # --parallel-mode. The default moved 20 -> 1 in the same change, deliberately: wiring the
+    # option up while leaving the default at 20 would have turned every run 20-threaded and made
+    # the numbers incomparable with the published LPNMR/ATMOS results, which is the opposite of
+    # the intent. 1 is also clingo's own default, so this reproduces every run to date exactly.
+    parser.add_argument("--number-threads", type=int, default=int(C("number-threads", 1)),
+                        help="Number of parallel clasp SEARCH threads (clingo --parallel-mode). "
+                             "Default 1, matching every published result. clasp runs a portfolio "
+                             "in parallel mode, so a higher count changes the search itself, not "
+                             "only its speed.")
     parser.add_argument("--timestep-granularity", type=int, default=int(C("timestep-granularity", 1)),
                         help="Granularity: 1=1h, 4=15min, etc.")
     parser.add_argument("--max-explored-vertices", type=int, default=int(C("max-explored-vertices", 6)),
@@ -399,8 +408,10 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     arrival_delay_metric = args.arrival_delay_metric
 
-    # [] unless --solver-profile / --solver-arg were given.
-    solver_options = solver_options_from_args(args)
+    # --parallel-mode=<n>, then the profile's flags, then any raw --solver-arg. With the
+    # defaults this is ["--parallel-mode=1"], which clingo configures identically to no flags
+    # at all -- verified across every configuration key it exposes.
+    solver_options = solver_options_from_args(args, threads=args.number_threads)
 
     seed = args.seed
 
@@ -410,7 +421,8 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     experiment_name = _derive_output_name(args)
     if verbosity > 0:
-        print(f"    clingo solver:   {describe_solver_options(args.solver_profile, args.solver_arg)}")
+        print(f"    clingo solver:   "
+              f"{describe_solver_options(args.solver_profile, args.solver_arg, args.number_threads)}")
     # WANDB (W&B) setup (optional)
     run = None
     wandb_log = None
@@ -502,7 +514,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             # seconds. Without this the next line fails with an opaque AttributeError on None.
             raise RuntimeError(
                 "the solver returned no model "
-                f"(solver options: {describe_solver_options(args.solver_profile, args.solver_arg)}). "
+                f"(solver options: "
+                f"{describe_solver_options(args.solver_profile, args.solver_arg, args.number_threads)}). "
                 "The program is unsatisfiable, or the search was stopped before a first model.")
             
         if verbosity > 0:
