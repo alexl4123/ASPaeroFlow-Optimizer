@@ -59,9 +59,11 @@ from pathlib import Path
 from typing import Dict, List, Sequence
 
 #: Columns of the emitted manifest. run_asp_ablation.slurm reads them positionally.
+#: `system` is "-" for "every system the variant set enables", or a single system key once the
+#: caller can isolate one (see --per-run-systems).
 COLUMNS = (
     "task_id", "tier", "profile", "threads", "variants",
-    "problem", "instance", "time_granularity", "runs",
+    "problem", "instance", "time_granularity", "system", "runs",
 )
 
 #: Profiles under test. All four, because that is the ablation.
@@ -75,6 +77,62 @@ RUNS_PER_VARIANT_SET = {"named2": 2, "all27": 27}
 #: capacity_level of the small-scaling family in problems.tsv. That family has no PCAP sweep,
 #: so the expansion script writes NONE, and this is how the two families are told apart.
 SMALL_FAMILY_CAP_LEVEL = "NONE"
+
+#: The two exact configurations run_all_benchmarks.slurm also puts on the large family, under
+#: the keys build_system_config() gives them.
+NAMED2_SYSTEMS = ("05_ASP_rp_dp_sp", "05_ASP_rp_d_sp")
+
+
+def all27_systems() -> List[str]:
+    """The 27 keys --experiment-all-asp-variants builds, in the order it builds them.
+
+    Mirrored from build_system_config(): ground delay is the OUTER loop, then rerouting, then
+    dynamic sectorisation, and the running index starts at 5. Verified against the caller itself
+    with --verify-system-keys, which is the answer to "what if that loop changes".
+    """
+    ground = {0: "nd", 1: "dp", 2: "d"}
+    reroute = {0: "nr", 1: "rp", 2: "r"}
+    sector = {0: "ns", 1: "sp", 2: "s"}
+    keys, index = [], 5
+    for g in (0, 1, 2):
+        for r in (0, 1, 2):
+            for s in (0, 1, 2):
+                keys.append(f"{index}_ASP_{reroute[r]}_{ground[g]}_{sector[s]}")
+                index += 1
+    return keys
+
+
+def verify_system_keys() -> int:
+    """Compare all27_systems() with what start_benchmark_caller.py actually builds."""
+    import types
+    from types import SimpleNamespace
+    import importlib.util
+
+    sys.modules.setdefault("psutil", types.ModuleType("psutil"))  # import-time only
+    here = Path(__file__).resolve().parent
+    spec = importlib.util.spec_from_file_location(
+        "_caller_for_keys", here / "start_benchmark_caller.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    args = SimpleNamespace(results_format="csv", wandb_enabled="False",
+                           experiment_all_asp_variants=1,
+                           experiment_asp_rp_dp_sp=1, experiment_asp_rp_d_sp=1)
+    for name in ("experiment_asp_aero_flow", "experiment_asp_aero_flow_no_convex",
+                 "experiment_asp_aero_flow_nr_nd", "experiment_asp_aero_flow_nr_d",
+                 "experiment_asp_aero_flow_r_nd", "experiment_casa",
+                 "experiment_route_delay", "experiment_route", "experiment_delay",
+                 "experiment_mip"):
+        setattr(args, name, 0)
+    built = [s["key"] for s in module.build_system_config(here, Path("/tmp"), "verify", args)]
+    expected = all27_systems() + list(NAMED2_SYSTEMS)
+    if built == expected:
+        print(f"[ok] system keys match the caller ({len(built)} systems)")
+        return 0
+    print("[MISMATCH] all27_systems() disagrees with build_system_config()", file=sys.stderr)
+    print(f"  caller:   {built}", file=sys.stderr)
+    print(f"  mirrored: {expected}", file=sys.stderr)
+    return 1
 
 
 def read_problems(manifest: Path) -> List[Dict[str, str]]:
@@ -140,16 +198,35 @@ def select(instances: Sequence[str], sizes, seeds) -> List[str]:
 
 
 def build_rows(problems, instances_of, args) -> List[List[str]]:
-    """One row per array task, grouped by tier so each tier is a contiguous --array range."""
+    """One row per unit of work, grouped by tier so each tier is a contiguous --array range."""
     rows: List[List[str]] = []
 
     def emit(tier, profile, threads, variants, problem, instance, granularity):
-        rows.append([
-            str(len(rows) + 1), tier, profile, str(threads), variants,
-            problem, instance, str(granularity), str(RUNS_PER_VARIANT_SET[variants]),
-        ])
+        # --per-run-systems splits a variant set into one row per solver run, which is the shape
+        # the per-run job restructuring wants. It needs the caller's --only-system selector; the
+        # runner refuses the row rather than silently running all 27 if that flag is absent.
+        systems = ["-"]
+        if args.per_run_systems:
+            systems = list(NAMED2_SYSTEMS) if variants == "named2" else all27_systems()
+        for system in systems:
+            runs = 1 if system != "-" else RUNS_PER_VARIANT_SET[variants]
+            rows.append([
+                str(len(rows) + 1), tier, profile, str(threads), variants,
+                problem, instance, str(granularity), system, str(runs),
+            ])
+
+    def pad_to_chunk_boundary():
+        """Start every tier on a fresh array task.
+
+        Tiers are submitted separately and tier C asks for five CPUs rather than two, so an array
+        task straddling two tiers would run a four-thread unit inside a two-CPU allocation. With
+        CHUNK=1 this never pads; with CHUNK>1 it inserts rows the runner skips.
+        """
+        while args.chunk > 1 and len(rows) % args.chunk != 0:
+            rows.append([str(len(rows) + 1), "PAD", "-", "0", "-", "-", "-", "-", "-", "0"])
 
     for tier in args.tiers:
+        pad_to_chunk_boundary()
         for prob in problems:
             name = prob["problem_dir"]
             granularity = prob.get("time_granularity", "1")
@@ -185,55 +262,78 @@ def build_rows(problems, instances_of, args) -> List[List[str]]:
     return rows
 
 
-def summarise(rows, time_limit: int) -> None:
-    """Run counts, worst-case core-hours and the submission lines, per tier.
+def summarise(rows, time_limit: int, chunk: int) -> None:
+    """Row counts, worst-case core-hours and the submission lines, per tier.
 
-    Core-hours are counted on SOLVER cores (threads actually used), and separately on the
-    ALLOCATION (--cpus-per-task), because those differ and the queue charges the second one.
+    Core-hours are counted on SOLVER cores (the threads a run actually uses). The ALLOCATION is
+    larger -- the queue charges --cpus-per-task, which is 2 for a single-threaded run -- and the
+    design document states both.
+
+    CHUNK rows share one array task, so the array range is in chunks and the printed job count
+    is the number of array tasks, not the number of rows.
     """
     tiers: Dict[str, Dict[str, float]] = {}
     for row in rows:
-        tier, threads, runs = row[1], int(row[3]), int(row[8])
-        acc = tiers.setdefault(tier, {"jobs": 0, "runs": 0, "core_h": 0.0, "threads": threads,
+        tier, threads, runs = row[1], int(row[3]), int(row[9])
+        acc = tiers.setdefault(tier, {"rows": 0, "runs": 0, "core_h": 0.0, "threads": threads,
                                       "first": int(row[0]), "last": int(row[0])})
-        acc["jobs"] += 1
+        acc["rows"] += 1
         acc["runs"] += runs
         acc["core_h"] += runs * threads * time_limit / 3600.0
         acc["first"] = min(acc["first"], int(row[0]))
         acc["last"] = max(acc["last"], int(row[0]))
 
     cpus = {"P": 2, "A": 2, "B": 2, "C": 5}
-    walltime = {"P": "00:30:00", "A": "02:00:00", "B": "16:00:00", "C": "02:00:00"}
     label = {"P": "preflight", "A": "main grid", "B": "variant breadth", "C": "thread probe"}
 
+    def hours_per_task(acc):
+        """Worst-case wall time of ONE array task, which is what the -t request has to cover."""
+        runs_per_row = acc["runs"] / max(1, acc["rows"])
+        return runs_per_row * chunk * time_limit / 3600.0
+
     print()
-    print(f"{'tier':<6}{'jobs':>7}{'runs':>8}{'worst-case core-h':>20}   array range")
-    print("-" * 72)
-    total_jobs = total_runs = 0
+    print(f"{'tier':<6}{'rows':>7}{'tasks':>7}{'runs':>8}{'worst core-h':>14}"
+          f"{'worst h/task':>14}   array range")
+    print("-" * 88)
+    total_rows = total_runs = total_tasks = 0
     total_core_h = 0.0
     for tier in ("P", "A", "B", "C"):
         if tier not in tiers:
             continue
         acc = tiers[tier]
-        print(f"{tier:<6}{acc['jobs']:>7}{acc['runs']:>8}{acc['core_h']:>20,.0f}"
-              f"   {acc['first']}-{acc['last']}   ({label[tier]})")
-        total_jobs += acc["jobs"]
+        first_task = (acc["first"] - 1) // chunk + 1
+        last_task = (acc["last"] - 1) // chunk + 1
+        tasks = last_task - first_task + 1
+        print(f"{tier:<6}{acc['rows']:>7}{tasks:>7}{acc['runs']:>8}{acc['core_h']:>14,.0f}"
+              f"{hours_per_task(acc):>14,.1f}   {first_task}-{last_task}  ({label[tier]})")
+        total_rows += acc["rows"]
+        total_tasks += tasks
         total_runs += acc["runs"]
         total_core_h += acc["core_h"]
-    print("-" * 72)
-    print(f"{'ALL':<6}{total_jobs:>7}{total_runs:>8}{total_core_h:>20,.0f}")
+    print("-" * 88)
+    print(f"{'ALL':<6}{total_rows:>7}{total_tasks:>7}{total_runs:>8}{total_core_h:>14,.0f}")
     print(f"\nWorst case assumes every run uses the full {time_limit} s. The small family is "
           f"built so exact\nmethods CLOSE instances, so the real cost is well below this -- see "
           f"the design document\nfor the expected-case arithmetic.")
+    if total_tasks > 1000:
+        print(f"\n[note] {total_tasks} array tasks. Many clusters cap MaxArraySize at 1001; "
+              f"check with\n       `scontrol show config | grep MaxArraySize` and raise CHUNK "
+              f"if the cap bites.")
 
     print("\nSubmit one tier at a time (nothing is submitted by this script):")
     for tier in ("P", "A", "B", "C"):
         if tier not in tiers:
             continue
         acc = tiers[tier]
+        first_task = (acc["first"] - 1) // chunk + 1
+        last_task = (acc["last"] - 1) // chunk + 1
+        # Round the -t request up to the next whole hour, with 30 minutes of slack for grounding,
+        # process start-up and writing the result matrices.
+        hours = max(1, int(hours_per_task(acc) + 0.5) + 1)
         print(f"  # tier {tier} -- {label[tier]}")
-        print(f"  sbatch -t {walltime[tier]} --cpus-per-task={cpus[tier]} "
-              f"--array={acc['first']}-{acc['last']}%40 run_asp_ablation.slurm")
+        print(f"  sbatch -t {hours:02d}:00:00 --cpus-per-task={cpus[tier]} "
+              f"--export=ALL,CHUNK={chunk} "
+              f"--array={first_task}-{last_task}%40 run_asp_ablation.slurm")
 
 
 def main() -> int:
@@ -248,6 +348,18 @@ def main() -> int:
     parser.add_argument("--time-limit", type=int, default=1800,
                         help="Per-run limit used ONLY for the cost estimate printed here "
                              "(default 1800, the value the papers use)")
+    parser.add_argument("--chunk", type=int, default=1,
+                        help="Manifest rows per array task (default 1: one job per unit). Raise "
+                             "it if the cluster's MaxArraySize is smaller than the row count; "
+                             "the runner reads the same value from $CHUNK.")
+    parser.add_argument("--per-run-systems", action="store_true",
+                        help="Emit one row per SOLVER RUN instead of one per variant set. "
+                             "Requires start_benchmark_caller.py to support --only-system, which "
+                             "the per-run job restructuring is adding. This is what turns the "
+                             "27-variant tier B from one 13.5 h job into 27 short ones.")
+    parser.add_argument("--verify-system-keys", action="store_true",
+                        help="Check the mirrored 27 system keys against build_system_config() "
+                             "in start_benchmark_caller.py, then exit.")
 
     parser.add_argument("--tier-b-sizes", type=str, default="10,20,30,40",
                         help="Flight counts in the tier-B subsample (default 10,20,30,40: the "
@@ -274,6 +386,11 @@ def main() -> int:
     parser.add_argument("--seeds", type=str, default="42,11904657,150699,13",
                         help="Seeds in the small family (used by --assume-grid)")
     args = parser.parse_args()
+
+    if args.verify_system_keys:
+        return verify_system_keys()
+    if args.chunk < 1:
+        raise SystemExit("[ERROR] --chunk must be at least 1")
 
     args.tiers = [t.strip().upper() for t in args.tiers.split(",") if t.strip()]
     for tier in args.tiers:
@@ -316,9 +433,9 @@ def main() -> int:
         fh.write("\t".join(COLUMNS) + "\n")
         for row in rows:
             fh.write("\t".join(row) + "\n")
-    print(f"wrote {args.out} ({len(rows)} array tasks)")
+    print(f"wrote {args.out} ({len(rows)} rows, {args.chunk} row(s) per array task)")
 
-    summarise(rows, args.time_limit)
+    summarise(rows, args.time_limit, args.chunk)
     return 0
 
 
