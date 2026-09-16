@@ -18,7 +18,10 @@ from arrival_delay_bootstrap import (
     delay_matrix as arrival_delay_matrix,
     normalise as normalise_arrival_delay_metric,
 )
-from navpoint_sector_allocation_bootstrap import build_assignment as build_navpoint_sector_assignment
+from navpoint_sector_allocation_bootstrap import (
+    build_assignment as build_navpoint_sector_assignment,
+    load_schedule_for as load_navpoint_sector_schedule,
+)
 
 import argparse
 import sys
@@ -232,6 +235,8 @@ class Main:
             self.airplane_flight = _load_csv(self._airplane_flight_path)
         if self._navaid_sector_path is not None:
             self.navaid_sector = _load_csv(self._navaid_sector_path)
+        # Optional; None unless navaid_sector_schedule.csv sits beside the static allocation.
+        self.navaid_sector_schedule = load_navpoint_sector_schedule(self._navaid_sector_path)
 
         if self._encoding_path is not None:
             with open(self._encoding_path, "r") as file:
@@ -305,7 +310,10 @@ class Main:
         airport_instance = "\n".join(airport_instance)
 
         # 0.) Create navpaid sector time assignment (|R|XT):
-        navaid_sector_time_assignment = self.create_initial_navpoint_sector_assignment(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity)
+        # A navaid_sector_schedule.csv beside the static file makes this array vary over time;
+        # without one it is the static allocation in every column, as it always was.
+        navaid_sector_time_assignment = self.create_initial_navpoint_sector_assignment(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity,
+                                                                                        schedule=self.navaid_sector_schedule, airports=self.airports)
 
         # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
         converted_navpoint_matrix, _ = self.instance_navpoint_matrix(self.flights, navaid_sector_time_assignment.shape[1], fill_value=-1)

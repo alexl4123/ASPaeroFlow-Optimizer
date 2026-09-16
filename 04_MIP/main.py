@@ -49,6 +49,7 @@ from concurrent.futures import ProcessPoolExecutor
 
 
 from mip_model import MIPModel, MAX, LINEAR, TRIANGULAR
+from navpoint_sector_allocation_bootstrap import load_schedule_for as load_navpoint_sector_schedule
 from datetime import datetime, timezone
 
 # ---------------------------------------------------------------------------
@@ -169,6 +170,8 @@ class Main:
             self.airplane_flight = _load_csv(self._airplane_flight_path)
         if self._navaid_sector_path is not None:
             self.navaid_sector = _load_csv(self._navaid_sector_path)
+        # Optional; None unless navaid_sector_schedule.csv sits beside the static allocation.
+        self.navaid_sector_schedule = load_navpoint_sector_schedule(self._navaid_sector_path)
 
         if self._encoding_path is not None:
             with open(self._encoding_path, "r") as file:
@@ -236,7 +239,10 @@ class Main:
             navaid_sector_lookup[self.navaid_sector[row_index,0]] = self.navaid_sector[row_index, 1]
 
         # 0.) Create navpaid sector time assignment (|R|XT):
-        navaid_sector_time_assignment = MIPModel.create_initial_navpoint_sector_assignment(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity)
+        # A navaid_sector_schedule.csv beside the static file makes this array vary over time;
+        # without one it is the static allocation in every column, as it always was.
+        navaid_sector_time_assignment = MIPModel.create_initial_navpoint_sector_assignment(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity,
+                                                                                           schedule=self.navaid_sector_schedule, airports=self.airports)
 
         # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
         #converted_instance_matrix, planned_arrival_times = self.instance_to_matrix_vectorized(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity, navaid_sector_lookup)
@@ -627,6 +633,7 @@ class Main:
 
             times = t[start:end]
             secs  = sec[start:end]
+            navs  = nav[start:end]
             if times.size == 0:
                 continue
 
@@ -636,13 +643,15 @@ class Main:
             if times.size >= 2:
                 prev_times = times[:-1]
                 next_times = times[1:]
-                prev_secs  = secs[:-1]
-                next_secs  = secs[1:]
+                prev_navs  = navs[:-1]
+                next_navs  = navs[1:]
 
                 L = next_times - prev_times
                 mids = prev_times + (L // 2)
 
-                # slice-assign per segment
+                # slice-assign per segment. Each timestep takes the sector its navpoint is in AT
+                # that timestep, as 01_ASPaeroFlow's and 02_ASP's instance_to_matrix do; for an
+                # allocation that is constant over time this is the event-time sector.
                 for i in range(prev_times.size):
                     s0 = prev_times[i] + 1       # start (exclusive)
                     m1 = mids[i] + 1             # first-half end (inclusive) -> slice stop
@@ -650,10 +659,10 @@ class Main:
 
                     # first half [prev_time+1, mid]
                     if m1 > s0:
-                        out[flight_index, s0:m1] = prev_secs[i]
+                        out[flight_index, s0:m1] = navaid_sector_time_assignment[prev_navs[i], s0:m1]
                     # second half [mid+1, next_time]
                     if e1 > m1:
-                        out[flight_index, m1:e1] = next_secs[i]
+                        out[flight_index, m1:e1] = navaid_sector_time_assignment[next_navs[i], m1:e1]
 
         # Optional: compress width to actually-used time if requested
         if compress and out.shape[1] > 0:

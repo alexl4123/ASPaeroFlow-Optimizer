@@ -364,6 +364,18 @@ class MIPModel:
 
         return paths    
     
+    def sector_at(self, navaid, timestep):
+        """The sector `navaid` is in at `timestep`, read off the (|N| x |T|) allocation.
+
+        A flight variable counts against the sector its navpoint belongs to at the variable's own
+        timestep, which is how 02_ASP/encoding.lp and the ASPaeroFlow encoding place a flight.
+        Past the last column the last column holds, which is how every solver widens the array.
+        While the allocation is constant over time this is navaid_sector_lookup[navaid], the
+        static lookup this model used before the allocation could vary.
+        """
+        allocation = self.navaid_sector_time_assignment
+        return allocation[navaid, min(int(timestep), allocation.shape[1] - 1)]
+
     def get_flight_navpoint_trajectory(self, flights_affected, networkx_graph, flight_index, start_time, airplane_speed_kts, path, timestep_granularity):
 
         traj = []
@@ -558,13 +570,15 @@ class MIPModel:
                                     if f"x[{flight_affected_index},{delay_number},{current_time},{origin}]" not in all_variables_dict:
                                         all_variables_dict[f"x[{flight_affected_index},{delay_number},{current_time},{origin}]"] = True
 
-                                        origin_variable = model.addVar(vtype=GRB.BINARY, name=f"x[{flight_affected_index},{delay_number},{current_time},{prev_sector}]")
+                                        # The sector the navpoint is in at THIS timestep, not its static sector.
+                                        prev_sector_now = self.sector_at(prev_navaid, current_time)
+                                        origin_variable = model.addVar(vtype=GRB.BINARY, name=f"x[{flight_affected_index},{delay_number},{current_time},{prev_sector_now}]")
 
                                         entry = pd.DataFrame.from_dict({
                                             "F": [flight_affected_index],
                                             "D": [delay_number],
                                             "T": [current_time],
-                                            "V": [prev_sector],
+                                            "V": [prev_sector_now],
                                             "obj": [origin_variable]
                                         })
 
@@ -574,13 +588,14 @@ class MIPModel:
 
                                     if f"x[{flight_affected_index},{delay_number},{current_time},{origin}]" not in all_variables_dict:
                                         all_variables_dict[f"x[{flight_affected_index},{delay_number},{current_time},{origin}]"] = True
-                                        origin_variable = model.addVar(vtype=GRB.BINARY, name=f"x[{flight_affected_index},{delay_number},{current_time},{sector}]")
+                                        sector_now = self.sector_at(navaid, current_time)
+                                        origin_variable = model.addVar(vtype=GRB.BINARY, name=f"x[{flight_affected_index},{delay_number},{current_time},{sector_now}]")
 
                                         entry = pd.DataFrame.from_dict({
                                             "F": [flight_affected_index],
                                             "D": [delay_number],
                                             "T": [current_time],
-                                            "V": [sector],
+                                            "V": [sector_now],
                                             "obj": [origin_variable]
                                         })
 
