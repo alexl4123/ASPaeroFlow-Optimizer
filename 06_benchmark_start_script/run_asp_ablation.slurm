@@ -64,6 +64,10 @@ MEMORY_LIMIT="${MEMORY_LIMIT:-35}"             # GiB, as in the papers; below --
 WANDB_ENABLED="${WANDB_ENABLED:-False}"        # thousands of runs; the CSVs are authoritative
 RESULTS_FORMAT="${RESULTS_FORMAT:-csv.gz}"     # uncompressed solution matrices are enormous
 CHUNK="${CHUNK:-1}"                            # manifest rows per array task
+ROW_OFFSET="${ROW_OFFSET:-0}"                  # rows to skip before this array's first task, so
+                                               # a manifest longer than the cluster's MaxArraySize
+                                               # is submitted as several waves with CHUNK=1
+                                               # rather than as fewer, longer tasks
 DRY_RUN="${DRY_RUN:-0}"                        # 1 = print the command lines and run nothing
 
 [ -f "$MANIFEST" ] || { echo "[ERROR] $MANIFEST not found -- run ./build_ablation_manifest.py first" >&2; exit 1; }
@@ -244,10 +248,10 @@ run_unit () {
 }
 
 TASK_ID="${SLURM_ARRAY_TASK_ID:-${TASK_ID:-1}}"
-FIRST_ROW=$(( (TASK_ID - 1) * CHUNK + 1 ))
-LAST_ROW=$(( TASK_ID * CHUNK ))
+FIRST_ROW=$(( ROW_OFFSET + (TASK_ID - 1) * CHUNK + 1 ))
+LAST_ROW=$(( ROW_OFFSET + TASK_ID * CHUNK ))
 echo "Job: ${SLURM_JOB_NAME:-local}  |  array ${SLURM_ARRAY_JOB_ID:-local}_${TASK_ID}"
-echo "Manifest rows ${FIRST_ROW}..${LAST_ROW} of ${MANIFEST}  (CHUNK=${CHUNK})"
+echo "Manifest rows ${FIRST_ROW}..${LAST_ROW} of ${MANIFEST}  (CHUNK=${CHUNK}, ROW_OFFSET=${ROW_OFFSET})"
 
 for (( row = FIRST_ROW; row <= LAST_ROW; row++ )); do
   run_unit "$row"
