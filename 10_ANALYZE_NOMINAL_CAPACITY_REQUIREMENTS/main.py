@@ -18,6 +18,7 @@ from arrival_delay_bootstrap import (
     delay_matrix as arrival_delay_matrix,
     normalise as normalise_arrival_delay_metric,
 )
+from navpoint_sector_allocation_bootstrap import build_assignment as build_navpoint_sector_assignment
 
 import argparse
 import sys
@@ -1669,56 +1670,20 @@ class Main:
                                     max_time: int,
                                     time_granularity: int,
                                     *,
+                                    schedule=None,
+                                    airports=None,
                                     fill_value: int = -1,
                                     compress: bool = False):
+        """The (|N| x |T|) navpoint-to-sector allocation.
+
+        One implementation, shared by every solver folder: see
+        common/navpoint_sector_allocation.py. Without `schedule` the static allocation is
+        broadcast across every timestep, as it always was.
         """
-        Vectorized/semi-vectorized rewrite instance_to_matrix.
-        Assumes IDs are non-negative ints (reasonably dense).
-        """
-
-        # --- ensure integer views without copies where possible
-        flights = flights.astype(np.int64, copy=False)
-        airplane_flight = airplane_flight.astype(np.int64, copy=False)
-
-        # --- build flight -> airplane mapping (array is fastest if IDs are dense)
-        fid_map_max = int(max(flights[:,0].max(), airplane_flight[:,1].max()))
-        flight_to_airplane = np.full(fid_map_max + 1, -1, dtype=np.int64)
-        flight_to_airplane[airplane_flight[:,1]] = airplane_flight[:,0]
-
-        # --- sort by flight, then time (stable contiguous blocks per flight)
-        order = np.lexsort((flights[:,2], flights[:,0]))
-        f_sorted = flights[order]
-
-        t   = f_sorted[:,2]
-
-        # --- output matrix shape (airplane_id rows, time columns)
-        max_time_dim = int(max(t.max() + 1, (max_time + 1) * time_granularity))
-
-        if max_time_dim % time_granularity != 0:
-            remainder = max_time_dim % time_granularity
-            max_time_dim += time_granularity - remainder
-
-            if max_time_dim % time_granularity != 0:
-                print("[ERROR] - Should never occur - failure in maths")
-                raise Exception("[ERROR IN COMPUTATION]")
-
-        sectors = navaid_sector[:, 1]                      # shape (N,)
-
-        largest_navaid = navaid_sector[navaid_sector.shape[0]-1,0]
-
-        output = np.ones((largest_navaid+1, max_time_dim), dtype=int)  * (-1)
-
-        for index in range(navaid_sector.shape[0]):
-            output_index = navaid_sector[index,0]
-            output[output_index,:] = navaid_sector[index,1]
-
-        for index in range(output.shape[0]):
-
-            if output[index,0] == -1:
-                output[index,:] = index
-
-        return output
-        #np.repeat(sectors[:, None], max_time_dim, axis=1)  # shape (N, T)
+        return build_navpoint_sector_assignment(flights, airplane_flight, navaid_sector,
+                                                max_time, time_granularity,
+                                                schedule=schedule, airports=airports,
+                                                fill_value=fill_value, compress=compress)
      
     def first_overload(self, mask: np.ndarray):
         """
