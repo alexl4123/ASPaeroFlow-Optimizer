@@ -55,6 +55,16 @@ MEMORY_LIMIT="${MEMORY_LIMIT:-35}"           # GiB, as in the papers; must stay 
 WANDB_ENABLED="${WANDB_ENABLED:-False}"      # see the note below before turning this on
 RESULTS_FORMAT="${RESULTS_FORMAT:-csv.gz}"   # uncompressed would be ~2.9 TB across the full grid
 RUN_MIP="${RUN_MIP:-auto}"                   # auto | yes | no | only -- see the Gurobi note below
+PYTHON_BIN="${PYTHON_BIN:-}"                 # interpreter for the solvers. EMPTY BY DEFAULT, which
+                                             # leaves start_benchmark_caller.py's own default in
+                                             # place -- the cluster's
+                                             # /home/guests/abeiser/miniconda3/envs/potassco/bin/python.
+                                             # Set it to run this script anywhere else, e.g. to
+                                             # rehearse a submission on a workstation:
+                                             #   PYTHON_BIN=$(which python) bash run_all_benchmarks.slurm
+
+PYBIN_FLAG=()
+[ -n "$PYTHON_BIN" ] && PYBIN_FLAG=(--python-bin="$PYTHON_BIN")
 
 [ -f "$MANIFEST" ] || { echo "[ERROR] $MANIFEST not found -- run the expansion script first" >&2; exit 1; }
 
@@ -282,6 +292,7 @@ echo "experiment_family=${FAMILY}" >> "output/${FOLDER}/run_provenance_${PROBLEM
   --hot-start \
   --wandb-enabled="${WANDB_ENABLED}" \
   --results-format="${RESULTS_FORMAT}" \
+  ${PYBIN_FLAG[@]+"${PYBIN_FLAG[@]}"} \
   ${EXPERIMENTS[@]+"${EXPERIMENTS[@]}"}
 
 echo "finished=$(date -Is)" >> "output/${FOLDER}/run_provenance_${PROBLEM}.txt"
