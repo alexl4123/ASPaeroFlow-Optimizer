@@ -9,6 +9,22 @@ them and summarises. Nothing here touches the running jobs.
     ./benchmark_progress.py --folder 20260911_V2
     ./benchmark_progress.py --detail             # per-task table
     ./benchmark_progress.py --failures           # what went wrong, and where
+
+It reads BOTH campaign shapes and picks by what the folder contains:
+
+  monolithic   run_all_benchmarks.slurm -- one array task per problem, writing
+               output/<FOLDER>/output_<PROBLEM>/progress.jsonl. The denominator is estimated from
+               ../05_instances/problems.tsv times 39 or 12 systems per instance.
+
+  per-unit     run_benchmark_units.slurm -- one job per (problem, instance, system), writing
+               output/<FOLDER>/units/shards/<PROBLEM>/<INSTANCE>/<SYSTEM>/progress.jsonl. Here the
+               denominator is EXACT: units/worklist.tsv lists every unit the campaign consists of,
+               so nothing has to be guessed from a systems-per-instance count.
+
+A per-unit folder is recognised by units/worklist.tsv. After merge_benchmark_shards.py has run,
+output_<PROBLEM>/progress.jsonl exists there too and reads exactly like a monolithic folder; the
+worklist view is preferred while the campaign is in flight, since it is the one that knows about
+units that have not started.
 """
 import argparse, json, time
 from collections import Counter, defaultdict
@@ -78,6 +94,112 @@ def expected_runs(manifest, root, sys_small, sys_large):
     return total, len(rows)
 
 
+def read_worklist(path):
+    """[(problem, instance, system)] in campaign order, or None if this is not a per-unit folder."""
+    if not path.exists():
+        return None
+    units = []
+    with open(path) as fh:
+        header = fh.readline().rstrip("\n").split("\t")
+        try:
+            i_p, i_i, i_s = (header.index("problem_dir"), header.index("instance"),
+                             header.index("system"))
+        except ValueError:
+            return None
+        for line in fh:
+            f = line.rstrip("\n").split("\t")
+            if len(f) > max(i_p, i_i, i_s):
+                units.append((f[i_p], f[i_i], f[i_s]))
+    return units or None
+
+
+def report_units(root, units, a):
+    """Progress of a per-unit campaign, counted against the worklist.
+
+    Every unit is one solver run in one job, so "done" is simply how many shards have written a
+    progress line. A unit that has not started is not missing -- it is queued -- which is why the
+    denominator comes from the worklist rather than from the shards that happen to exist.
+    """
+    shards = root / "units" / "shards"
+    per_problem, outcomes, failures = defaultdict(lambda: [0, 0]), Counter(), []
+    newest, skipped = 0.0, 0
+    for problem, instance, system in units:
+        per_problem[problem][1] += 1
+        shard = shards / problem / instance / system
+        prog = shard / "progress.jsonl"
+        if not prog.exists():
+            marker = shard / "unit.json"
+            if marker.exists():
+                try:
+                    if json.loads(marker.read_text(errors="replace")).get("status") == "skipped_no_licence":
+                        skipped += 1
+                except (OSError, json.JSONDecodeError):
+                    pass
+            continue
+        rows = []
+        for line in prog.read_text(errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue        # a half-written last line while the unit is running
+        if not rows:
+            continue
+        r = rows[-1]
+        per_problem[problem][0] += 1
+        outcome = _true_outcome(r)
+        outcomes[outcome] += 1
+        if outcome != "ok":
+            failures.append((problem, r.get("instance"), r.get("system"), outcome))
+        newest = max(newest, prog.stat().st_mtime)
+
+    tot_done = sum(d for d, _ in per_problem.values())
+    tot_all = len(units)
+    finished = sum(1 for d, t in per_problem.values() if t and d >= t)
+    merged = len(list(root.glob("output_*/execution_time.csv")))
+
+    print(f"  campaign shape     per-unit (units/worklist.tsv)")
+    print(f"  problems           {len(per_problem)}")
+    print(f"  problems complete  {finished}   ({merged} merged into output_<PROBLEM>/)")
+    print(f"  solver runs        {tot_done:,} / {tot_all:,}  "
+          f"({100 * tot_done / tot_all if tot_all else 0:.1f}%)  OF THE CAMPAIGN")
+    if skipped:
+        print(f"  skipped            {skipped:,}  (RUN_MIP=auto, no Gurobi licence on that node)")
+    if newest:
+        print(f"  last activity      {hms(time.time() - newest)} ago")
+    else:
+        print(f"  last activity      nothing has finished yet")
+    print(f"\n  outcomes: " + "  ".join(f"{k}={v:,}" for k, v in outcomes.most_common()))
+    if tot_done:
+        print(f"  solved within limits: {100 * outcomes.get('ok', 0) / tot_done:.1f}% of finished runs")
+
+    if a.detail:
+        print(f"\n  {'problem':<62}{'done':>8}{'total':>8}  progress")
+        for problem, (d, t) in sorted(per_problem.items(), key=lambda kv: (kv[1][0] / kv[1][1]) if kv[1][1] else 0):
+            bar = "#" * int(20 * d / t) if t else ""
+            print(f"  {problem[:60]:<62}{d:>8}{t:>8}  {bar:<20} {100 * d / t if t else 0:5.1f}%")
+
+    if a.failures:
+        if not failures:
+            print("\n  no failures recorded")
+        else:
+            print(f"\n  {len(failures)} non-ok runs; by system:")
+            by_sys = defaultdict(Counter)
+            for _, _, system, outcome in failures:
+                by_sys[system][outcome] += 1
+            for system, c in sorted(by_sys.items(), key=lambda kv: -sum(kv[1].values())):
+                print(f"    {system:<30} " + "  ".join(f"{k}={v}" for k, v in c.most_common()))
+            print("\n  first 15:")
+            for problem, inst, system, outcome in failures[:15]:
+                print(f"    {outcome:<9} {system:<28} {inst:<22} {problem[:40]}")
+    print("\n  Units that never produced a result are named by:"
+          "\n    ./merge_benchmark_shards.py --folder %s --write-missing-worklist retry.tsv"
+          % root.name)
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--output-root", type=Path, default=Path("output"))
@@ -99,6 +221,11 @@ def main():
             raise SystemExit(f"no output folders under {a.output_root}")
         root = max(cands, key=lambda p: p.stat().st_mtime)
     print(f"run folder: {root}\n")
+
+    # A per-unit campaign counts against its worklist; a monolithic one against the problem index.
+    units = read_worklist(root / "units" / "worklist.tsv")
+    if units is not None:
+        return report_units(root, units, a)
 
     files = sorted(root.glob("output_*/progress.jsonl"))
     if not files:
