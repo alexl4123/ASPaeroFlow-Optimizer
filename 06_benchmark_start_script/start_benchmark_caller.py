@@ -154,6 +154,17 @@ def hotstart_set(
 
 
 
+def split_selection(values: List[str] | None) -> List[str] | None:
+    """Flatten a repeatable, comma-separated CLI selection into a list of names.
+
+    Returns None when nothing was selected, which every caller reads as "no filter".
+    """
+    if not values:
+        return None
+    names = [name.strip() for raw in values for name in raw.split(",")]
+    return [name for name in names if name]
+
+
 def get_recursive_memory_usage(pid: int) -> int:
     """Return RSS usage (bytes) of *pid* + all recursive children."""
     try:
@@ -760,11 +771,95 @@ def write_csv(path: Path, header: List[str], rows: List[List]) -> None:
         writer.writerows(rows)
 
 
+#: The per-metric CSVs, in the order they are written. One column per system that reported the
+#: metric at least once, plus "Instance".
+RESULT_METRICS: List[str] = [
+    "OVERLOAD", "ARRIVAL-DELAY", "SECTOR-NUMBER", "SECTOR-DIFF", "REROUTE", "RECONFIG",
+    "COMPUTATION-FINISHED", "GROUNDING-TIME", "TOTAL-TIME-TO-THIS-POINT", "ERROR",
+]
+
+
+def write_result_csvs(
+    output_path: Path,
+    instance_names: List[str],
+    system_names: List[str],
+    exec_time: Dict[str, Dict],
+    ram_usage: Dict[str, Dict],
+    sol_value: Dict[str, Dict],
+) -> None:
+    """Write every result file for one problem directory: the CSVs and individual_outputs/.
+
+    This is the tail of main(), lifted out unchanged so that merge_benchmark_shards.py can
+    rebuild the same files from per-unit shards by CALLING it. Re-implementing it elsewhere
+    would not be equivalent: sol_value_to_rows() discovers its own header while it walks the
+    instances in order, so a metric that is missing on the first instance and present on a
+    later one yields rows of differing length, and merged output would only match the
+    monolithic output if that behaviour were reproduced exactly. Calling the same code is the
+    only way to be sure it is.
+    """
+    header = ["Instance"] + list(system_names)
+
+    def dicts_to_rows(container: Dict[str, Dict[str, float | int]]) -> List[List]:
+        return [[inst] + [container[inst][name] for name in system_names] for inst in instance_names]
+
+    def sol_value_to_rows(container, metric):
+
+        own_heads = {}
+        own_heads["Instance"] = 1
+
+        output_list = []
+        for inst in instance_names:
+            tmp_list = [inst]
+
+            for system_name in system_names:
+
+                final_sol_dict = container[inst][system_name][-1]
+
+                if metric in final_sol_dict:
+                    if system_name not in own_heads:
+                        own_heads[system_name] = 1
+
+                    tmp_list.append(final_sol_dict[metric])
+
+                else:
+                    if system_name in own_heads:
+                        tmp_list.append(-1)
+
+            output_list.append(tmp_list)
+
+        return own_heads, output_list
+
+    write_csv(output_path / "execution_time.csv", header, dicts_to_rows(exec_time))
+    write_csv(output_path / "ram_usage.csv", header, dicts_to_rows(ram_usage))
+
+    for metric in RESULT_METRICS:
+        metric_values = sol_value_to_rows(sol_value, metric)
+        write_csv(output_path / f"{metric.lower()}.csv", metric_values[0], metric_values[1])
+
+    for inst in instance_names:
+        for system_name in system_names:
+
+            tmp_path_root = output_path / "individual_outputs"
+            tmp_path = tmp_path_root / f"{inst}_{system_name}.json"
+
+            tmp_path_root.mkdir(parents=True, exist_ok=True)
+
+            with tmp_path.open("w", encoding="utf-8") as fh:
+                json.dump({"object": sol_value[inst][system_name]}, fh)
+
+
 # ---------------------------------------------
 # CLI
 # ---------------------------------------------
 
-def main() -> None:
+def build_arg_parser() -> argparse.ArgumentParser:
+    """The command line, as a parser rather than as a side effect of main().
+
+    build_worklist.py needs to know which systems a given set of --experiment-* flags produces,
+    and the only honest way to answer that is to parse the same flags and call the same
+    build_system_config(). Returning the parser is what lets it do so without duplicating a
+    single default.
+    """
     parser = argparse.ArgumentParser(description="ATFCM benchmark driver")
     parser.add_argument("instance_dir", type=Path, help="Folder containing instance sub‑directories")
     parser.add_argument("--time-limit", type=int, default=1800, help="Wall‑clock limit (s)")
@@ -860,9 +955,39 @@ def main() -> None:
         action="store_true",
         help="Resume from existing hot-start JSON in output directory; skip completed (instance, solver) runs.",
     )
+
+    # ---- selecting a SUBSET of the cross product ---------------------------------------
+    # Without these, the smallest thing this script can be asked to do is one problem directory:
+    # every instance times every enabled system, which is the tens-of-hours array task that
+    # run_all_benchmarks.slurm submits. run_benchmark_units.slurm submits ONE (instance, system)
+    # per invocation instead, and needs to name both.
+    #
+    # Absent, both are no-ops: the full instance list and the full system list are used, so every
+    # existing command line behaves exactly as before.
+    #
+    # --only-system is not redundant with the --experiment-* flags. --experiment-all-asp-variants
+    # switches TWENTY-SEVEN systems on or off in one flag (5_ASP_nr_nd_ns .. 31_ASP_r_d_s), so no
+    # combination of those flags can isolate one of them. Filtering the built list by key can,
+    # and it filters the list build_system_config() actually produced, so the key spelling and
+    # the column order are the real ones rather than a second guess at them.
+    parser.add_argument(
+        "--only-instance", type=str, action="append", default=None, metavar="NAME",
+        help="Run only this instance folder. Repeatable, and accepts a comma-separated list. "
+             "Order follows the instance directory, not the order given here.",
+    )
+    parser.add_argument(
+        "--only-system", type=str, action="append", default=None, metavar="KEY",
+        help="Run only this solver system, by the key that heads its CSV column (e.g. 04_MIP, "
+             "05_ASP_rp_dp_sp, 7_ASP_nr_dp_ns). Repeatable, and accepts a comma-separated list. "
+             "Applied AFTER the --experiment-* flags, so the system must also be enabled by them.",
+    )
     
 
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = build_arg_parser().parse_args()
     mem_limit_bytes = args.memory_limit * (1024 ** 3)
 
     experiment_name = args.experiment_name
@@ -888,11 +1013,40 @@ def main() -> None:
     base_dir = Path(__file__).resolve().parent
     systems = build_system_config(base_dir, output_path, experiment_name, args)
 
+    # --only-system: keep build_system_config's order, drop everything not named. An unknown key
+    # is an error rather than an empty run, because a typo in a job script would otherwise look
+    # like a solver that produced no results.
+    wanted_systems = split_selection(args.only_system)
+    if wanted_systems is not None:
+        available = [sys_["key"] for sys_ in systems]
+        unknown = [key for key in wanted_systems if key not in available]
+        if unknown:
+            print(f"[ERROR] --only-system: no such enabled system {unknown}; "
+                  f"enabled here: {available}", file=sys.stderr)
+            sys.exit(1)
+        systems = [sys_ for sys_ in systems if sys_["key"] in set(wanted_systems)]
+    if not systems:
+        print("[ERROR] No solver systems enabled -- every --experiment-* flag is 0", file=sys.stderr)
+        sys.exit(1)
+
     # Collect & sort instances
     instances = sorted(p for p in args.instance_dir.iterdir() if p.is_dir())
     if not instances:
         print(f"[ERROR] No instance folders found in {args.instance_dir}", file=sys.stderr)
         sys.exit(1)
+
+    # --only-instance: same contract as --only-system. The surviving order is the DIRECTORY
+    # order, so selecting several instances gives the same rows in the same order as a full run
+    # would, whatever order they were named in.
+    wanted_instances = split_selection(args.only_instance)
+    if wanted_instances is not None:
+        available_inst = [inst.name for inst in instances]
+        unknown = [name for name in wanted_instances if name not in available_inst]
+        if unknown:
+            print(f"[ERROR] --only-instance: no such instance folder in {args.instance_dir}: "
+                  f"{unknown}", file=sys.stderr)
+            sys.exit(1)
+        instances = [inst for inst in instances if inst.name in set(wanted_instances)]
     
     # Result containers
     exec_time: Dict[str, Dict[str, float | int]] = {inst.name: {} for inst in instances}
@@ -1071,69 +1225,10 @@ def main() -> None:
     # -----------------------------------------
     # Write CSVs
     # -----------------------------------------
-    header = ["Instance"] + [s["key"] for s in systems]
-
-    def dicts_to_rows(container: Dict[str, Dict[str, float | int]]) -> List[List]:
-        return [[inst] + [container[inst][s["key"]] for s in systems] for inst in (p.name for p in instances)]
-
-    def sol_value_to_rows(container, metric):
-        
-        own_heads = {}
-        own_heads["Instance"] = 1
-
-        output_list = []
-        for inst in (p.name for p in instances):
-            tmp_list = [inst]
-
-            for system in systems:
-
-                system_name = system["key"]
-
-                final_sol_dict = container[inst][system_name][-1]
-
-                if metric in final_sol_dict:
-                    if system_name not in own_heads:
-                        own_heads[system_name] = 1
-
-                    tmp_list.append(final_sol_dict[metric])
-
-                else:
-                    if system_name in own_heads:
-                        tmp_list.append(-1)
-
-            output_list.append(tmp_list)
-
-        return own_heads, output_list
-
-
-    write_csv(output_path / "execution_time.csv", header, dicts_to_rows(exec_time))
-    write_csv(output_path / "ram_usage.csv", header, dicts_to_rows(ram_usage))
-    
-    for metric in ["OVERLOAD", "ARRIVAL-DELAY", "SECTOR-NUMBER", "SECTOR-DIFF", "REROUTE", "RECONFIG", "COMPUTATION-FINISHED","GROUNDING-TIME","TOTAL-TIME-TO-THIS-POINT","ERROR"]:
-        metric_values = sol_value_to_rows(sol_value, metric)
-        write_csv(output_path / f"{metric.lower()}.csv", metric_values[0], metric_values[1])
-
-    for inst in (p.name for p in instances):
-        tmp_list = [inst]
-        for system in systems:
-            system_name = system["key"]
-
-            tmp_path_root = output_path / "individual_outputs"
-            tmp_path = tmp_path_root / f"{inst}_{system_name}.json"
-            
-            #json_object_list = []
-            #for json_val_line in sol_value[inst][system_name]:
-            #    json_object_list.append(json.dumps(json_val_line))
-
-            #json_object = "{\"object\":[" + ','.join(json_object_list) + "}]}"
-
-            tmp_path_root.mkdir(parents=True, exist_ok=True)
-
-            #with tmp_path.open("w", encoding="utf-8") as fh:
-            #    fh.write(json_object)
-            with tmp_path.open("w", encoding="utf-8") as fh:
-                json.dump({"object": sol_value[inst][system_name]}, fh)
-
+    write_result_csvs(output_path,
+                      [inst.name for inst in instances],
+                      [sys_["key"] for sys_ in systems],
+                      exec_time, ram_usage, sol_value)
 
     print("Benchmarking finished. Results written to:")
     for fn in ("execution_time.csv", "ram_usage.csv", "solution_value.csv"):
