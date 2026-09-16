@@ -6,7 +6,7 @@ been the interface between the input files and the rest of each solver; what it 
 express until now is an allocation that CHANGES over time, because it was filled by broadcasting
 a single static assignment across every column.
 
-Two input files feed it:
+Two input files feed it, side by side in the instance bundle:
 
 ``navaid_sector_assignment.csv``   ``Navaid_ID,Sector_ID``
     The static allocation. Required. Read exactly as before.
@@ -16,10 +16,16 @@ Two input files feed it:
     ``From_Time`` onward, ``Navaid_ID`` sits in ``Sector_ID``, until the next row for the same
     navpoint". Rows are applied in ``From_Time`` order on top of the static broadcast.
 
-When the schedule file is absent the array is built exactly as it was before this module
-existed, so every previously published instance reproduces its old numbers. A schedule whose
-rows all carry ``From_Time = 0`` is likewise indistinguishable from the static case: it
-overwrites column 0 onward, which is the whole array.
+A solver looks for the schedule beside the static file it was given and nowhere else, which is
+where the data generator puts it. When there is no such file the array is built exactly as it
+was before this module existed, so every previously published instance reproduces its old
+numbers.
+
+The schedule's ``From_Time = 0`` rows must agree with ``navaid_sector_assignment.csv``: the
+generator writes them from the same allocation, so a disagreement means the two files were not
+produced together, and loading either one silently would be a mis-load. It is an error. A
+consequence is that a schedule whose rows all carry ``From_Time = 0`` builds exactly the static
+array.
 
 Three solver folders call ``build_assignment`` from an instance method and the MIP calls it from
 a classmethod, so the logic lives here once and each folder reaches it through its own
@@ -34,7 +40,7 @@ is not: the T=0 fact and the changed sector would both hold at the same timestep
 one-sector-per-navpoint constraint. ``asp_change_point_facts`` therefore emits
 ``navpoint_sector_from(NAV,SEC,FROM_T)`` for the navpoints that actually move, and the encoding
 withholds its broadcast from exactly those navpoints. On a constant allocation the function
-returns nothing at all, so the grounded program is byte-identical to what it was before.
+returns nothing at all, so the grounded program is identical to what it was before.
 """
 from __future__ import annotations
 
@@ -54,15 +60,6 @@ SCHEDULE_COLUMNS = ("Navaid_ID", "Sector_ID", "From_Time")
 #: The ASP predicate carrying a change-point into the encoding.
 ASP_CHANGE_POINT_PREDICATE = "navpoint_sector_from"
 
-CLI_HELP = (
-    "Optional time-varying navpoint-to-sector allocation, as "
-    f"'{','.join(SCHEDULE_COLUMNS)}' change-point rows: from From_Time onward that navpoint "
-    "sits in that sector, until its next row. When the file is absent the static "
-    "navaid_sector_assignment.csv is used for every timestep, which is the historical "
-    f"behaviour. Defaults to {SCHEDULE_FILENAME} beside the static allocation, if that file "
-    "exists."
-)
-
 
 class ScheduleError(ValueError):
     """A schedule file that cannot be trusted to mean what it appears to say."""
@@ -73,7 +70,7 @@ class ScheduleError(ValueError):
 # ---------------------------------------------------------------------------
 
 def schedule_path_beside(navaid_sector_path) -> Optional[Path]:
-    """Where a time-varying allocation for this instance would live, if it exists.
+    """Where a time-varying allocation for this instance lives, if it exists.
 
     Returns None when there is no such file, which is the ordinary case for every instance
     published so far.
@@ -82,25 +79,6 @@ def schedule_path_beside(navaid_sector_path) -> Optional[Path]:
         return None
     candidate = Path(navaid_sector_path).with_name(SCHEDULE_FILENAME)
     return candidate if candidate.is_file() else None
-
-
-def resolve_schedule_path(navaid_sector_path, explicit=None) -> Optional[Path]:
-    """Pick the schedule file to read.
-
-    An explicitly named file must exist: naming one that does not is a mistake worth reporting,
-    not a silent fall back to the static allocation. A file merely found beside the static
-    allocation is optional.
-    """
-    if explicit is not None:
-        path = Path(explicit)
-        if not path.is_file():
-            raise ScheduleError(
-                f"navpoint-sector schedule not found: {path}\n"
-                "Leave the option unset to use the static navaid_sector_assignment.csv for "
-                "every timestep."
-            )
-        return path
-    return schedule_path_beside(navaid_sector_path)
 
 
 # ---------------------------------------------------------------------------
@@ -177,9 +155,9 @@ def load_schedule(path) -> List[Tuple[int, int, int]]:
     return parse_schedule_rows(rows, path=path)
 
 
-def load_schedule_for(navaid_sector_path, explicit=None) -> Optional[List[Tuple[int, int, int]]]:
-    """The schedule for this instance, or None when the instance has no schedule file."""
-    path = resolve_schedule_path(navaid_sector_path, explicit)
+def load_schedule_for(navaid_sector_path) -> Optional[List[Tuple[int, int, int]]]:
+    """The schedule beside this static allocation, or None when the instance has none."""
+    path = schedule_path_beside(navaid_sector_path)
     if path is None:
         return None
     return load_schedule(path)
@@ -196,6 +174,7 @@ def build_assignment(flights: np.ndarray,
                      time_granularity: int,
                      *,
                      schedule=None,
+                     airports=None,
                      fill_value: int = -1,
                      compress: bool = False) -> np.ndarray:
     """The navpoint-to-sector allocation for every timestep, as an ``(|N| x |T|)`` array.
@@ -205,7 +184,8 @@ def build_assignment(flights: np.ndarray,
     any navpoint the static file does not mention.
 
     With a schedule the change-points are applied on top of that broadcast, in ``From_Time``
-    order, each one holding until the navpoint's next change-point.
+    order, each one holding until the navpoint's next change-point. ``airports`` (the airport
+    navpoints) is used only to check a schedule, never to build the array.
 
     Assumes IDs are non-negative ints (reasonably dense).
     """
@@ -250,30 +230,39 @@ def build_assignment(flights: np.ndarray,
             output[index, :] = index
 
     if schedule:
-        _apply_schedule(output, schedule)
+        _apply_schedule(output, schedule, navaid_sector, airports)
 
     return output
 
 
-def _apply_schedule(output: np.ndarray, schedule) -> None:
+def _apply_schedule(output: np.ndarray, schedule, navaid_sector: np.ndarray, airports) -> None:
     """Overwrite `output` in place with the change-points, then check what they imply.
 
     The checks run only over the entries a schedule actually moved, so an instance without one
     is never subjected to them and cannot start failing because of this function.
     """
     n_navpoints, n_times = output.shape
-    before = output[:, 0].copy()
+    static = output[:, 0].copy()
+    listed = set(int(navaid) for navaid in navaid_sector[:, 0])
 
     for navaid, sector, from_time in sorted(schedule, key=lambda entry: (entry[0], entry[2])):
-        if navaid >= n_navpoints:
+        if navaid not in listed:
             raise ScheduleError(
-                f"navpoint-sector schedule names navpoint {navaid}, but the static allocation "
-                f"only reaches navpoint {n_navpoints - 1}"
+                f"{SCHEDULE_FILENAME} names navpoint {navaid}, which navaid_sector_assignment.csv "
+                f"does not list (it lists {len(listed)} navpoints, the largest "
+                f"{n_navpoints - 1})"
             )
         if sector >= n_navpoints:
             raise ScheduleError(
-                f"navpoint-sector schedule puts navpoint {navaid} into sector {sector}, which "
-                f"is not a navpoint of this instance (the largest is {n_navpoints - 1})"
+                f"{SCHEDULE_FILENAME} puts navpoint {navaid} into sector {sector}, which is not a "
+                f"navpoint of this instance (the largest is {n_navpoints - 1})"
+            )
+        if from_time == 0 and sector != static[navaid]:
+            raise ScheduleError(
+                f"{SCHEDULE_FILENAME} puts navpoint {navaid} into sector {sector} at From_Time 0, "
+                f"but navaid_sector_assignment.csv puts it into sector {static[navaid]}. The "
+                "schedule's From_Time 0 rows must be the static allocation; the two files "
+                "disagree, so neither can be trusted."
             )
         if from_time >= n_times:
             # Beyond this instance's horizon, so it can never take effect. Harmless, and saying
@@ -288,6 +277,8 @@ def _apply_schedule(output: np.ndarray, schedule) -> None:
             continue
         output[navaid, from_time:] = sector
 
+    changed_columns = np.flatnonzero((output != static[:, None]).any(axis=0))
+
     # A navpoint may only sit in a sector that is open at that timestep, meaning the sector's own
     # navpoint is assigned to itself. The ASP encoding states this as an integrity constraint
     # (encoding.lp, `not navpoint_sector(SEC,SEC,T)`), so breaking it turns into an unexplained
@@ -297,7 +288,6 @@ def _apply_schedule(output: np.ndarray, schedule) -> None:
     # Whole columns are checked, not just the moved entries: moving a sector's own navpoint away
     # strands the members that did NOT move. Only the columns the schedule changed are checked,
     # which leaves an instance without a schedule untouched.
-    changed_columns = np.flatnonzero((output != before[:, None]).any(axis=0))
     for timestep in changed_columns:
         column = output[:, timestep]
         stranded = np.flatnonzero(column[column] != column)
@@ -305,28 +295,42 @@ def _apply_schedule(output: np.ndarray, schedule) -> None:
             navaid = int(stranded[0])
             sector = int(column[navaid])
             raise ScheduleError(
-                f"navpoint-sector schedule leaves navpoint {navaid} in sector {sector} at "
+                f"{SCHEDULE_FILENAME} leaves navpoint {navaid} in sector {sector} at "
                 f"timestep {timestep}, but sector {sector} is not open then: navpoint {sector} "
                 f"is itself assigned to sector {int(column[sector])}. A sector is open only while "
                 f"its own navpoint is assigned to it ({stranded.size} navpoint(s) affected at "
                 "this timestep)."
             )
 
-
-def t0_navaid_sector(navaid_sector: np.ndarray, assignment: np.ndarray) -> np.ndarray:
-    """The static allocation as of timestep 0, read back off the dense array.
-
-    Row order and shape match the input CSV array, so every consumer of the static allocation
-    sees the structure it already expects. Without a schedule the result equals the input, so
-    routing the static allocation through this function changes nothing.
-    """
-    out = navaid_sector.copy()
-    out[:, 1] = assignment[navaid_sector[:, 0], 0]
-    return out
+    # Airports are sectors of their own and nothing else joins them: encoding.lp derives
+    # navpoint_sector(A,A,T) for every airport A and forbids mixing airports and en-route
+    # navpoints in one sector. The Python solvers take a flight's origin and destination SECTOR
+    # as its origin and destination navpoint, which is only sound under the same rule.
+    if airports is not None and changed_columns.size:
+        is_airport = np.zeros(n_navpoints, dtype=bool)
+        airport_ids = np.asarray(airports, dtype=np.int64).ravel()
+        is_airport[airport_ids[airport_ids < n_navpoints]] = True
+        for timestep in changed_columns:
+            column = output[:, timestep]
+            moved_airports = np.flatnonzero(is_airport & (column != np.arange(n_navpoints)))
+            if moved_airports.size:
+                navaid = int(moved_airports[0])
+                raise ScheduleError(
+                    f"{SCHEDULE_FILENAME} moves airport {navaid} into sector {int(column[navaid])} "
+                    f"at timestep {timestep}; an airport is always its own sector"
+                )
+            joined = np.flatnonzero(~is_airport & is_airport[column])
+            if joined.size:
+                navaid = int(joined[0])
+                raise ScheduleError(
+                    f"{SCHEDULE_FILENAME} puts en-route navpoint {navaid} into airport sector "
+                    f"{int(column[navaid])} at timestep {timestep}; an airport sector holds "
+                    "only its airport"
+                )
 
 
 # ---------------------------------------------------------------------------
-# Handing the allocation to ASP
+# Describing the array
 # ---------------------------------------------------------------------------
 
 def change_points(assignment: np.ndarray):
@@ -344,6 +348,20 @@ def change_points(assignment: np.ndarray):
         entries = [(0, int(row[0]))]
         entries += [(int(t), int(row[t])) for t in breaks]
         yield navaid, entries
+
+
+def epoch_starts(assignment: np.ndarray) -> List[int]:
+    """The timesteps at which the allocation as a whole changes, always starting with 0.
+
+    Between two consecutive entries every column of the array is the same partition.
+    """
+    breaks = np.flatnonzero((assignment[:, 1:] != assignment[:, :-1]).any(axis=0)) + 1
+    return [0] + [int(t) for t in breaks]
+
+
+def is_time_varying(assignment: np.ndarray) -> bool:
+    """Whether any navpoint changes sector over the horizon."""
+    return bool((assignment[:, 1:] != assignment[:, :-1]).any())
 
 
 def asp_change_point_facts(assignment: np.ndarray) -> List[str]:
@@ -368,4 +386,4 @@ def describe(assignment: np.ndarray) -> str:
     if len(moving) > 8:
         shown += f", ... (+{len(moving) - 8} more)"
     return (f"navpoint-sector allocation: time-varying, {len(moving)} navpoint(s) change sector "
-            f"[{shown}]")
+            f"[{shown}], {len(epoch_starts(assignment))} distinct partitions over time")

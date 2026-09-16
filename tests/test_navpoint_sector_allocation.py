@@ -31,9 +31,12 @@ AIRPLANE_FLIGHT = np.array([[0, 0]])
 MAX_TIME, GRANULARITY = 2, 4
 
 
-def build(schedule=None):
+AIRPORTS = np.array([9, 10])
+
+
+def build(schedule=None, airports=AIRPORTS):
     return nsa.build_assignment(FLIGHTS, AIRPLANE_FLIGHT, STATIC, MAX_TIME, GRANULARITY,
-                                schedule=schedule)
+                                schedule=schedule, airports=airports)
 
 
 def write(tmp, text, name=nsa.SCHEDULE_FILENAME):
@@ -62,8 +65,9 @@ class TestStaticAllocationUnchanged(unittest.TestCase):
         self.assertEqual(nsa.asp_change_point_facts(build()), [])
         self.assertEqual(list(nsa.change_points(build())), [])
 
-    def test_t0_navaid_sector_is_identity_without_schedule(self):
-        self.assertTrue(np.array_equal(nsa.t0_navaid_sector(STATIC, build()), STATIC))
+    def test_static_allocation_has_one_epoch(self):
+        self.assertEqual(nsa.epoch_starts(build()), [0])
+        self.assertFalse(nsa.is_time_varying(build()))
 
 
 class TestChangePointsTakeEffect(unittest.TestCase):
@@ -86,11 +90,13 @@ class TestChangePointsTakeEffect(unittest.TestCase):
         self.assertEqual(facts, ["navpoint_sector_from(1,0,0).",
                                  "navpoint_sector_from(1,4,6)."])
 
-    def test_t0_navaid_sector_follows_a_t0_override(self):
-        a = build([(1, 4, 0)])
-        t0 = nsa.t0_navaid_sector(STATIC, a)
-        self.assertEqual(t0[1].tolist(), [1, 4])
-        self.assertEqual(nsa.asp_change_point_facts(a), [])   # constant, so no facts needed
+    def test_epochs_are_the_union_of_every_navpoints_change_points(self):
+        a = build([(1, 4, 6), (1, 0, 9), (5, 6, 3)])
+        self.assertEqual(nsa.epoch_starts(a), [0, 3, 6, 9])
+        self.assertTrue(nsa.is_time_varying(a))
+        for start, stop in [(0, 3), (3, 6), (6, 9), (9, 12)]:
+            block = a[:, start:stop]
+            self.assertTrue((block == block[:, :1]).all())
 
     def test_change_point_past_horizon_has_no_effect(self):
         stderr = io.StringIO()
@@ -108,6 +114,29 @@ class TestInconsistentSchedulesAreRejected(unittest.TestCase):
     def test_unknown_navpoint(self):
         with self.assertRaisesRegex(nsa.ScheduleError, "navpoint 99"):
             build([(99, 0, 3)])
+
+    def test_navpoint_missing_from_the_static_file(self):
+        gap = STATIC[STATIC[:, 0] != 8]       # 8 is inside the id range but not listed
+        with self.assertRaisesRegex(nsa.ScheduleError, "navpoint 8, which navaid_sector_assignment"):
+            nsa.build_assignment(FLIGHTS, AIRPLANE_FLIGHT, gap, MAX_TIME, GRANULARITY,
+                                 schedule=[(8, 6, 3)])
+
+    def test_from_time_0_must_agree_with_the_static_file(self):
+        with self.assertRaisesRegex(nsa.ScheduleError, "at From_Time 0, but navaid_sector_assignment"):
+            build([(1, 4, 0)])
+
+    def test_moving_an_airport(self):
+        with self.assertRaisesRegex(nsa.ScheduleError, "moves airport 9"):
+            build([(9, 0, 3)])
+
+    def test_joining_an_airport_sector(self):
+        with self.assertRaisesRegex(nsa.ScheduleError, "into airport sector 10"):
+            build([(1, 10, 3)])
+
+    def test_airport_checks_need_the_airports(self):
+        # without the airport list the builder cannot tell; the solvers always pass it
+        a = build([(1, 10, 3)], airports=None)
+        self.assertEqual(int(a[1, 3]), 10)
 
     def test_unknown_sector(self):
         with self.assertRaisesRegex(nsa.ScheduleError, "sector 99"):
@@ -150,10 +179,11 @@ class TestScheduleFile(unittest.TestCase):
             write(tmp, "Navaid_ID,Sector_ID,From_Time\n1,4,6\n")
             self.assertEqual(nsa.load_schedule_for(static), [(1, 4, 6)])
 
-    def test_explicit_path_that_does_not_exist_is_an_error(self):
+    def test_a_schedule_elsewhere_is_not_picked_up(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaisesRegex(nsa.ScheduleError, "not found"):
-                nsa.load_schedule_for(None, explicit=Path(tmp) / "nope.csv")
+            static = write(tmp, "Navaid_ID,Sector_ID\n0,0\n", "navaid_sector_assignment.csv")
+            write(tmp, "Navaid_ID,Sector_ID,From_Time\n1,4,6\n", "other_schedule.csv")
+            self.assertIsNone(nsa.load_schedule_for(static))
 
     def test_malformed_files_fail_with_the_line_named(self):
         cases = {
