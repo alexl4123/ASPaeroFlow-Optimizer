@@ -219,7 +219,7 @@ def main() -> int:
     missing_units: List[dict] = []
     n_done = n_skipped = n_moved = 0
     written: List[str] = []
-    incomplete: List[Tuple[str, int, List[str]]] = []
+    incomplete: List[Tuple[str, int, List[str], str]] = []
 
     for problem_name, problem in problems.items():
         target = folder_root / f"output_{problem_name}"
@@ -258,11 +258,14 @@ def main() -> int:
 
         if gaps and not a.allow_incomplete:
             n_gap = sum(1 for i in instances for s in gaps if s not in records.get(i, {}))
-            incomplete.append((problem_name, n_gap, gaps))
+            incomplete.append((problem_name, n_gap, gaps, "pass --allow-incomplete to write "
+                                                          "the systems that are complete"))
             continue
         if not complete:
+            # Nothing to write even with --allow-incomplete: no system is complete across every
+            # instance, so there is no rectangle to put in a CSV.
             incomplete.append((problem_name, len(instances) * len(problem["systems"]),
-                               problem["systems"]))
+                               problem["systems"], "no system is complete across all instances"))
             continue
 
         target.mkdir(parents=True, exist_ok=True)
@@ -309,11 +312,11 @@ def main() -> int:
     if n_moved and a.solver_outputs != "leave":
         print(f"matrices:  {n_moved:,} solver_outputs tree(s) {a.solver_outputs}d into place")
     if incomplete:
-        print(f"\nNOT WRITTEN -- {len(incomplete)} problem(s) are incomplete "
-              f"(re-run with --allow-incomplete to write what is there):")
-        for name, n_gap, gaps in incomplete[:20]:
+        print(f"\nNOT WRITTEN -- {len(incomplete)} problem(s) are incomplete:")
+        for name, n_gap, gaps, why in incomplete[:20]:
             print(f"  {name:<52} {n_gap:>6} unit(s) short, system(s): {', '.join(gaps[:6])}"
                   f"{' ...' if len(gaps) > 6 else ''}")
+            print(f"  {'':<52} {why}")
         if len(incomplete) > 20:
             print(f"  ... and {len(incomplete) - 20} more")
     if missing_units:
