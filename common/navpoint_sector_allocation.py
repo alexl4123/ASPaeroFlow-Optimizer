@@ -32,15 +32,8 @@ a classmethod, so the logic lives here once and each folder reaches it through i
 ``navpoint_sector_allocation_bootstrap.py`` shim, the same way ``common/arrival_delay.py`` is
 reached.
 
-ASP fact emission
------------------
-``02_ASP/encoding.lp`` takes ``navpoint_sector(NAV,SEC,0)`` facts and broadcasts them across
-every timestep. That broadcast is right while the allocation is constant and wrong as soon as it
-is not: the T=0 fact and the changed sector would both hold at the same timestep and violate the
-one-sector-per-navpoint constraint. ``asp_change_point_facts`` therefore emits
-``navpoint_sector_from(NAV,SEC,FROM_T)`` for the navpoints that actually move, and the encoding
-withholds its broadcast from exactly those navpoints. On a constant allocation the function
-returns nothing at all, so the grounded program is identical to what it was before.
+The ASP facts for a time-varying allocation are written by ``02_ASP/translate.py``
+(``convert_navaid_sector_schedule``), from this array; a constant allocation adds none.
 """
 from __future__ import annotations
 
@@ -56,9 +49,6 @@ SCHEDULE_FILENAME = "navaid_sector_schedule.csv"
 
 #: The header the schedule file must carry, in this order.
 SCHEDULE_COLUMNS = ("Navaid_ID", "Sector_ID", "From_Time")
-
-#: The ASP predicate carrying a change-point into the encoding.
-ASP_CHANGE_POINT_PREDICATE = "navpoint_sector_from"
 
 
 class ScheduleError(ValueError):
@@ -362,19 +352,6 @@ def epoch_starts(assignment: np.ndarray) -> List[int]:
 def is_time_varying(assignment: np.ndarray) -> bool:
     """Whether any navpoint changes sector over the horizon."""
     return bool((assignment[:, 1:] != assignment[:, :-1]).any())
-
-
-def asp_change_point_facts(assignment: np.ndarray) -> List[str]:
-    """``navpoint_sector_from/3`` facts for the navpoints whose sector changes over time.
-
-    Empty for a constant allocation, which is what keeps every existing instance grounding
-    exactly as it did before.
-    """
-    facts: List[str] = []
-    for navaid, entries in change_points(assignment):
-        for from_time, sector in entries:
-            facts.append(f"{ASP_CHANGE_POINT_PREDICATE}({navaid},{sector},{from_time}).")
-    return facts
 
 
 def describe(assignment: np.ndarray) -> str:

@@ -61,8 +61,7 @@ class TestStaticAllocationUnchanged(unittest.TestCase):
         schedule = [(int(n), int(s), 0) for n, s in STATIC]
         self.assertTrue(np.array_equal(build(schedule), build()))
 
-    def test_static_allocation_emits_no_asp_facts(self):
-        self.assertEqual(nsa.asp_change_point_facts(build()), [])
+    def test_static_allocation_has_no_change_points(self):
         self.assertEqual(list(nsa.change_points(build())), [])
 
     def test_static_allocation_has_one_epoch(self):
@@ -85,10 +84,8 @@ class TestChangePointsTakeEffect(unittest.TestCase):
         a = build([(1, 0, 9), (1, 4, 3)])
         self.assertEqual(a[1].tolist(), [0, 0, 0, 4, 4, 4, 4, 4, 4, 0, 0, 0])
 
-    def test_change_point_facts_describe_the_whole_row(self):
-        facts = nsa.asp_change_point_facts(build([(1, 4, 6)]))
-        self.assertEqual(facts, ["navpoint_sector_from(1,0,0).",
-                                 "navpoint_sector_from(1,4,6)."])
+    def test_change_points_describe_the_whole_row(self):
+        self.assertEqual(list(nsa.change_points(build([(1, 4, 6)]))), [(1, [(0, 0), (6, 4)])])
 
     def test_epochs_are_the_union_of_every_navpoints_change_points(self):
         a = build([(1, 4, 6), (1, 0, 9), (5, 6, 3)])

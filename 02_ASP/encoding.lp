@@ -1,6 +1,13 @@
 % FACTS:
 % navpoint_flight_plan(<ID>,<NAVPOINT-LOCATION>,<TIME>)
 % navpoint_sector(<NAVPOINT-ID>,<SECTOR-ID>,<TIME=0 for FACTS>)
+% Only when navaid_sector_schedule.csv changes the allocation over time (written by translate.py):
+%   navpoint_sector_scheduled(<NAVPOINT-ID>) for each navpoint that changes sector, and for every TIME>0
+%     navpoint_sector(<NAVPOINT-ID>,<SECTOR-ID>,<TIME>) without dynamic sector allocation,
+%     navpoint_sector_given(<NAVPOINT-ID>,<SECTOR-ID>,<TIME>) with it
+%   full dynamic: navpoint_sector_time_varying, navpoint_sector_candidate(<SECTOR-ID>)
+%   restricted dynamic: restricted_epoch_at(<FROM>,<TIME>) and, instead of the 4-ary options,
+%     navpoint_sector_restricted_sector_allocation_from(<SECTOR-ID>,<DEC>,<NAVPOINT-ID>,<SECTOR-ID>,<FROM>)
 % navpoint_edge(<X0>,<X1>,<PLANE-SPEED>,<UNIT-DIST>)
 % airport(<X>)
 % aircraft(<ID>,<PLANE-SPEED>)
@@ -11,11 +18,14 @@ navpoint(NAV) :- navpoint_sector(NAV,_,_).
 
 % Dynamic Sector Allocation:
 navpoint_sector(SEC,SEC,T) :- navpoint(SEC), time(T), airport(SEC).
-1{navpoint_sector(NAV,SEC,T):navpoint_sector(_,SEC,0)}1:- navpoint(NAV), time(T), not airport(NAV), regulation_dynamic_sector_allocation.
+1{navpoint_sector(NAV,SEC,T):navpoint_sector(_,SEC,0)}1:- navpoint(NAV), time(T), not airport(NAV), regulation_dynamic_sector_allocation, not navpoint_sector_time_varying.
+1{navpoint_sector(NAV,SEC,T):navpoint_sector_candidate(SEC)}1:- navpoint(NAV), time(T), not airport(NAV), regulation_dynamic_sector_allocation, navpoint_sector_time_varying.
 initial_sector(SEC) :- navpoint_sector(_,SEC,0), regulation_restricted_dynamic_sector_allocation.
 1{navpoint_sector_decision(SEC,0..3,T)}1 :- initial_sector(SEC), time(T), not airport(SEC), regulation_restricted_dynamic_sector_allocation.
 navpoint_sector(NAV1,SEC1,T) :- navpoint_sector_decision(SEC,DEC,T), navpoint_sector_restricted_sector_allocation(SEC,DEC,NAV1,SEC1), regulation_restricted_dynamic_sector_allocation.
-navpoint_sector(NAV,SEC,T) :- time(T), navpoint_sector(NAV,SEC,0), -regulation_dynamic_sector_allocation.
+1{navpoint_sector_decision(SEC,0..3,T)}1 :- restricted_epoch_at(FROM,T), navpoint_sector_restricted_sector_allocation_from(SEC,_,_,_,FROM), not airport(SEC), regulation_restricted_dynamic_sector_allocation.
+navpoint_sector(NAV1,SEC1,T) :- navpoint_sector_decision(SEC,DEC,T), restricted_epoch_at(FROM,T), navpoint_sector_restricted_sector_allocation_from(SEC,DEC,NAV1,SEC1,FROM), regulation_restricted_dynamic_sector_allocation.
+navpoint_sector(NAV,SEC,T) :- time(T), navpoint_sector(NAV,SEC,0), -regulation_dynamic_sector_allocation, not navpoint_sector_scheduled(NAV).
 
 
 
@@ -36,7 +46,8 @@ navpoint_changed(NAV,T,0) :- navpoint_sector(NAV,SEC0,T), navpoint_sector(NAV,SE
 sector_diff(T,DIFF) :- time(T), DIFF = #sum{V,NAV: navpoint_changed(NAV,T,V)}.
 
 % MINIMIZE RECONFIG:
-reconfig(NAV,T) :- navpoint_sector(NAV,SEC,0), navpoint_sector(NAV,SEC2,T), SEC != SEC2, T > 0.
+reconfig(NAV,T) :- navpoint_sector(NAV,SEC,0), navpoint_sector(NAV,SEC2,T), SEC != SEC2, T > 0, not navpoint_sector_scheduled(NAV).
+reconfig(NAV,T) :- navpoint_sector_given(NAV,SEC,T), navpoint_sector(NAV,SEC2,T), SEC != SEC2, T > 0.
 
 % GET ALL AIRPLANE SPEEDS
 aircraft_speed(S) :- aircraft(_,S).

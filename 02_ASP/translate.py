@@ -16,7 +16,13 @@ from typing import Iterable, List, Any
 import math
 import numpy as np
 import networkx as nx
-from navpoint_sector_allocation_bootstrap import build_assignment as build_navpoint_sector_assignment
+from navpoint_sector_allocation_bootstrap import (
+    build_assignment as build_navpoint_sector_assignment,
+    change_points,
+    epoch_starts,
+    is_time_varying,
+    load_schedule_for as load_navpoint_sector_schedule,
+)
 
 LINEAR = "linear"
 TRIANGULAR = "triangular"
@@ -231,13 +237,83 @@ class TranslateCSVtoLogicProgram:
 
         return airplane_flight_instance
 
-    def convert_navaid_sector(self, navaid_sector, networkx_graph) -> List[str]:
+    def convert_navaid_sector(self, navaid_sector, networkx_graph, restricted_options=True) -> List[str]:
         """Convert navaid_sector to ASP"""
         
         navaid_sector_instance = []
 
         for row_index in range(navaid_sector.shape[0]):
             navaid_sector_instance.append(f"navpoint_sector({navaid_sector[row_index,0]},{navaid_sector[row_index,1]},0).")
+
+        if restricted_options:
+            for sec, dec, nav, sec1 in self.restricted_sector_allocation_options(navaid_sector, networkx_graph):
+                navaid_sector_instance.append(
+                    f"navpoint_sector_restricted_sector_allocation({sec},{dec},{nav},{sec1})."
+                )
+
+        return navaid_sector_instance
+
+    def convert_navaid_sector_schedule(self, navaid_sector, allocation, networkx_graph, horizon,
+                                       regulation_dynamic_sectorization_active) -> List[str]:
+        """The facts that tell encoding.lp about a navpoint-sector allocation that changes over time.
+
+        `allocation` is the (|N| x |T|) array and `horizon` the last timestep of the ASP time domain.
+        Returns [] when the allocation does not change within 0..horizon: the instance is then
+        exactly what it was before schedules existed. Otherwise, for each navpoint that changes
+        sector, navpoint_sector_scheduled(NAV), and for T in 1..horizon
+          no dynamic allocation (0):  navpoint_sector(NAV,SEC,T), taking the place of the T=0
+                                      broadcast that encoding.lp withholds from NAV;
+          dynamic allocation (1, 2):  navpoint_sector_given(NAV,SEC,T), the reference RECONFIG
+                                      counts departures from.
+        Full dynamic allocation (2) also gets navpoint_sector_time_varying and
+        navpoint_sector_candidate(SEC) for every sector that has a navpoint at any timestep, which
+        includes the sectors the schedule opens after T=0, so the schedule stays a possible choice.
+        Restricted dynamic allocation (1) gets the split options of each distinct partition,
+        navpoint_sector_restricted_sector_allocation_from(SEC,DEC,NAV,SEC1,FROM), and
+        restricted_epoch_at(FROM,T) naming the partition in force at T; the time-independent
+        options, which describe only the T=0 partition, are then left out by the caller.
+        """
+        allocation = allocation[:, :horizon + 1]
+        if not is_time_varying(allocation):
+            return []
+
+        listed = navaid_sector[:, 0]
+        moving = [navaid for navaid, _ in change_points(allocation)]
+
+        instance = [f"navpoint_sector_scheduled({navaid})." for navaid in moving]
+        predicate = "navpoint_sector" if regulation_dynamic_sectorization_active == 0 else "navpoint_sector_given"
+        for navaid in moving:
+            for t in range(1, horizon + 1):
+                instance.append(f"{predicate}({navaid},{allocation[navaid, t]},{t}).")
+
+        if regulation_dynamic_sectorization_active == 2:
+            instance.append("navpoint_sector_time_varying.")
+            for sector in sorted(set(allocation[listed, :].ravel().tolist())):
+                instance.append(f"navpoint_sector_candidate({sector}).")
+
+        if regulation_dynamic_sectorization_active == 1:
+            starts = epoch_starts(allocation)
+            for from_time in starts:
+                partition = navaid_sector.copy()
+                partition[:, 1] = allocation[listed, from_time]
+                for sec, dec, nav, sec1 in self.restricted_sector_allocation_options(partition, networkx_graph):
+                    instance.append(
+                        f"navpoint_sector_restricted_sector_allocation_from({sec},{dec},{nav},{sec1},{from_time})."
+                    )
+            epoch = 0
+            for t in range(0, horizon + 1):
+                while epoch + 1 < len(starts) and starts[epoch + 1] <= t:
+                    epoch += 1
+                instance.append(f"restricted_epoch_at({starts[epoch]},{t}).")
+
+        return instance
+
+    def restricted_sector_allocation_options(self, navaid_sector, networkx_graph):
+        """(SEC, DEC, NAV, SEC1) for every sector of the partition `navaid_sector`: under decision
+        DEC in 0..3 navpoint NAV of sector SEC goes to sector SEC1 (0 keep, 1 two parts, 2 four
+        parts, 3 atomic)."""
+
+        options = []
 
         # Build per-sector navpoint lists
         from collections import defaultdict, deque
@@ -315,9 +391,7 @@ class TranslateCSVtoLogicProgram:
         def _emit(sec: str, dec: int, nav_to_sec1: dict):
             for nav in sorted(nav_to_sec1.keys(), key=str):
                 sec1 = nav_to_sec1[nav]
-                navaid_sector_instance.append(
-                    f"navpoint_sector_restricted_sector_allocation({sec},{dec},{nav},{sec1})."
-                )
+                options.append((sec, dec, nav, sec1))
 
         # For each sector: offer DEC in {0,1,2,3}
         for sec, navs_set in sector_to_navs.items():
@@ -365,7 +439,7 @@ class TranslateCSVtoLogicProgram:
                 _emit(sec, 1, {nav: sec for nav in navs})
                 _emit(sec, 2, {nav: sec for nav in navs})
 
-        return navaid_sector_instance
+        return options
     
     def load_data(self, graph_path, sectors_path, flights_path, airports_path, airplanes_path, airplane_flight_path, navaid_sector_path, encoding_path) -> None:
         """Load all CSV files provided on the command line."""
@@ -557,7 +631,12 @@ class TranslateCSVtoLogicProgram:
 
         self.unit_graphs = {}
 
-        navaid_sector_time_assignment = self.create_initial_navpoint_sector_assignment(self.flights, self.airplane_flight, self.navaid_sector, max_time, timestep_granularity)
+        # A navaid_sector_schedule.csv beside the static file makes this array vary over time;
+        # without one it is the static allocation in every column, as it always was.
+        navaid_sector_schedule = load_navpoint_sector_schedule(navaid_sector_path)
+        navaid_sector_time_assignment = self.create_initial_navpoint_sector_assignment(self.flights, self.airplane_flight, self.navaid_sector, max_time, timestep_granularity,
+                                                                                        schedule=navaid_sector_schedule, airports=self.airports)
+        self.navaid_sector_time_assignment = navaid_sector_time_assignment
 
         different_speeds = list(set(list(self.airplanes[:,1])))
         for cur_airplane_speed in different_speeds:
@@ -595,7 +674,16 @@ class TranslateCSVtoLogicProgram:
         airports_instance = self.convert_airports(self.airports)
         airplanes_instance = self.convert_airplanes(self.airplanes)
         airplane_flight_instance = self.convert_airplane_flight(self.airplane_flight)
-        navaid_sector_instance = self.convert_navaid_sector(self.navaid_sector, self.networkx_navpoint_graph)
+        # The ASP time domain is 0..max(max_time, last planned timestep); see time/1 in encoding.lp.
+        asp_horizon = max(max_time * timestep_granularity, max_time_flights)
+        schedule_instance = self.convert_navaid_sector_schedule(self.navaid_sector, navaid_sector_time_assignment,
+                                                                self.networkx_navpoint_graph, asp_horizon,
+                                                                regulation_dynamic_sectorization_active)
+        # A schedule under restricted dynamic allocation brings its own options, per partition.
+        restricted_options = not (schedule_instance and regulation_dynamic_sectorization_active == 1)
+        navaid_sector_instance = self.convert_navaid_sector(self.navaid_sector, self.networkx_navpoint_graph,
+                                                            restricted_options=restricted_options)
+        navaid_sector_instance += schedule_instance
 
         sector_capactiy_factor_instance = [f"sector_capacity_factor({sector_capactiy_factor})."]
         timestep_granularity_instance = [f"timestep_granularity({timestep_granularity})."]

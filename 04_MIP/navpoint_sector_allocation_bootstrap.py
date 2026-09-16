@@ -28,11 +28,9 @@ def _bootstrap():
 _bootstrap()
 
 from common.navpoint_sector_allocation import (  # noqa: E402
-    ASP_CHANGE_POINT_PREDICATE,
     SCHEDULE_COLUMNS,
     SCHEDULE_FILENAME,
     ScheduleError,
-    asp_change_point_facts,
     build_assignment,
     change_points,
     describe,
