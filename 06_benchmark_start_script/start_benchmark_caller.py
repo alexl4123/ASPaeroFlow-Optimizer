@@ -165,6 +165,35 @@ def split_selection(values: List[str] | None) -> List[str] | None:
     return [name for name in names if name]
 
 
+def select_systems(systems: List[Dict], wanted: List[str] | None) -> List[Dict]:
+    """The named systems, in build_system_config()'s order. All of them if nothing is named.
+
+    The order is the system list's, never the selection's, so naming systems in a different order
+    cannot reorder the CSV columns. An unknown key raises instead of yielding an empty run: a typo
+    in a job script would otherwise look like a solver that produced no results.
+    """
+    if wanted is None:
+        return systems
+    available = [system["key"] for system in systems]
+    unknown = [key for key in wanted if key not in available]
+    if unknown:
+        raise ValueError(f"no such enabled system {unknown}; enabled here: {available}")
+    keep = set(wanted)
+    return [system for system in systems if system["key"] in keep]
+
+
+def select_instances(instances: List[Path], wanted: List[str] | None) -> List[Path]:
+    """The named instance folders, in directory order. All of them if nothing is named."""
+    if wanted is None:
+        return instances
+    available = [inst.name for inst in instances]
+    unknown = [name for name in wanted if name not in available]
+    if unknown:
+        raise ValueError(f"no such instance folder: {unknown}")
+    keep = set(wanted)
+    return [inst for inst in instances if inst.name in keep]
+
+
 def get_recursive_memory_usage(pid: int) -> int:
     """Return RSS usage (bytes) of *pid* + all recursive children."""
     try:
@@ -1013,18 +1042,11 @@ def main() -> None:
     base_dir = Path(__file__).resolve().parent
     systems = build_system_config(base_dir, output_path, experiment_name, args)
 
-    # --only-system: keep build_system_config's order, drop everything not named. An unknown key
-    # is an error rather than an empty run, because a typo in a job script would otherwise look
-    # like a solver that produced no results.
-    wanted_systems = split_selection(args.only_system)
-    if wanted_systems is not None:
-        available = [sys_["key"] for sys_ in systems]
-        unknown = [key for key in wanted_systems if key not in available]
-        if unknown:
-            print(f"[ERROR] --only-system: no such enabled system {unknown}; "
-                  f"enabled here: {available}", file=sys.stderr)
-            sys.exit(1)
-        systems = [sys_ for sys_ in systems if sys_["key"] in set(wanted_systems)]
+    try:
+        systems = select_systems(systems, split_selection(args.only_system))
+    except ValueError as exc:
+        print(f"[ERROR] --only-system: {exc}", file=sys.stderr)
+        sys.exit(1)
     if not systems:
         print("[ERROR] No solver systems enabled -- every --experiment-* flag is 0", file=sys.stderr)
         sys.exit(1)
@@ -1035,18 +1057,12 @@ def main() -> None:
         print(f"[ERROR] No instance folders found in {args.instance_dir}", file=sys.stderr)
         sys.exit(1)
 
-    # --only-instance: same contract as --only-system. The surviving order is the DIRECTORY
-    # order, so selecting several instances gives the same rows in the same order as a full run
-    # would, whatever order they were named in.
-    wanted_instances = split_selection(args.only_instance)
-    if wanted_instances is not None:
-        available_inst = [inst.name for inst in instances]
-        unknown = [name for name in wanted_instances if name not in available_inst]
-        if unknown:
-            print(f"[ERROR] --only-instance: no such instance folder in {args.instance_dir}: "
-                  f"{unknown}", file=sys.stderr)
-            sys.exit(1)
-        instances = [inst for inst in instances if inst.name in set(wanted_instances)]
+    # Same contract as --only-system: directory order survives, unknown names are an error.
+    try:
+        instances = select_instances(instances, split_selection(args.only_instance))
+    except ValueError as exc:
+        print(f"[ERROR] --only-instance: {exc} in {args.instance_dir}", file=sys.stderr)
+        sys.exit(1)
     
     # Result containers
     exec_time: Dict[str, Dict[str, float | int]] = {inst.name: {} for inst in instances}
