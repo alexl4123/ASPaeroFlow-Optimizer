@@ -33,6 +33,11 @@ for path in (str(REPO), str(BENCH)):
 
 
 def _load(name, path):
+    # The module's own folder goes on sys.path first: 02_ASP/solver.py imports its sibling
+    # bootstrap shims (navpoint_sector_allocation_bootstrap, ...) by plain name.
+    folder = str(Path(path).resolve().parent)
+    if folder not in sys.path:
+        sys.path.insert(0, folder)
     spec = util.spec_from_file_location(name, path)
     module = util.module_from_spec(spec)
     sys.modules[spec.name] = module
