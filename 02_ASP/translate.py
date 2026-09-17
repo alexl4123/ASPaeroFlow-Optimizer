@@ -136,8 +136,9 @@ class TranslateCSVtoLogicProgram:
         N = cap.shape[0]
         T = int(time_granularity)
 
-        if n_times % T != 0:
-            raise ValueError("n_times must be a multiple of time_granularity (T).")
+        # Capacity is per timestep (read, never divided by T), so n_times need not be a multiple of
+        # T. The multiple-of-T check dated from per-hour capacities and rejected every solution
+        # whose time axis ended off an hour boundary.
 
         if navaid_sector_time_assignment.shape != (N, n_times):
             raise ValueError(
