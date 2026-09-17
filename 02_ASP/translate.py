@@ -17,6 +17,12 @@ import math
 import numpy as np
 import networkx as nx
 from edge_cost_bootstrap import edge_duration_timesteps, load_graph_edges
+
+
+class HorizonOverflow(Exception):
+    """A route's trajectory would pass the last timestep of the instance's time axis."""
+
+
 from navpoint_sector_allocation_bootstrap import (
     build_assignment as build_navpoint_sector_assignment,
     change_points,
@@ -484,6 +490,7 @@ class TranslateCSVtoLogicProgram:
         largest_considered_time = 0
 
         regulation_restricted_rerouting_instance = []
+        dropped_alternatives = 0
 
 
         for flight_affected_index in range(flights_affected.shape[0]):
@@ -521,9 +528,19 @@ class TranslateCSVtoLogicProgram:
 
 
             path_id = 0
+            filed_route = [int(v) for v in filed_flight_path[:,1]]
 
             for path in paths:
-                navpoint_trajectory = self.get_flight_navpoint_trajectory(flights_affected, networkx_graph, flight_index, actual_flight_departure_time, airplane_speed_kts, path, timestep_granularity)
+                try:
+                    navpoint_trajectory = self.get_flight_navpoint_trajectory(flights_affected, networkx_graph, flight_index, actual_flight_departure_time, airplane_speed_kts, path, timestep_granularity)
+                except HorizonOverflow:
+                    # An alternative route longer than the whole time axis can never be flown: every
+                    # flight must land inside the 24-hour window. Leave it out of the choice. The
+                    # filed route fits by the instance contract, so a failure there is still fatal.
+                    if [int(v) for v in path] == filed_route:
+                        raise
+                    dropped_alternatives += 1
+                    continue
 
 
                 for flight_id, flight_navpoint, flight_time in navpoint_trajectory:
@@ -532,6 +549,9 @@ class TranslateCSVtoLogicProgram:
                 path_id += 1
 
 
+        if dropped_alternatives:
+            print(f"[rerouting] left out {dropped_alternatives} alternative route(s) that do not fit the time axis",
+                  file=sys.stderr)
         return regulation_restricted_rerouting_instance
             
     
@@ -945,7 +965,7 @@ class TranslateCSVtoLogicProgram:
                 t_slot = current_time
 
                 if t_slot >= flights_affected.shape[1]:
-                    raise Exception("In optimize_flights max time exceeded current allowed time.")
+                    raise HorizonOverflow("In optimize_flights max time exceeded current allowed time.")
 
             else:
                 # En-route/destination
@@ -959,7 +979,7 @@ class TranslateCSVtoLogicProgram:
                 t_slot=current_time
 
                 if t_slot >= flights_affected.shape[1]:
-                    raise Exception("In optimize_flights max time exceeded current allowed time.")
+                    raise HorizonOverflow("In optimize_flights max time exceeded current allowed time.")
 
             traj.append((flight_index, vertex, t_slot))
 
