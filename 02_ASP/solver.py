@@ -4,6 +4,7 @@
 import os
 import sys
 import time
+import math
 import contextlib
 import operator
 import json
@@ -51,9 +52,53 @@ def _solver_summary(ctl, models_reported):
     return summary
 
 
+def _finite_or_none(vector):
+    """A clingo cost or bound vector, or None when it holds anything but finite numbers.
+
+    A solve stopped before its first model reports its costs as [inf, ...]. json.dumps would write
+    that as the non-standard token Infinity, and int() on it raises, so it becomes None.
+    """
+    if vector is None:
+        return None
+    try:
+        values = list(vector)
+    except TypeError:
+        return None
+    if not all(isinstance(v, (int, float)) and math.isfinite(v) for v in values):
+        return None
+    return values
+
+
+class _CostPriorities(clingo.Observer):
+    """Records the priority of every minimize statement the grounder emits.
+
+    clingo's cost and lower-bound vectors have one entry per priority level PRESENT in the ground
+    program, highest first, and which levels are present depends on the regulation variant and the
+    instance: 4 to 6 entries for this encoding (a _ns variant has no @5 level, for example). A bound
+    of [16, 300, 0, 0] cannot be put against the six named objective levels without knowing which
+    four priorities it stands for, and this is where that comes from.
+
+    Zero-weight levels are kept because clasp keeps them: measured on 13 regulation variants under
+    branch-and-bound and usc, the number of priorities seen here always equals the length of
+    clingo's cost vector, and the number of levels with a non-zero weight does not.
+
+    Only minimize() is implemented, and clingo registers only the callbacks an observer overrides,
+    so nothing else about grounding changes.
+    """
+
+    def __init__(self):
+        self.priorities = set()
+
+    def minimize(self, priority, literals):
+        self.priorities.add(priority)
+
+    def ordered(self):
+        return sorted(self.priorities, reverse=True)
+
+
 class Solver:
     def __init__(self, encoding, instance, seed = 1, wandb_log = None,
-                 solver_options = None, report_solver_stats = False):
+                 solver_options = None, report_solver_stats = False, deadline = None):
         self.encoding = encoding
         self.instance = instance
         self.seed = seed
@@ -83,19 +128,40 @@ class Solver:
         # --opt-mode=optN. Measured both ways before this was written.
         self.search_exhausted = False
 
+        # Opt-in solve deadline, as an absolute time.monotonic() timestamp (02_ASP/main.py
+        # --solve-deadline). None, the default, keeps the blocking ctl.solve() below, so a run
+        # that does not ask for a deadline searches exactly as it always has.
+        self.deadline = deadline
+        # Filled in only when a deadline is set. See _solve_until_deadline().
+        self.stopped_at_deadline = False
+        self.solve_started_at = None
+        self.solve_ended_at = None
+        self.solve_summary = None
+        self.cost_priorities = None
+
 
     def solve(self):
-        
+
         self.final_model = None
         self.best_cost = None
         self.models_reported = 0
         self.search_exhausted = False
+        self.stopped_at_deadline = False
+        self.solve_started_at = None
+        self.solve_ended_at = None
+        self.solve_summary = None
+        self.cost_priorities = None
 
         start_time = time.time()
         self.total_time_start = start_time
 
         ctl = clingo.Control(self.solver_options)
         ctl.configuration.solver.seed = self.seed
+
+        priorities = None
+        if self.deadline is not None and self.report_solver_stats:
+            priorities = _CostPriorities()
+            ctl.register_observer(priorities)
 
         ##########################################################
         # SILENCE CLINGO (all stdout/warnings directly to devnull):
@@ -119,7 +185,10 @@ class Solver:
 
                     self.grounding_time = grd_time_end - grd_time_start
 
-                    solve_result = ctl.solve(on_model=self.on_model)
+                    if self.deadline is None:
+                        solve_result = ctl.solve(on_model=self.on_model)
+                    else:
+                        solve_result = self._solve_until_deadline(ctl)
                     self.search_exhausted = bool(solve_result.exhausted)
             finally:
                 os.dup2(saved_fd2,fd2)
@@ -134,6 +203,17 @@ class Solver:
 
         runtime = end_time - start_time
 
+        if self.deadline is not None and self.report_solver_stats:
+            # Read for every solve under a deadline, WITH OR WITHOUT a model: a core-guided search
+            # stopped before its first model has no incumbent to report but can still have a
+            # lower bound, and main.py prints it.
+            self.cost_priorities = priorities.ordered()
+            self.solve_summary = _solver_summary(ctl, self.models_reported)
+            for key in ("SOLVER-COSTS", "SOLVER-LOWER-BOUND"):
+                if key in self.solve_summary:
+                    self.solve_summary[key] = _finite_or_none(self.solve_summary[key])
+            self.solve_summary["SOLVER-COST-PRIORITIES"] = self.cost_priorities
+
         if self.final_model is None:
             return None
         
@@ -147,9 +227,44 @@ class Solver:
         # model still carrying False.
         self.final_model.computation_finished = self.search_exhausted
         if self.report_solver_stats:
-            self.final_model.set_solver_summary(_solver_summary(ctl, self.models_reported))
+            if self.deadline is None:
+                self.final_model.set_solver_summary(_solver_summary(ctl, self.models_reported))
+            else:
+                self.final_model.set_solver_summary(self.solve_summary)
 
         return self.final_model
+
+    def _solve_until_deadline(self, ctl):
+        """Search until the search ends or self.deadline passes, whichever comes first.
+
+        The benchmark caller enforces its time limit with SIGKILL, and a killed process never reads
+        ctl.statistics, so its lower bound is lost. Here the search runs on clingo's own thread
+        (async_=True) while this thread waits for it, and at the deadline it is cancelled from
+        inside the process. handle.get() then returns normally and the statistics, lower bound
+        included, can be read exactly as after a search that ended by itself.
+
+        Threads. on_model runs on clingo's search thread in this mode and writes its result line
+        through self.tmp_fd. Nothing else touches that descriptor until the finally block in
+        solve(), and that block only runs after this `with` block has ended: handle.get() waits
+        for the search thread, and leaving the block closes the handle. An exception raised inside
+        on_model stops the search and is raised here as a RuntimeError carrying its message
+        (measured on clingo 5.6.2), so it still ends the run instead of hanging it.
+
+        What this cannot stop: translation, ctl.add() and grounding run before the search and are
+        not interruptible. A deadline that passes during them is noticed only when the search
+        starts, which then gets no time at all, and if they overrun the deadline by more than the
+        caller's margin the external kill arrives first, exactly as without a deadline.
+        """
+        self.solve_started_at = time.monotonic()
+        with ctl.solve(on_model=self.on_model, async_=True) as handle:
+            if not handle.wait(max(0.0, self.deadline - self.solve_started_at)):
+                handle.cancel()
+            result = handle.get()
+        self.solve_ended_at = time.monotonic()
+        # From the result, not from wait() timing out: a search that ends by itself between the
+        # wait and the cancel is exhausted, not stopped.
+        self.stopped_at_deadline = bool(result.interrupted)
+        return result
 
     def on_model(self, model):
 

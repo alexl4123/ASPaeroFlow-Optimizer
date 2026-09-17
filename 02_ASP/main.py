@@ -1,6 +1,12 @@
 # MAIN.py
 # Author: Alexander Beiser
 
+# First, before the imports below (numpy, clingo) take their time: --solve-deadline counts from
+# process start, and this is the fallback for when /proc cannot say when that was. Imported under
+# an alias because main() has a local variable called `time`.
+import time as _time
+_MAIN_LOADED_AT = _time.monotonic()
+
 import argparse
 import sys
 import numpy as np
@@ -206,6 +212,17 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
                              "downstream parsers expect. Worth turning on with "
                              "--solver-profile usc, where the incumbent alone does not say how "
                              "much of the gap has been closed.")
+    # Deliberately CLI-only (no config default): it changes how a run ends, so it has to be asked
+    # for on the command line that produced the result.
+    parser.add_argument("--solve-deadline", type=float, default=None, metavar="SECONDS",
+                        help="Stop the clingo search from inside this process once SECONDS have "
+                             "passed since the PROCESS STARTED (interpreter start-up, translation "
+                             "and grounding count), then print the best model with the solver's "
+                             "statistics -- including the lower bound under --solver-stats -- and "
+                             "a SOLVER-STOPPED-AT-DEADLINE field. Set it below an external time "
+                             "limit (e.g. 1770 for 1800) so the run stops before it is killed. "
+                             "Translation and grounding cannot be interrupted. Off by default: "
+                             "without it the solve is the blocking call it has always been.")
 
     return parser
 
@@ -287,6 +304,10 @@ def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
     #args.regulation_ground_delay_active = _str2bool(args.regulation_ground_delay_active)
     #args.regulation_rerouting_active = _str2bool(args.regulation_rerouting_active)
     args.allow_overloads = _str2bool(args.allow_overloads)
+
+    if args.solve_deadline is not None and not 0 < args.solve_deadline < float("inf"):
+        parser.error(f"--solve-deadline must be a positive number of seconds, "
+                     f"got {args.solve_deadline}")
 
     return args
 
@@ -370,6 +391,87 @@ def _save_results(args: argparse.Namespace, app) -> None:
 
     if args.verbosity > 0:
         print(f"[✓] Saved results → {out_dir}")
+
+
+# ---------------------------------------------------------------------------
+# --solve-deadline
+# ---------------------------------------------------------------------------
+
+def _process_start_monotonic() -> float:
+    """time.monotonic() at the moment this process was started.
+
+    The benchmark caller's clock starts when it spawns the process, so the deadline has to count
+    interpreter start-up and imports as well, which happen before any line of this file runs.
+    Linux records the start in /proc/self/stat (field 22, clock ticks since boot); anywhere that
+    cannot be read, the time this module began loading is used instead, which is later by the
+    interpreter's start-up only.
+    """
+    try:
+        with open("/proc/self/stat", "r") as fh:
+            stat = fh.read()
+        # Field 2 (the command name) is in parentheses and may contain spaces, so count the fields
+        # after its closing parenthesis: field 3 is index 0 there, field 22 is index 19.
+        start_ticks = int(stat[stat.rindex(")") + 2:].split()[19])
+        age = _time.clock_gettime(_time.CLOCK_BOOTTIME) - start_ticks / os.sysconf("SC_CLK_TCK")
+        now = _time.monotonic()
+        # Sanity: the process cannot have started after this module loaded, and an interpreter
+        # start-up of minutes means the two clocks disagree (e.g. a time namespace), not a slow
+        # start -- fall back rather than put the deadline in the past.
+        if 0.0 <= age and 0.0 <= _MAIN_LOADED_AT - (now - age) <= 300.0:
+            return now - age
+    except (OSError, ValueError, IndexError, AttributeError):
+        pass
+    return _MAIN_LOADED_AT
+
+
+def _since(moment, process_start):
+    return round(moment - process_start, 3) if moment is not None else None
+
+
+def _deadline_fields(model, solver, args, process_start: float, last_max_time: int,
+                     deadline_cut: bool) -> Dict[str, object]:
+    """The keys --solve-deadline adds to the final result line.
+
+    SOLVER-STOPPED-AT-DEADLINE  the deadline ended the run: the last search was cancelled, or a
+                                longer horizon the re-solve loop wanted was not searched.
+                                COMPUTATION-FINISHED stays what it always was, the last search's
+                                "exhausted" flag.
+    SOLVER-DEADLINE-S           the deadline, in seconds after process start.
+    SOLVER-SEARCH-STARTED-S     seconds after process start at which the last search started,
+    SOLVER-SEARCH-ENDED-S       and returned. STARTED after the deadline means the deadline passed
+                                during translation or grounding, which cannot be interrupted;
+                                ENDED minus SOLVER-DEADLINE-S is how long stopping took.
+    SOLVER-MAX-TIME             the horizon (--max-time, extended by the re-solve loop) of the last
+                                search -- the one the statistics on this line come from.
+    SOLVER-HORIZON-FINAL        false when the statistics may belong to a horizon the run would
+                                NOT have ended at.
+
+    Why the last one is needed. Under full ground delay without overloads allowed, main() re-solves
+    with max_time + 1 while the model found still has overloads. The optimum of a longer horizon
+    can be lexicographically LOWER than a shorter one's (it can remove overloads the shorter one
+    could not), so a lower bound, or a proof of optimality, obtained at a horizon the loop would
+    have extended past is not a bound on, or the optimum of, the program a complete run solves.
+    The objective values of the reported model are still a feasible incumbent. The flag is false
+    exactly when that cannot be ruled out:
+      - the loop applies, and the reported model is not from the last search (that search, at a
+        longer horizon, was stopped before finding one), or
+      - the loop applies, and a longer horizon was wanted but not searched, or
+      - the loop applies, and the last search was stopped with an incumbent that still has
+        overloads, so whether it would have ended with overloads is unknown.
+    """
+    loop_applies = args.regulation_ground_delay_active == 2 and args.allow_overloads is False
+    from_last_solve = model is not None and model is solver.final_model
+    horizon_final = (not loop_applies) or (
+        from_last_solve and not deadline_cut
+        and (model.get_total_overload() == 0 or not solver.stopped_at_deadline))
+    return {
+        "SOLVER-STOPPED-AT-DEADLINE": bool(solver.stopped_at_deadline or deadline_cut),
+        "SOLVER-DEADLINE-S": args.solve_deadline,
+        "SOLVER-SEARCH-STARTED-S": _since(solver.solve_started_at, process_start),
+        "SOLVER-SEARCH-ENDED-S": _since(solver.solve_ended_at, process_start),
+        "SOLVER-MAX-TIME": last_max_time,
+        "SOLVER-HORIZON-FINAL": bool(horizon_final),
+    }
 
 
 class ModelData:
@@ -460,8 +562,28 @@ def main(argv: Optional[List[str]] = None) -> None:
     model = None
     original_max_time = max_time
 
+    # --solve-deadline. Without the flag deadline_at stays None and none of the bookkeeping below
+    # takes part in anything.
+    process_start = _process_start_monotonic() if args.solve_deadline is not None else None
+    deadline_at = (process_start + args.solve_deadline) if process_start is not None else None
+    last_solver = None           # the Solver of the most recent search
+    last_max_time = None         # the horizon that search ran at
+    best_model = None            # the most recent model the re-solve loop set aside for a
+    best_max_time = None         #   longer horizon, and the horizon it was found at
+    setup_seconds = 0.0          # translation + grounding time of the most recent iteration
+    deadline_cut = False         # a longer horizon was wanted, and the deadline did not allow it
 
     while model is None:
+
+        if deadline_at is not None and best_model is not None \
+                and deadline_at - _time.monotonic() <= setup_seconds:
+            # The re-solve loop wants a longer horizon, but translating and grounding it -- which
+            # cannot be interrupted -- took setup_seconds last time and there is no more than that
+            # left. Starting it would at best leave no time to search, and at worst run into the
+            # external kill and lose the result in hand. Report the model we have instead.
+            deadline_cut = True
+            break
+        iteration_started_at = _time.monotonic()
 
         transalte_to_logic_program = TranslateCSVtoLogicProgram()
         asp_instance = transalte_to_logic_program.main(graph_csv, flights_csv, sectors_csv,
@@ -505,8 +627,18 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         solver: Model = Solver(encoding, instance_asp_atoms, seed=seed, wandb_log = wandb_log,
                                solver_options=solver_options,
-                               report_solver_stats=args.solver_stats)
+                               report_solver_stats=args.solver_stats,
+                               deadline=deadline_at)
         model = solver.solve()
+
+        if deadline_at is not None:
+            last_solver, last_max_time = solver, max_time
+            if solver.solve_started_at is not None:
+                setup_seconds = solver.solve_started_at - iteration_started_at
+            if model is None and solver.stopped_at_deadline:
+                # Stopped before a first model at this horizon. Whatever there is to report --
+                # the model of a shorter horizon, or only the bound -- is reported after the loop.
+                break
 
         if model is None:
             # clingo returned without ever calling on_model: unsatisfiable, or cancelled before
@@ -530,6 +662,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         #quit()
         if model.get_total_overload() > 0 and allow_overloads is False:
             if regulation_ground_delay_active == 2:
+                if deadline_at is not None:
+                    # Kept, so that a deadline arriving before the longer horizon produces a model
+                    # still has something to report.
+                    best_model, best_max_time = model, max_time
                 max_time += 1
                 model = None
 
@@ -537,6 +673,41 @@ def main(argv: Optional[List[str]] = None) -> None:
         up_bound_by_thm = (timestep_granularity * original_max_time) + int((1/2) * (timestep_granularity * original_max_time)  * number_flights * (number_flights + 1))
         if max_time > up_bound_by_thm:
             break
+
+    if deadline_at is not None:
+        # The result line is printed HERE, before any post-processing, and flushed. Without a
+        # deadline a run that overruns is killed and never gets this far; with one, every stopped
+        # run does, and the matrix building below can still fail (it is known to be able to raise
+        # IndexError). Printed first, the line -- lower bound included -- is already in the
+        # caller's hands whatever happens next: a later exception makes the caller mark THIS line
+        # with ERROR=E, a later kill with T or M, and neither removes it.
+        if model is None and best_model is not None:
+            model, max_time = best_model, best_max_time
+        fields = _deadline_fields(model, last_solver, args, process_start, last_max_time,
+                                  deadline_cut)
+        if model is None:
+            # Nothing to report but the solver's own statistics. Still printed, because under
+            # --solver-stats they can hold a lower bound; then the run fails as it always has
+            # when no model was found.
+            line = {"GROUNDING-TIME": getattr(last_solver, "grounding_time", None),
+                    "COMPUTATION-FINISHED": bool(last_solver.search_exhausted)}
+            line.update(last_solver.solve_summary or {})
+            line.update(fields)
+            print(json.dumps(line), flush=True)
+            raise RuntimeError(
+                "the solver returned no model before the solve deadline of "
+                f"{args.solve_deadline} s after process start (solver options: "
+                f"{describe_solver_options(args.solver_profile, args.solver_arg, args.number_threads)}).")
+        if model is not last_solver.final_model:
+            # The model is from a shorter horizon, and the last search -- at a longer one -- was
+            # stopped before finding any. Every other key on the line describes that last search,
+            # as it does in every other case, so COMPUTATION-FINISHED and the solver summary are
+            # taken from it; SOLVER-HORIZON-FINAL is false.
+            model.computation_finished = last_solver.search_exhausted
+            if last_solver.solve_summary:
+                model.set_solver_summary(last_solver.solve_summary)
+        model.set_solver_summary(fields)
+        print(model.get_model_optimization_string(), flush=True)
 
     if verbosity > 0:
         print(f"""
@@ -597,7 +768,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     # It used to be forced True here, which made the field meaningless: every completed run said
     # "finished" whether or not the optimum had been proven, and every line a timeout could see
     # said False. Do not reinstate the assignment.
-    print(model.get_model_optimization_string())
+    if deadline_at is None:          # with a deadline it was printed straight after the search
+        print(model.get_model_optimization_string())
     #np.savetxt(sys.stdout, converted_instance_matrix, delimiter=",", fmt="%i") 
 
     # Save results if requested
