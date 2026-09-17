@@ -135,6 +135,7 @@ class Solver:
         # Filled in only when a deadline is set. See _solve_until_deadline().
         self.stopped_at_deadline = False
         self.solve_started_at = None
+        self.search_started_at = None
         self.solve_ended_at = None
         self.solve_summary = None
         self.cost_priorities = None
@@ -148,6 +149,7 @@ class Solver:
         self.search_exhausted = False
         self.stopped_at_deadline = False
         self.solve_started_at = None
+        self.search_started_at = None
         self.solve_ended_at = None
         self.solve_summary = None
         self.cost_priorities = None
@@ -250,14 +252,25 @@ class Solver:
         on_model stops the search and is raised here as a RuntimeError carrying its message
         (measured on clingo 5.6.2), so it still ends the run instead of hanging it.
 
-        What this cannot stop: translation, ctl.add() and grounding run before the search and are
-        not interruptible. A deadline that passes during them is noticed only when the search
-        starts, which then gets no time at all, and if they overrun the deadline by more than the
-        caller's margin the external kill arrives first, exactly as without a deadline.
+        What this cannot stop is everything before the search: translation, ctl.add(), grounding,
+        and clasp's PREPARATION of the ground program (translating it into nogoods and
+        preprocessing them). The last is easy to overlook because it happens inside ctl.solve():
+        even with async_=True, ctl.solve() only returns the handle once preparation is done, in
+        this thread. Measured on a 60-flight central-Europe instance, variant r_d_s: grounding
+        13 s, then ctl.solve() 10 s before the handle came back; ctl.interrupt() fired 2 s into
+        that did not shorten it. A deadline that passes during any of this is noticed when the
+        handle comes back, and the search then gets no time at all; if the overrun is longer than
+        the caller's margin, the external kill arrives first, exactly as without a deadline.
+
+        solve_started_at is taken before ctl.solve() (grounding done), search_started_at when the
+        handle comes back (preparation done), solve_ended_at after the search thread has ended.
         """
         self.solve_started_at = time.monotonic()
         with ctl.solve(on_model=self.on_model, async_=True) as handle:
-            if not handle.wait(max(0.0, self.deadline - self.solve_started_at)):
+            self.search_started_at = time.monotonic()
+            # Measured from NOW, not from solve_started_at: preparation may already have used up
+            # some or all of the time.
+            if not handle.wait(max(0.0, self.deadline - self.search_started_at)):
                 handle.cancel()
             result = handle.get()
         self.solve_ended_at = time.monotonic()

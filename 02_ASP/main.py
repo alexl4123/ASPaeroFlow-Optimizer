@@ -437,10 +437,13 @@ def _deadline_fields(model, solver, args, process_start: float, last_max_time: i
                                 COMPUTATION-FINISHED stays what it always was, the last search's
                                 "exhausted" flag.
     SOLVER-DEADLINE-S           the deadline, in seconds after process start.
-    SOLVER-SEARCH-STARTED-S     seconds after process start at which the last search started,
-    SOLVER-SEARCH-ENDED-S       and returned. STARTED after the deadline means the deadline passed
-                                during translation or grounding, which cannot be interrupted;
-                                ENDED minus SOLVER-DEADLINE-S is how long stopping took.
+    SOLVER-GROUNDING-ENDED-S    seconds after process start at which the last search was
+    SOLVER-SEARCH-STARTED-S     requested (translation and grounding done), at which it actually
+    SOLVER-SEARCH-ENDED-S       started (clasp's preparation of the ground program done), and at
+                                which it returned. None of the time before SEARCH-STARTED can be
+                                interrupted, so SEARCH-STARTED after the deadline means the
+                                deadline passed during it; SEARCH-ENDED minus SOLVER-DEADLINE-S is
+                                how long stopping took.
     SOLVER-MAX-TIME             the horizon (--max-time, extended by the re-solve loop) of the last
                                 search -- the one the statistics on this line come from.
     SOLVER-HORIZON-FINAL        false when the statistics may belong to a horizon the run would
@@ -467,7 +470,8 @@ def _deadline_fields(model, solver, args, process_start: float, last_max_time: i
     return {
         "SOLVER-STOPPED-AT-DEADLINE": bool(solver.stopped_at_deadline or deadline_cut),
         "SOLVER-DEADLINE-S": args.solve_deadline,
-        "SOLVER-SEARCH-STARTED-S": _since(solver.solve_started_at, process_start),
+        "SOLVER-GROUNDING-ENDED-S": _since(solver.solve_started_at, process_start),
+        "SOLVER-SEARCH-STARTED-S": _since(solver.search_started_at, process_start),
         "SOLVER-SEARCH-ENDED-S": _since(solver.solve_ended_at, process_start),
         "SOLVER-MAX-TIME": last_max_time,
         "SOLVER-HORIZON-FINAL": bool(horizon_final),
@@ -577,9 +581,9 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         if deadline_at is not None and best_model is not None \
                 and deadline_at - _time.monotonic() <= setup_seconds:
-            # The re-solve loop wants a longer horizon, but translating and grounding it -- which
-            # cannot be interrupted -- took setup_seconds last time and there is no more than that
-            # left. Starting it would at best leave no time to search, and at worst run into the
+            # The re-solve loop wants a longer horizon, but translating, grounding and preparing
+            # it -- none of which can be interrupted -- took setup_seconds last time and there is
+            # no more than that left. Starting it would at best leave no time to search, and at worst run into the
             # external kill and lose the result in hand. Report the model we have instead.
             deadline_cut = True
             break
@@ -633,8 +637,10 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         if deadline_at is not None:
             last_solver, last_max_time = solver, max_time
-            if solver.solve_started_at is not None:
-                setup_seconds = solver.solve_started_at - iteration_started_at
+            if solver.search_started_at is not None:
+                # Translation, grounding and clasp's preparation: everything a longer horizon
+                # would have to redo before its search could even be stopped.
+                setup_seconds = solver.search_started_at - iteration_started_at
             if model is None and solver.stopped_at_deadline:
                 # Stopped before a first model at this horizon. Whatever there is to report --
                 # the model of a shorter horizon, or only the bound -- is reported after the loop.
