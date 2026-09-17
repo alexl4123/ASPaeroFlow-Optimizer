@@ -215,7 +215,7 @@ def to_window(matrix: np.ndarray, width: int) -> np.ndarray:
     return np.hstack([matrix, np.repeat(matrix[:, [-1]], width - matrix.shape[1], axis=1)])
 
 
-def series_to_window(per_timestep, width: int, default=0):
+def series_to_window(per_timestep, width: int, own_width=None, default=0):
     """`to_window` for a per-timestep SERIES rather than a matrix, as the ASP path holds it.
 
     02_ASP never materialises the allocation: clingo hands it one number per timestep
@@ -225,6 +225,11 @@ def series_to_window(per_timestep, width: int, default=0):
 
     `per_timestep` maps timestep -> value; absent timesteps count as `default`. `width` of None
     means "leave it alone", as in `to_window`.
+
+    `own_width` is how many timesteps the series actually covers, which is NOT always
+    `max(per_timestep) + 1`: a series of counts is silent where the count is zero, so a reconfig
+    series that ends at timestep 5 on a 97-timestep axis would otherwise be padded from 5 rather
+    than from the axis's real last column. Pass the axis; it defaults to the highest key present.
     """
     if width is None:
         return [per_timestep.get(t, default) for t in range(max(per_timestep) + 1)] \
@@ -232,10 +237,10 @@ def series_to_window(per_timestep, width: int, default=0):
     width = int(width)
     if width < 0:
         raise ValueError(f"evaluation window must not be negative (got {width})")
-    if not per_timestep:
-        return [default] * width
-    own_width = max(per_timestep) + 1
-    last = per_timestep.get(own_width - 1, default)
+    if own_width is None:
+        own_width = (max(per_timestep) + 1) if per_timestep else 0
+    own_width = int(own_width)
+    last = per_timestep.get(own_width - 1, default) if own_width > 0 else default
     return [per_timestep.get(t, default) if t < own_width else last for t in range(width)]
 
 

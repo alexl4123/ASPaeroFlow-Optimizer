@@ -468,8 +468,10 @@ def main(argv: Optional[List[str]] = None) -> None:
     model = None
     original_max_time = max_time
 
-    # The allocation the instance defines, taken from the FIRST translation and then held: this
-    # loop retries with a larger --max-time when overload persists, and each retry rebuilds it.
+    # The window SECTOR-NUMBER and RECONFIG are scored over, and the allocation the instance
+    # defines. Both are taken from the FIRST translation and then held: this loop retries with a
+    # larger --max-time when overload persists, and the metrics must not grow with the retries.
+    evaluation_window = None
     instance_navpoint_sector_allocation = None
 
     while model is None:
@@ -482,6 +484,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         if instance_navpoint_sector_allocation is None:
             instance_navpoint_sector_allocation = transalte_to_logic_program.navaid_sector_time_assignment
+            evaluation_window = int(instance_navpoint_sector_allocation.shape[1])
 
         instance_asp_atoms = "\n".join(asp_instance)
 
@@ -519,7 +522,8 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         solver: Model = Solver(encoding, instance_asp_atoms, seed=seed, wandb_log = wandb_log,
                                solver_options=solver_options,
-                               report_solver_stats=args.solver_stats)
+                               report_solver_stats=args.solver_stats,
+                               evaluation_window=evaluation_window)
         model = solver.solve()
 
         if model is None:

@@ -10,7 +10,10 @@ import json
 
 import clingo
 
+from collections import Counter
 from typing import Final
+
+from navpoint_sector_allocation_bootstrap import series_to_window
 
 OVERLOAD: Final[str] = "overload"
 ARRIVAL_DELAY: Final[str] = "arrival_delay"
@@ -68,11 +71,19 @@ def _solver_summary(ctl, models_reported):
 
 class Solver:
     def __init__(self, encoding, instance, seed = 1, wandb_log = None,
-                 solver_options = None, report_solver_stats = False):
+                 solver_options = None, report_solver_stats = False,
+                 evaluation_window = None):
         self.encoding = encoding
         self.instance = instance
         self.seed = seed
         self.wandb_log = wandb_log
+
+        # The timesteps SECTOR-NUMBER and RECONFIG are scored over: the window the INSTANCE
+        # defines, which is what the Python solvers score on too. The ASP time domain is
+        # 0..max_time*T_gran, one column short of (max_time+1)*T_gran at T_gran 1 and shorter
+        # still above it, and it GROWS when this run retries with a larger max_time -- so without
+        # this the same static sectorisation scored 1067 here against 1100 from 03_DELAY.
+        self.evaluation_window = evaluation_window
 
         # Extra clingo flags, chosen by name via --solver-profile (see common/clingo_options.py).
         # An empty list is what this class always used: clingo.Control([]) is clingo.Control().
@@ -193,7 +204,8 @@ class Solver:
         reconfig = [symbol for symbol in parsed if symbol.name == RECONFIG]
 
         current_time = time.time() - self.total_time_start
-        self.final_model = Model(overload, arrival_delay, sector_number, sector_diff, reroute, reconfig, flights, navpoint_flights, self.grounding_time, current_time, model.optimality_proven)
+        self.final_model = Model(overload, arrival_delay, sector_number, sector_diff, reroute, reconfig, flights, navpoint_flights, self.grounding_time, current_time, model.optimality_proven,
+                                 evaluation_window=self.evaluation_window)
         if self.report_solver_stats:
             self.final_model.set_solver_summary({
                 "SOLVER-COST": list(model.cost),
@@ -223,7 +235,8 @@ class Solver:
 
 class Model:
 
-    def __init__(self, overloads, arrival_delay, sector_number, sector_diff, reroute, reconfig, flights, navpoint_flights, grounding_time, current_time, computation_finished):
+    def __init__(self, overloads, arrival_delay, sector_number, sector_diff, reroute, reconfig, flights, navpoint_flights, grounding_time, current_time, computation_finished,
+                 evaluation_window=None):
 
         self.overloads = overloads
         self.arrival_delays = arrival_delay
@@ -237,6 +250,9 @@ class Model:
         self.flights = flights
 
         self.navpoint_flights = navpoint_flights
+
+        # See the Solver constructor: the window SECTOR-NUMBER and RECONFIG are scored over.
+        self.evaluation_window = evaluation_window
 
         self.grounding_time = grounding_time
         self.current_time = current_time
@@ -279,10 +295,27 @@ class Model:
         overload_sum = sum([int(symbol.arguments[2].number) for symbol in self.overloads])
         return overload_sum
     
+    def _asp_time_axis(self):
+        """How many timesteps this model covers: the encoding's `time/1` domain.
+
+        `sector_number(T,NUM)` is derived for every `time(T)`, so the highest T among those atoms
+        IS the axis. A count series like reconfig cannot say this for itself -- it is silent
+        wherever the count is zero -- which is why both metrics ask here.
+        """
+        if not self.sector_numbers:
+            return None
+        return max(symbol.arguments[0].number for symbol in self.sector_numbers) + 1
+
     def get_total_reconfig(self):
 
-        total = sum(1 for reroute in self.reconfig)
-        return total
+        # One per (navpoint, timestep) that differs from the reference allocation, summed over
+        # the instance's window rather than over this run's own time axis. See the note in the
+        # Solver constructor; padding repeats the last column's cells, which is what a persisting
+        # reconfiguration means.
+        per_timestep = Counter(symbol.arguments[1].number for symbol in self.reconfig)
+        total = sum(series_to_window(per_timestep, self.evaluation_window,
+                                     own_width=self._asp_time_axis()))
+        return int(total)
 
     def get_total_atfm_delay(self):
 
@@ -292,8 +325,13 @@ class Model:
 
     def get_total_sector_number(self):
 
-        total = sum(operator.attrgetter("arguments")(sector_number)[1].number for sector_number in self.sector_numbers)
-        return total
+        # The open sectors per timestep, summed over the instance's window rather than over this
+        # run's own time axis; see the note in the Solver constructor.
+        per_timestep = {symbol.arguments[0].number: symbol.arguments[1].number
+                        for symbol in self.sector_numbers}
+        total = sum(series_to_window(per_timestep, self.evaluation_window,
+                                     own_width=self._asp_time_axis()))
+        return int(total)
 
     def get_total_sector_diff(self):
 
