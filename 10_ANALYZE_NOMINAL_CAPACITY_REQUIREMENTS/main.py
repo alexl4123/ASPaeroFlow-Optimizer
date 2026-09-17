@@ -18,6 +18,7 @@ from arrival_delay_bootstrap import (
     delay_matrix as arrival_delay_matrix,
     normalise as normalise_arrival_delay_metric,
 )
+from edge_cost_bootstrap import edge_duration_timesteps, load_graph_edges
 from navpoint_sector_allocation_bootstrap import (
     build_assignment as build_navpoint_sector_assignment,
     load_schedule_for as load_navpoint_sector_schedule,
@@ -205,7 +206,8 @@ class Main:
         self._max_delay_per_iteration: Optional[int] = max_delay_per_iteration
 
         # Data containers — populated by :pymeth:`load_data`.
-        self.graph: Optional[np.ndarray] = None
+        self.graph: Optional[np.ndarray] = None  # (|E|, 2) source/target vertex ids
+        self.graph_dist_m: Optional[np.ndarray] = None  # (|E|,) float edge lengths in metres
         self.sectors: Optional[np.ndarray] = None
         self.flights: Optional[np.ndarray] = None
         self.encoding: Optional[np.ndarray] = None
@@ -222,7 +224,8 @@ class Main:
     def load_data(self) -> None:
         """Load all CSV files provided on the command line."""
         if self._graph_path is not None:
-            self.graph = _load_csv(self._graph_path)
+            # dist_m stays a float; it is rounded once, to timesteps (common/edge_cost.py).
+            self.graph, self.graph_dist_m = load_graph_edges(self._graph_path)
         if self._sectors_path is not None:
             self.sectors = _load_csv(self._sectors_path)
         if self._flights_path is not None:
@@ -266,7 +269,7 @@ class Main:
 
         sources = self.graph[:,0]
         targets = self.graph[:,1]
-        dists = self.graph[:,2]
+        dists = self.graph_dist_m
         self.networkx_navpoint_graph = nx.Graph()
         self.networkx_navpoint_graph.add_weighted_edges_from(zip(sources, targets, dists))
 
@@ -285,13 +288,7 @@ class Main:
             for edge in graph.edges(data=True):
 
                 distance = edge[2]["weight"]
-                # CONVERT AIRPLANE SPEED TO m/s
-                airplane_speed_ms = cur_airplane_speed * 0.51444
-                duration_in_seconds = distance/airplane_speed_ms
-                factor_to_unit_standard = 3600.00 / float(self._timestep_granularity)
-                duration_in_unit_standards = math.ceil(duration_in_seconds / factor_to_unit_standard)
-
-                duration_in_unit_standards = max(duration_in_unit_standards, 1)
+                duration_in_unit_standards = edge_duration_timesteps(distance, cur_airplane_speed, self._timestep_granularity)
 
                 tmp_edges[(edge[0],edge[1])] = {"weight":duration_in_unit_standards}
 

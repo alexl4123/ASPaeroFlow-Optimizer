@@ -185,7 +185,8 @@ class Main:
         self._max_delay_per_iteration: Optional[int] = max_delay_per_iteration
 
         # Data containers — populated by :pymeth:`load_data`.
-        self.graph: Optional[np.ndarray] = None
+        self.graph: Optional[np.ndarray] = None  # (|E|, 2) source/target vertex ids
+        self.graph_dist_m: Optional[np.ndarray] = None  # (|E|,) float edge lengths in metres
         self.sectors: Optional[np.ndarray] = None
         self.flights: Optional[np.ndarray] = None
         self.encoding: Optional[np.ndarray] = None

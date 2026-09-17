@@ -16,6 +16,7 @@ from typing import Iterable, List, Any
 import math
 import numpy as np
 import networkx as nx
+from edge_cost_bootstrap import edge_duration_timesteps, load_graph_edges
 from navpoint_sector_allocation_bootstrap import (
     build_assignment as build_navpoint_sector_assignment,
     change_points,
@@ -443,7 +444,8 @@ class TranslateCSVtoLogicProgram:
     
     def load_data(self, graph_path, sectors_path, flights_path, airports_path, airplanes_path, airplane_flight_path, navaid_sector_path, encoding_path) -> None:
         """Load all CSV files provided on the command line."""
-        self.graph = _load_csv(graph_path)
+        # (|E|, 2) source/target ids; dist_m stays a float and is rounded only to timesteps.
+        self.graph, self.graph_dist_m = load_graph_edges(graph_path)
         self.sectors = _load_csv(sectors_path)
         self.flights = _load_csv(flights_path)
         self.airports = _load_csv(airports_path)
@@ -625,7 +627,7 @@ class TranslateCSVtoLogicProgram:
 
         sources = self.graph[:,0]
         targets = self.graph[:,1]
-        dists = self.graph[:,2]
+        dists = self.graph_dist_m
         self.networkx_navpoint_graph = nx.Graph()
         self.networkx_navpoint_graph.add_weighted_edges_from(zip(sources, targets, dists))
 
@@ -649,13 +651,7 @@ class TranslateCSVtoLogicProgram:
             for edge in graph.edges(data=True):
 
                 distance = edge[2]["weight"]
-                # CONVERT AIRPLANE SPEED TO m/s
-                airplane_speed_ms = cur_airplane_speed * 0.51444
-                duration_in_seconds = distance/airplane_speed_ms
-                factor_to_unit_standard = 3600.00 / float(timestep_granularity)
-                duration_in_unit_standards = math.ceil(duration_in_seconds / factor_to_unit_standard)
-
-                duration_in_unit_standards = max(duration_in_unit_standards, 1)
+                duration_in_unit_standards = edge_duration_timesteps(distance, cur_airplane_speed, timestep_granularity)
 
                 tmp_edges[(edge[0],edge[1])] = {"weight":duration_in_unit_standards}
 
@@ -956,17 +952,7 @@ class TranslateCSVtoLogicProgram:
                 prev_vertex = path[hop -1]
                 #print(f"prev_vertex:{prev_vertex},vertex:{vertex}")
                 distance = networkx_graph[prev_vertex][vertex]["weight"]
-
-                # CONVERT SPEED TO m/s
-                airplane_speed_ms = airplane_speed_kts * 0.51444
-
-                # Compute duration from prev to vertex in unit time:
-                duration_in_seconds = distance/airplane_speed_ms
-                factor_to_unit_standard = 3600.00 / float(timestep_granularity)
-                duration_in_unit_standards = math.ceil(duration_in_seconds / factor_to_unit_standard)
-
-                if duration_in_unit_standards == 0:
-                    duration_in_unit_standards = 1
+                duration_in_unit_standards = edge_duration_timesteps(distance, airplane_speed_kts, timestep_granularity)
 
                 current_time = current_time + duration_in_unit_standards
 
