@@ -39,11 +39,35 @@ WHERE THE REFERENCE COMES FROM, in this order:
      is an UPPER bound. Distances measured against it are reported as "no bound" and are a
      ranking, not an optimality gap. They are never mixed into the gap statistics.
 
-THE LIMITATION, STATED PLAINLY. SOLVER-LOWER-BOUND is read from ctl.statistics after
-ctl.solve() returns, and the benchmark's time limit arrives as an external SIGKILL, so a
-timed-out run prints no summary line and case 2 almost never fires. Until a run can be stopped
-from INSIDE the process, gaps on instances that nobody closes are case 3. The report says which
-case each number came from rather than blurring them together.
+RUNS THAT STOP THEMSELVES. A run killed at the time limit prints no summary line, so it has no
+lower bound. run_asp_ablation.slurm therefore passes --solve-deadline-margin, and 02_ASP stops its
+own search at limit - margin and prints its result line WITH the bound, before any post-processing.
+That changes what a run's record looks like, and this script reads it accordingly:
+
+  * The result line printed under a deadline carries SOLVER-STOPPED-AT-DEADLINE (true or false);
+    that key is how it is recognised. It is complete when printed, so it is used whatever the
+    caller wrote into its ERROR field afterwards: a stopped run exits normally (ERROR ""), and the
+    matrix building after the line can still raise (the caller then writes E onto that same line)
+    or be killed (T, M). The outcome column keeps the caller's code; stopped_at_deadline and
+    after_result_line say what happened.
+  * CLOSED still comes from SOLVER-EXHAUSTED only -- never from the exit status or the runtime. A
+    stopped run's wall time is about limit - margin and it exits 0, and it is NOT closed.
+  * A bound or an "exhausted" is used only where SOLVER-HORIZON-FINAL is not false. Under full
+    ground delay 02_ASP re-solves with a longer horizon while overloads remain, and a longer horizon
+    can have a lexicographically LOWER optimum, so a bound (or a proof) from a horizon the run would
+    have extended past says nothing about the program a complete run solves. The incumbent is
+    still a feasible solution and still counts.
+  * A cost or bound vector has one entry per priority level PRESENT in the ground program (4 to 6
+    here, depending on the variant), highest first. SOLVER-COST-PRIORITIES says which; the vector
+    is mapped onto the six named levels with 0 for an absent level, whose cost is 0 in every model.
+    Without the priorities only a six-entry vector can be placed, as before.
+  * A recorded bound is often 0 at the first level where the incumbent is worse (branch-and-bound
+    proves little before it closes), so there is no relative gap to quote. Such runs are counted
+    as zero_bound and kept apart from gap_from_zero, which claims that a PROVEN optimum reaches 0
+    at a level the run did not.
+
+A run killed at the limit (no margin, or still grounding or preparing when it came) has no bound,
+as before. The report says which case each number came from rather than blurring them together.
 """
 from __future__ import annotations
 
@@ -81,7 +105,8 @@ class Run:
 
     __slots__ = ("tier", "profile", "threads", "variant", "problem", "instance",
                  "size", "seed", "outcome", "cost", "lower", "closed", "wall_s",
-                 "models", "grounding_s", "solver_s")
+                 "models", "grounding_s", "solver_s",
+                 "stopped", "after_result_line", "horizon_final")
 
     def __init__(self, **kw):
         for slot in self.__slots__:
@@ -105,27 +130,63 @@ def parse_instance_name(name: str) -> Tuple[Optional[int], Optional[int]]:
         return None, None
 
 
+def six_levels(value, priorities=None) -> Optional[List[int]]:
+    """A clingo cost or bound vector placed on the six named levels, or None.
+
+    clingo's vector has one entry per priority level present in the ground program, highest first.
+    A six-entry vector is already in place. A shorter one needs SOLVER-COST-PRIORITIES from the same
+    line; an absent level gets 0, which is its cost in every model. Anything that is not a list of
+    finite numbers (null for a search stopped before its first model, or an older line that wrote
+    Infinity) is None.
+    """
+    if not isinstance(value, list):
+        return None
+    try:
+        numbers = [float(v) for v in value]
+    except (TypeError, ValueError):
+        return None
+    if not all(v == v and v not in (float("inf"), float("-inf")) for v in numbers):
+        return None
+    levels = [priority for _, priority in COST_KEYS]
+    if isinstance(priorities, list) and len(priorities) == len(numbers) \
+            and all(p in levels for p in priorities):
+        by_priority = dict(zip(priorities, numbers))
+        return [int(by_priority.get(priority, 0)) for priority in levels]
+    if len(numbers) == len(COST_KEYS):
+        return [int(v) for v in numbers]
+    return None
+
+
 def cost_vector(record: Dict) -> Optional[List[int]]:
     """The six-level cost of a reported model, or None if no model was ever reported.
 
     SOLVER-COST (per model) and SOLVER-COSTS (from the summary) are clingo's own vectors and are
-    preferred when present, because they are what clasp optimised. The six objective keys are the
-    fallback and are always there on a line that carries a model.
+    preferred when they can be placed on the six levels, because they are what clasp optimised.
+    The six objective keys are the fallback and are always there on a line that carries a model.
     """
+    priorities = record.get("SOLVER-COST-PRIORITIES")
     for key in ("SOLVER-COSTS", "SOLVER-COST"):
-        value = record.get(key)
-        if isinstance(value, list) and len(value) == len(COST_KEYS):
-            return [int(v) for v in value]
-    if all(key in record for key, _ in COST_KEYS):
+        placed = six_levels(record.get(key), priorities)
+        if placed is not None:
+            return placed
+    if all(isinstance(record.get(key), (int, float)) for key, _ in COST_KEYS):
         return [int(record[key]) for key, _ in COST_KEYS]
     return None
 
 
 def lower_bound(record: Dict) -> Optional[List[int]]:
-    value = record.get("SOLVER-LOWER-BOUND")
-    if isinstance(value, list) and len(value) == len(COST_KEYS):
-        return [int(v) for v in value]
-    return None
+    """The recorded lower bound on the six levels, or None if there is none that can be used.
+
+    A bound from a horizon the run would have extended past (SOLVER-HORIZON-FINAL false) is not a
+    bound on the program a complete run solves, so it is not used. See the module docstring.
+    """
+    if record.get("SOLVER-HORIZON-FINAL") is False:
+        return None
+    return six_levels(record.get("SOLVER-LOWER-BOUND"), record.get("SOLVER-COST-PRIORITIES"))
+
+
+#: The key only 02_ASP's --solve-deadline result line carries. See the module docstring.
+DEADLINE_LINE_KEY = "SOLVER-STOPPED-AT-DEADLINE"
 
 
 def read_wall_times(unit_dir: Path) -> Dict[Tuple[str, str], float]:
@@ -213,7 +274,20 @@ def collect(folder: Path) -> List[Run]:
             # run recorded without --solver-stats.
             closed = bool(last.get("SOLVER-EXHAUSTED",
                                    last.get("COMPUTATION-FINISHED", False)))
-            if outcome != "completed":
+            stopped, after_result_line, horizon_final = None, "", None
+            if DEADLINE_LINE_KEY in last:
+                # The result line of a run with --solve-deadline, printed and flushed before any
+                # post-processing, so it is complete whatever ERROR the caller wrote onto it later.
+                # A stopped run exits normally; its closed-ness is SOLVER-EXHAUSTED, as for every
+                # run, and never its exit status. A proof from a horizon the re-solve loop would
+                # have extended past is no proof for the run.
+                stopped = bool(last[DEADLINE_LINE_KEY])
+                horizon_final = last.get("SOLVER-HORIZON-FINAL")
+                if horizon_final is False:
+                    closed = False
+                if outcome not in ("completed", "unknown"):
+                    after_result_line = outcome
+            elif outcome != "completed":
                 closed = False                  # a killed run proved nothing, whatever it printed
 
             size, seed = parse_instance_name(instance)
@@ -227,6 +301,8 @@ def collect(folder: Path) -> List[Run]:
                 models=models,
                 grounding_s=last.get("GROUNDING-TIME"),
                 solver_s=last.get("TOTAL-TIME-TO-THIS-POINT"),
+                stopped=stopped, after_result_line=after_result_line,
+                horizon_final=horizon_final,
             ))
     return runs
 
@@ -258,7 +334,11 @@ def references(runs: Sequence[Run]) -> Dict[Tuple[str, str, str], Dict]:
         }
 
     for run in runs:
-        if run.key in refs:
+        # Skip PROVEN cells only. This used to skip every cell already in refs, and the first run
+        # of a cell puts it there, so only that run's bound or incumbent was ever considered: the
+        # lexicographic maximum of the bounds, and the best incumbent, were never taken. Harmless
+        # while killed runs recorded no bounds; wrong as soon as stopped runs do.
+        if run.key in proven:
             continue
         entry = refs.setdefault(run.key, {"cost": None, "source": "none", "conflict": None})
         if run.lower is not None and (entry["source"] != "lower bound"
@@ -330,7 +410,7 @@ def summarise(runs: Sequence[Run], refs, limit: float, tier: Optional[str] = Non
         mine = [r for r in selected if (r.profile, r.threads) == arm and r.key in common]
         closed = [r for r in mine if r.closed]
         everywhere = [r for r in mine if r.key in closed_by_all and r.wall_s is not None]
-        gaps, from_zero = [], 0
+        gaps, from_zero, zero_bound = [], 0, 0
         for run in mine:
             if run.closed:
                 continue
@@ -341,11 +421,17 @@ def summarise(runs: Sequence[Run], refs, limit: float, tier: Optional[str] = Non
             if measured is None or measured[0] is None:
                 continue
             if measured[2] == float("inf"):
-                # The reference is 0 at that level and the incumbent is not, so there is no
-                # relative gap to quote -- the run simply did not reach a level the optimum
-                # reaches. That is the single most telling failure mode here (bb sitting at
-                # overload 39 where usc reaches 0), so it is counted rather than averaged away.
-                from_zero += 1
+                if ref.get("source") == "proven optimum":
+                    # The optimum is 0 at that level and the incumbent is not, so there is no
+                    # relative gap to quote -- the run simply did not reach a level the optimum
+                    # reaches. That is the single most telling failure mode here (bb sitting at
+                    # overload 39 where usc reaches 0), so it is counted rather than averaged away.
+                    from_zero += 1
+                else:
+                    # Only a BOUND of 0 there: nothing says the optimum reaches 0, so this is
+                    # neither a gap nor a missed level. Branch-and-bound bounds look like this
+                    # until the search closes.
+                    zero_bound += 1
             else:
                 gaps.append(measured[2])
         rows.append({
@@ -355,6 +441,8 @@ def summarise(runs: Sequence[Run], refs, limit: float, tier: Optional[str] = Non
             "closed": len(closed),
             "closed_pct": 100.0 * len(closed) / len(mine) if mine else 0.0,
             "no_incumbent": sum(1 for r in mine if not r.has_incumbent),
+            "stopped_at_deadline": sum(1 for r in mine if r.stopped),
+            "error_after_result_line": sum(1 for r in mine if r.after_result_line),
             "median_time_closed_s": statistics.median(
                 [r.wall_s for r in closed if r.wall_s is not None]) if closed else None,
             "median_time_common_s": statistics.median(
@@ -363,6 +451,7 @@ def summarise(runs: Sequence[Run], refs, limit: float, tier: Optional[str] = Non
             "n_gaps": len(gaps),
             "median_gap": statistics.median(gaps) if gaps else None,
             "gap_from_zero": from_zero,
+            "zero_bound": zero_bound,
             "lex_best": sum(1 for r in mine if best_cost_by_key.get(r.key) == r.cost
                             and r.cost is not None),
         })
@@ -388,8 +477,10 @@ def recommend(rows) -> Tuple[str, List[str]]:
     winner = ranked[0]
     notes = []
     name = winner["profile"] + (f" at {winner['threads']} threads" if winner["threads"] > 1 else "")
+    def seconds(value):
+        return "-" if value is None else f"{value:.0f}s"
     text = (f"{name}: closed {winner['closed']}/{winner['runs']} "
-            f"({winner['closed_pct']:.0f}%), PAR2 {winner['par2_s']:.0f}s")
+            f"({winner['closed_pct']:.0f}%), PAR2 {seconds(winner['par2_s'])}")
     if winner["no_incumbent"]:
         notes.append(
             f"{winner['profile']} returned NO incumbent at all on {winner['no_incumbent']} run(s). "
@@ -399,7 +490,7 @@ def recommend(rows) -> Tuple[str, List[str]]:
     if baseline and winner is not baseline:
         notes.append(
             f"default closed {baseline['closed']}/{baseline['runs']} with PAR2 "
-            f"{baseline['par2_s']:.0f}s, so the recommendation is a change from the shipped "
+            f"{seconds(baseline['par2_s'])}, so the recommendation is a change from the shipped "
             f"default, which stays `default` unless the author decides otherwise.")
     return text, notes
 
@@ -450,7 +541,8 @@ def write_outputs(folder: Path, runs, refs, rows, limit) -> None:
         writer.writerow(["tier", "profile", "threads", "variant", "problem", "instance",
                          "flights", "seed", "outcome", "closed", "wall_s", "models",
                          "cost", "lower_bound", "reference", "reference_source",
-                         "gap_level", "gap_absolute", "gap_relative"])
+                         "gap_level", "gap_absolute", "gap_relative",
+                         "stopped_at_deadline", "after_result_line", "horizon_final"])
         for run in runs:
             ref = refs.get(run.key, {})
             measured = gap(run.cost, ref.get("cost")) if not run.closed else None
@@ -466,6 +558,9 @@ def write_outputs(folder: Path, runs, refs, rows, limit) -> None:
                 measured[0] if measured and measured[0] else "",
                 measured[1] if measured else "",
                 f"{measured[2]:.4f}" if measured and measured[2] != float("inf") else "",
+                "" if run.stopped is None else int(run.stopped),
+                run.after_result_line or "",
+                "" if run.horizon_final is None else int(bool(run.horizon_final)),
             ])
 
     with (folder / "ablation_profiles.csv").open("w", newline="") as fh:
@@ -477,20 +572,28 @@ def write_outputs(folder: Path, runs, refs, rows, limit) -> None:
     lines = [
         "# ASP solver-option ablation -- results", "",
         f"Per-run limit {limit:.0f}s. Closed = clingo's own SOLVER-EXHAUSTED, i.e. the optimum "
-        f"was PROVEN,\nnot merely reached. Gaps are lexicographic over the six objective levels "
-        f"and are only\ncomputed against a proven optimum or a recorded lower bound.", "",
-        "| profile | threads | runs | closed | closed % | no incumbent | median s (closed) | "
-        "median s (closed by all) | PAR2 s | gaps | median gap | missed level | lex-best |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        f"was PROVEN,\nnot merely reached -- never the exit status: a run stopped at its solve "
+        f"deadline exits normally\nand is not closed. Gaps are lexicographic over the six "
+        f"objective levels and are only\ncomputed against a proven optimum or a recorded lower "
+        f"bound. 'zero bound' counts runs whose\nreference bound is 0 at the first level where "
+        f"they differ, so no relative gap exists.", "",
+        "| profile | threads | runs | closed | closed % | stopped at deadline | error after result "
+        "line | no incumbent | median s (closed) | "
+        "median s (closed by all) | PAR2 s | gaps | median gap | missed level | zero bound | "
+        "lex-best |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for row in rows:
         def fmt(value, spec=".1f"):
             return "-" if value is None else format(value, spec)
         lines.append(
             f"| {row['profile']} | {row['threads']} | {row['runs']} | {row['closed']} | "
-            f"{row['closed_pct']:.0f}% | {row['no_incumbent']} | {fmt(row['median_time_closed_s'])} | "
+            f"{row['closed_pct']:.0f}% | {row['stopped_at_deadline']} | "
+            f"{row['error_after_result_line']} | {row['no_incumbent']} | "
+            f"{fmt(row['median_time_closed_s'])} | "
             f"{fmt(row['median_time_common_s'])} | {fmt(row['par2_s'], '.0f')} | {row['n_gaps']} | "
-            f"{fmt(row['median_gap'], '.3f')} | {row['gap_from_zero']} | {row['lex_best']} |")
+            f"{fmt(row['median_gap'], '.3f')} | {row['gap_from_zero']} | {row['zero_bound']} | "
+            f"{row['lex_best']} |")
     lines += ["", "## Recommendation", "", text, ""]
     lines += [f"- {note}" for note in notes]
     (folder / "ablation_summary.md").write_text("\n".join(lines) + "\n")
