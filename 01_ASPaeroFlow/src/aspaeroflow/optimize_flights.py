@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from src.aspaeroflow.edge_cost_bootstrap import edge_duration_timesteps
 from src.aspaeroflow.arrival_delay_bootstrap import (
     DEFAULT_ARRIVAL_DELAY_METRIC,
     apply as apply_arrival_delay_metric,
@@ -1380,26 +1381,7 @@ class OptimizeFlights:
                 # En-route/destination
                 prev_vertex = path[hop -1]
                 distance = networkx_graph[prev_vertex][vertex]["weight"]
-
-                airplane_speed_ms = airplane_speed_kts * 0.51444
-                duration_in_seconds = distance/airplane_speed_ms
-                factor_to_unit_standard = 3600.00 / float(timestep_granularity)
-                duration_in_unit_standards = math.ceil(duration_in_seconds / factor_to_unit_standard)
-                duration_in_unit_standards = max(duration_in_unit_standards, 1)
-
-                """
-                def _slot_seconds(time_granularity: int) -> float:
-                    # factor_to_unit_standard = 3600 / time_granularity
-                    return 3600.0 / float(time_granularity)
-
-                airplane_speed_ms = float(airplane_speed_kts) * 0.51444
-                if airplane_speed_ms <= 0:
-                    return 1  # defensive
-                duration_seconds = float(distance) / airplane_speed_ms
-                slot_sec = _slot_seconds(timestep_granularity)
-                duration_in_unit_standards = int(math.ceil(duration_seconds / slot_sec))
-                duration_in_unit_standards = max(duration_in_unit_standards, 1)
-                """
+                duration_in_unit_standards = edge_duration_timesteps(distance, airplane_speed_kts, timestep_granularity)
 
 
                 current_time = current_time + duration_in_unit_standards
@@ -1964,8 +1946,9 @@ class OptimizeFlights:
         N = cap.shape[0]
         T = int(time_granularity)
 
-        if n_times % T != 0:
-            raise ValueError("n_times must be a multiple of time_granularity (T).")
+        # Capacity is per timestep (read, never divided by T), so n_times need not be a multiple of
+        # T. The multiple-of-T check dated from per-hour capacities and rejected every solution
+        # whose time axis ended off an hour boundary.
 
         if navaid_sector_time_assignment.shape != (N, n_times):
             raise ValueError(

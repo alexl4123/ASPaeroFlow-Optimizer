@@ -16,6 +16,13 @@ from typing import Iterable, List, Any
 import math
 import numpy as np
 import networkx as nx
+from edge_cost_bootstrap import edge_duration_timesteps, load_graph_edges
+
+
+class HorizonOverflow(Exception):
+    """A route's trajectory would pass the last timestep of the instance's time axis."""
+
+
 from navpoint_sector_allocation_bootstrap import (
     build_assignment as build_navpoint_sector_assignment,
     change_points,
@@ -129,8 +136,9 @@ class TranslateCSVtoLogicProgram:
         N = cap.shape[0]
         T = int(time_granularity)
 
-        if n_times % T != 0:
-            raise ValueError("n_times must be a multiple of time_granularity (T).")
+        # Capacity is per timestep (read, never divided by T), so n_times need not be a multiple of
+        # T. The multiple-of-T check dated from per-hour capacities and rejected every solution
+        # whose time axis ended off an hour boundary.
 
         if navaid_sector_time_assignment.shape != (N, n_times):
             raise ValueError(
@@ -443,7 +451,8 @@ class TranslateCSVtoLogicProgram:
     
     def load_data(self, graph_path, sectors_path, flights_path, airports_path, airplanes_path, airplane_flight_path, navaid_sector_path, encoding_path) -> None:
         """Load all CSV files provided on the command line."""
-        self.graph = _load_csv(graph_path)
+        # (|E|, 2) source/target ids; dist_m stays a float and is rounded only to timesteps.
+        self.graph, self.graph_dist_m = load_graph_edges(graph_path)
         self.sectors = _load_csv(sectors_path)
         self.flights = _load_csv(flights_path)
         self.airports = _load_csv(airports_path)
@@ -482,6 +491,7 @@ class TranslateCSVtoLogicProgram:
         largest_considered_time = 0
 
         regulation_restricted_rerouting_instance = []
+        dropped_alternatives = 0
 
 
         for flight_affected_index in range(flights_affected.shape[0]):
@@ -519,9 +529,19 @@ class TranslateCSVtoLogicProgram:
 
 
             path_id = 0
+            filed_route = [int(v) for v in filed_flight_path[:,1]]
 
             for path in paths:
-                navpoint_trajectory = self.get_flight_navpoint_trajectory(flights_affected, networkx_graph, flight_index, actual_flight_departure_time, airplane_speed_kts, path, timestep_granularity)
+                try:
+                    navpoint_trajectory = self.get_flight_navpoint_trajectory(flights_affected, networkx_graph, flight_index, actual_flight_departure_time, airplane_speed_kts, path, timestep_granularity)
+                except HorizonOverflow:
+                    # An alternative route longer than the whole time axis can never be flown: every
+                    # flight must land inside the 24-hour window. Leave it out of the choice. The
+                    # filed route fits by the instance contract, so a failure there is still fatal.
+                    if [int(v) for v in path] == filed_route:
+                        raise
+                    dropped_alternatives += 1
+                    continue
 
 
                 for flight_id, flight_navpoint, flight_time in navpoint_trajectory:
@@ -530,6 +550,9 @@ class TranslateCSVtoLogicProgram:
                 path_id += 1
 
 
+        if dropped_alternatives:
+            print(f"[rerouting] left out {dropped_alternatives} alternative route(s) that do not fit the time axis",
+                  file=sys.stderr)
         return regulation_restricted_rerouting_instance
             
     
@@ -625,7 +648,7 @@ class TranslateCSVtoLogicProgram:
 
         sources = self.graph[:,0]
         targets = self.graph[:,1]
-        dists = self.graph[:,2]
+        dists = self.graph_dist_m
         self.networkx_navpoint_graph = nx.Graph()
         self.networkx_navpoint_graph.add_weighted_edges_from(zip(sources, targets, dists))
 
@@ -649,13 +672,7 @@ class TranslateCSVtoLogicProgram:
             for edge in graph.edges(data=True):
 
                 distance = edge[2]["weight"]
-                # CONVERT AIRPLANE SPEED TO m/s
-                airplane_speed_ms = cur_airplane_speed * 0.51444
-                duration_in_seconds = distance/airplane_speed_ms
-                factor_to_unit_standard = 3600.00 / float(timestep_granularity)
-                duration_in_unit_standards = math.ceil(duration_in_seconds / factor_to_unit_standard)
-
-                duration_in_unit_standards = max(duration_in_unit_standards, 1)
+                duration_in_unit_standards = edge_duration_timesteps(distance, cur_airplane_speed, timestep_granularity)
 
                 tmp_edges[(edge[0],edge[1])] = {"weight":duration_in_unit_standards}
 
@@ -949,31 +966,21 @@ class TranslateCSVtoLogicProgram:
                 t_slot = current_time
 
                 if t_slot >= flights_affected.shape[1]:
-                    raise Exception("In optimize_flights max time exceeded current allowed time.")
+                    raise HorizonOverflow("In optimize_flights max time exceeded current allowed time.")
 
             else:
                 # En-route/destination
                 prev_vertex = path[hop -1]
                 #print(f"prev_vertex:{prev_vertex},vertex:{vertex}")
                 distance = networkx_graph[prev_vertex][vertex]["weight"]
-
-                # CONVERT SPEED TO m/s
-                airplane_speed_ms = airplane_speed_kts * 0.51444
-
-                # Compute duration from prev to vertex in unit time:
-                duration_in_seconds = distance/airplane_speed_ms
-                factor_to_unit_standard = 3600.00 / float(timestep_granularity)
-                duration_in_unit_standards = math.ceil(duration_in_seconds / factor_to_unit_standard)
-
-                if duration_in_unit_standards == 0:
-                    duration_in_unit_standards = 1
+                duration_in_unit_standards = edge_duration_timesteps(distance, airplane_speed_kts, timestep_granularity)
 
                 current_time = current_time + duration_in_unit_standards
 
                 t_slot=current_time
 
                 if t_slot >= flights_affected.shape[1]:
-                    raise Exception("In optimize_flights max time exceeded current allowed time.")
+                    raise HorizonOverflow("In optimize_flights max time exceeded current allowed time.")
 
             traj.append((flight_index, vertex, t_slot))
 

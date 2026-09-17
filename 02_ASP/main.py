@@ -743,6 +743,13 @@ def main(argv: Optional[List[str]] = None) -> None:
         if max_time < int(str(navpoint_sector.arguments[2])):
             max_time = int(str(navpoint_sector.arguments[2])) 
 
+    # The result matrices must reach every timestep a flight uses. They were sized from the
+    # navaid_sector atoms alone, which the encoding does not show, so a model with a flight after
+    # timestep --max-time + 1 (any T_gran above 1) raised an IndexError after solving. Widen only
+    # when needed, so every matrix that fitted before keeps its shape.
+    for atom in list(flights) + list(model.get_navpoint_flights()):
+        max_time = max(max_time, int(str(atom.arguments[2])) - 1)
+
     max_time += 1
 
     converted_instance_matrix = np.ones((len(distinct_flights),max_time+1)) * -1

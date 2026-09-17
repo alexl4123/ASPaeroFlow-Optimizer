@@ -26,12 +26,25 @@ output_<PROBLEM>/progress.jsonl exists there too and reads exactly like a monoli
 worklist view is preferred while the campaign is in flight, since it is the one that knows about
 units that have not started.
 """
-import argparse, json, time
+import argparse, json, re, time
 from collections import Counter, defaultdict
 from pathlib import Path
 
 
 CODES = {"T": "TIMEOUT", "M": "MEMOUT", "E": "ERROR", "P": "UNPARSED"}
+
+
+#: The part of a problem directory name that every problem in a campaign shares: the data window,
+#: the en-route capacity and the cluster size. Dropping it leaves what tells problems apart --
+#: region, graph, granularity and capacity level -- e.g.
+#:   04-0-DACH-2019-06-01--2019-06-30-CAP-ENROUTE-1200-CLUSTERSIZE-50-GABRIEL-GRAPH-V2-TG15-PCAP100
+#:   -> 04-0-DACH-GABRIEL-GRAPH-V2-TG15-PCAP100
+_SHARED_PART = re.compile(r"-\d{4}-\d{2}-\d{2}--\d{4}-\d{2}-\d{2}-CAP-ENROUTE-\d+-CLUSTERSIZE-\d+")
+
+
+def display_name(name, full=False):
+    """A problem name short enough to read in a table, with nothing distinguishing cut off."""
+    return name if full else _SHARED_PART.sub("", name)
 
 
 def _true_outcome(row):
@@ -176,10 +189,12 @@ def report_units(root, units, a):
         print(f"  solved within limits: {100 * outcomes.get('ok', 0) / tot_done:.1f}% of finished runs")
 
     if a.detail:
-        print(f"\n  {'problem':<62}{'done':>8}{'total':>8}  progress")
+        names = {p: display_name(p, a.full_names) for p in per_problem}
+        width = max([len("problem")] + [len(n) for n in names.values()]) + 2
+        print(f"\n  {'problem':<{width}}{'done':>8}{'total':>8}  progress")
         for problem, (d, t) in sorted(per_problem.items(), key=lambda kv: (kv[1][0] / kv[1][1]) if kv[1][1] else 0):
             bar = "#" * int(20 * d / t) if t else ""
-            print(f"  {problem[:60]:<62}{d:>8}{t:>8}  {bar:<20} {100 * d / t if t else 0:5.1f}%")
+            print(f"  {names[problem]:<{width}}{d:>8}{t:>8}  {bar:<20} {100 * d / t if t else 0:5.1f}%")
 
     if a.failures:
         if not failures:
@@ -193,7 +208,7 @@ def report_units(root, units, a):
                 print(f"    {system:<30} " + "  ".join(f"{k}={v}" for k, v in c.most_common()))
             print("\n  first 15:")
             for problem, inst, system, outcome in failures[:15]:
-                print(f"    {outcome:<9} {system:<28} {inst:<22} {problem[:40]}")
+                print(f"    {outcome:<9} {system:<28} {inst:<22} {display_name(problem, a.full_names)}")
     print("\n  Units that never produced a result are named by:"
           "\n    ./merge_benchmark_shards.py --folder %s --write-missing-worklist retry.tsv"
           % root.name)
@@ -206,6 +221,9 @@ def main():
     ap.add_argument("--folder", default=None, help="default: most recently modified")
     ap.add_argument("--detail", action="store_true")
     ap.add_argument("--failures", action="store_true")
+    ap.add_argument("--full-names", action="store_true",
+                    help="print problem names in full; by default the part every problem shares "
+                         "(data window, en-route capacity, cluster size) is left out")
     ap.add_argument("--manifest", type=Path, default=Path("../05_instances/problems.tsv"),
                     help="problem index, for the true campaign denominator")
     ap.add_argument("--systems-small", type=int, default=39,
@@ -297,10 +315,12 @@ def main():
         print(f"  solved within limits: {100 * ok / tot_done:.1f}% of finished runs")
 
     if a.detail:
-        print(f"\n  {'task':<62}{'done':>8}{'total':>8}  progress")
+        names = {k: display_name(k, a.full_names) for k in per_task}
+        width = max([len("task")] + [len(n) for n in names.values()]) + 2
+        print(f"\n  {'task':<{width}}{'done':>8}{'total':>8}  progress")
         for task, (d, t) in sorted(per_task.items(), key=lambda kv: (kv[1][0] / kv[1][1]) if kv[1][1] else 0):
             bar = "#" * int(20 * d / t) if t else ""
-            print(f"  {task[:60]:<62}{d:>8}{t:>8}  {bar:<20} {100 * d / t if t else 0:5.1f}%")
+            print(f"  {names[task]:<{width}}{d:>8}{t:>8}  {bar:<20} {100 * d / t if t else 0:5.1f}%")
 
     if a.failures:
         if not failures:
@@ -314,7 +334,7 @@ def main():
                 print(f"    {system:<30} " + "  ".join(f"{k}={v}" for k, v in c.most_common()))
             print("\n  first 15:")
             for task, inst, system, outcome in failures[:15]:
-                print(f"    {outcome:<9} {system:<28} {inst:<22} {task[:40]}")
+                print(f"    {outcome:<9} {system:<28} {inst:<22} {display_name(task, a.full_names)}")
     return 0
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from edge_cost_bootstrap import edge_duration_timesteps
 from arrival_delay_bootstrap import (
     DEFAULT_ARRIVAL_DELAY_METRIC,
     apply as apply_arrival_delay_metric,
@@ -1360,17 +1361,7 @@ class OptimizeFlights:
                 prev_vertex = path[hop -1]
                 #print(f"prev_vertex:{prev_vertex},vertex:{vertex}")
                 distance = networkx_graph[prev_vertex][vertex]["weight"]
-
-                # CONVERT SPEED TO m/s
-                airplane_speed_ms = airplane_speed_kts * 0.51444
-
-                # Compute duration from prev to vertex in unit time:
-                duration_in_seconds = distance/airplane_speed_ms
-                factor_to_unit_standard = 3600.00 / float(timestep_granularity)
-                duration_in_unit_standards = math.ceil(duration_in_seconds / factor_to_unit_standard)
-
-                if duration_in_unit_standards == 0:
-                    duration_in_unit_standards = 1
+                duration_in_unit_standards = edge_duration_timesteps(distance, airplane_speed_kts, timestep_granularity)
 
                 current_time = current_time + duration_in_unit_standards
 
@@ -1979,8 +1970,9 @@ class OptimizeFlights:
         N = cap.shape[0]
         T = int(time_granularity)
 
-        if n_times % T != 0:
-            raise ValueError("n_times must be a multiple of time_granularity (T).")
+        # Capacity is per timestep (read, never divided by T), so n_times need not be a multiple of
+        # T. The multiple-of-T check dated from per-hour capacities and rejected every solution
+        # whose time axis ended off an hour boundary.
 
         if navaid_sector_time_assignment.shape != (N, n_times):
             raise ValueError(

@@ -377,6 +377,11 @@ class MIPModel:
         return allocation[navaid, min(int(timestep), allocation.shape[1] - 1)]
 
     def get_flight_navpoint_trajectory(self, flights_affected, networkx_graph, flight_index, start_time, airplane_speed_kts, path, timestep_granularity):
+        """Timestep of every vertex on ``path``, departing at ``start_time``.
+
+        ``networkx_graph`` must be a unit graph: edge weights in timesteps for this airframe's
+        speed. ``airplane_speed_kts`` and ``timestep_granularity`` are kept for the call signature.
+        """
 
         traj = []
         current_time = start_time
@@ -391,19 +396,10 @@ class MIPModel:
             else:
                 # En-route/destination
                 prev_vertex = path[hop -1]
-                #print(f"prev_vertex:{prev_vertex},vertex:{vertex}")
-                distance = networkx_graph[prev_vertex][vertex]["weight"]
-
-                # CONVERT SPEED TO m/s
-                airplane_speed_ms = airplane_speed_kts * 0.51444
-
-                # Compute duration from prev to vertex in unit time:
-                duration_in_seconds = distance/airplane_speed_ms
-                factor_to_unit_standard = 3600.00 / float(timestep_granularity)
-                duration_in_unit_standards = math.ceil(duration_in_seconds / factor_to_unit_standard)
-
-                if duration_in_unit_standards == 0:
-                    duration_in_unit_standards = 1
+                # networkx_graph is the per-speed unit graph (04_MIP/main.py), whose edge weight is
+                # already the traversal time in timesteps. This used to be converted from metres a
+                # second time, which made every hop take one timestep.
+                duration_in_unit_standards = max(1, int(networkx_graph[prev_vertex][vertex]["weight"]))
 
                 current_time = current_time + duration_in_unit_standards
 
@@ -1235,8 +1231,9 @@ class MIPModel:
         N = cap.shape[0]
         T = int(time_granularity)
 
-        if n_times % T != 0:
-            raise ValueError("n_times must be a multiple of time_granularity (T).")
+        # Capacity is per timestep (read, never divided by T), so n_times need not be a multiple of
+        # T. The multiple-of-T check dated from per-hour capacities and rejected every solution
+        # whose time axis ended off an hour boundary.
 
         if navaid_sector_time_assignment.shape != (N, n_times):
             raise ValueError(
