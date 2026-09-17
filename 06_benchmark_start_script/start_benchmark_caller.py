@@ -637,7 +637,25 @@ def solver_option_cli(system: Dict, args) -> List[str]:
     # --solver-stats exists only on 02_ASP/main.py, which is where the JSON result line is built.
     if args.solver_stats == "True" and "02_ASP" in script:
         cli.append("--solver-stats=true")
+    # Same for --solve-deadline. getattr: a namespace built without this option (older call sites,
+    # tests) means "off", which is also the parser's default.
+    margin = getattr(args, "solve_deadline_margin", None)
+    if margin is not None and "02_ASP" in script:
+        cli.append(f"--solve-deadline={solve_deadline_for(args.time_limit, margin):g}")
     return cli
+
+
+def solve_deadline_for(time_limit: float, margin: float) -> float:
+    """The --solve-deadline 02_ASP gets: the time limit minus the margin, validated.
+
+    The margin is what 02_ASP has, after cancelling the search, to read the statistics and print the
+    result line before this script's SIGKILL at time_limit. Cancelling itself was measured in
+    milliseconds; see --solve-deadline-margin.
+    """
+    if not 0 < margin < time_limit:
+        raise ValueError(f"--solve-deadline-margin must be > 0 and below --time-limit "
+                         f"({time_limit}), got {margin}")
+    return time_limit - margin
 
 
 def build_command(system: Dict, paths: Dict[str, Path], python_bin: str, timestep_granularity, seed:int = 11904657, solver_cli: List[str] | None = None) -> List[str]:
@@ -978,6 +996,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--solver-stats", type=str, default="False", choices=["True", "False"],
                         help="Add clingo diagnostics (cost vector, lower bound, models reported, "
                              "whether the search was exhausted) to 02_ASP's JSON result lines.")
+    # OFF by default, and it has to stay off in the main campaign. With it, 02_ASP stops its own
+    # search at time_limit - margin and EXITS NORMALLY, so a run that did not finish is recorded
+    # here with a runtime of about time_limit - margin and ERROR "" -- not with the timeout marker
+    # T that run_process() writes when it has to kill a run. Anything that reads T as "did not
+    # finish" would read these runs as finished. It exists for the solver-option ablation, whose
+    # analysis reads SOLVER-STOPPED-AT-DEADLINE and SOLVER-EXHAUSTED from the result line instead,
+    # and which needs the lower bound that only a run stopped from inside can report.
+    parser.add_argument("--solve-deadline-margin", type=float, default=None, metavar="SECONDS",
+                        help="ABLATION ONLY. Pass --solve-deadline=<time-limit minus SECONDS> to "
+                             "02_ASP systems (no other system), so clingo is stopped from inside "
+                             "before this script's kill and still reports its lower bound. A run "
+                             "stopped this way exits normally and is recorded with a runtime, not "
+                             "with the timeout marker. Translation and grounding cannot be "
+                             "interrupted; a run still in them at the limit is killed as before.")
 
     parser.add_argument(
         "--hot-start",
@@ -1016,7 +1048,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    args = build_arg_parser().parse_args()
+    parser = build_arg_parser()
+    args = parser.parse_args()
+    if args.solve_deadline_margin is not None:
+        try:
+            solve_deadline_for(args.time_limit, args.solve_deadline_margin)
+        except ValueError as exc:
+            parser.error(str(exc))
     mem_limit_bytes = args.memory_limit * (1024 ** 3)
 
     experiment_name = args.experiment_name
@@ -1080,6 +1118,11 @@ def main() -> None:
         _solver_desc += " + " + " ".join(args.solver_arg)
     print(f"[config] clingo solver profile: {_solver_desc}"
           f"{' (+ --solver-stats)' if args.solver_stats == 'True' else ''}", flush=True)
+    if args.solve_deadline_margin is not None:
+        print(f"[config] 02_ASP stops its own search at --solve-deadline="
+              f"{solve_deadline_for(args.time_limit, args.solve_deadline_margin):g} s "
+              f"(time limit {args.time_limit} s minus margin {args.solve_deadline_margin:g} s); "
+              f"such runs are recorded with a runtime, not with {TIMEOUT_CODE}", flush=True)
 
     # ---- progress accounting -------------------------------------------------------------
     # The only previous output was "[system] instance: running ...", with no outcome, no

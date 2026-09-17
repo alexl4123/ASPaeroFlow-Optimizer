@@ -69,6 +69,8 @@ ROW_OFFSET="${ROW_OFFSET:-0}"                  # rows to skip before this array'
                                                # is submitted as several waves with CHUNK=1
                                                # rather than as fewer, longer tasks
 DRY_RUN="${DRY_RUN:-0}"                        # 1 = print the command lines and run nothing
+SOLVE_DEADLINE_MARGIN="${SOLVE_DEADLINE_MARGIN:-30}"  # seconds before the limit at which 02_ASP
+                                               # stops its own search; "off" = be killed instead
 
 [ -f "$MANIFEST" ] || { echo "[ERROR] $MANIFEST not found -- run ./build_ablation_manifest.py first" >&2; exit 1; }
 
@@ -152,6 +154,18 @@ run_unit () {
   if [ "${THREADS}" -gt 1 ]; then
     SOLVER+=( "--solver-arg=--parallel-mode=${THREADS}" )
   fi
+  # ---- the lower bound of a run that does not finish ----------------------------------------
+  # The caller kills a run at --time-limit, and a killed clingo never reports its lower bound, so
+  # a gap on an instance nobody closes could not be measured. With a margin, 02_ASP stops its own
+  # search at limit - margin, still reads its statistics, and prints the bound on its result line.
+  # Such a run then EXITS NORMALLY: the caller records a runtime of about limit - margin and no T.
+  # The analysis does not read T for that; it reads SOLVER-EXHAUSTED and SOLVER-STOPPED-AT-DEADLINE.
+  # This is why the main campaign does not use it. The margin covers reading the statistics and
+  # printing the line after the cancel. Translation and grounding cannot be interrupted, so a run
+  # still grounding at the limit is killed exactly as without it.
+  if [ "$SOLVE_DEADLINE_MARGIN" != "off" ]; then
+    SOLVER+=( "--solve-deadline-margin=${SOLVE_DEADLINE_MARGIN}" )
+  fi
 
   # ---- where the results go ----------------------------------------------------------------
   # One output directory per unit, and that is not tidiness: hot-start state lives at
@@ -211,6 +225,7 @@ run_unit () {
     echo "time_limit_s=${limit}"
     echo "memory_limit_gib=${MEMORY_LIMIT}"
     echo "solver_stats=True"
+    echo "solve_deadline_margin_s=${SOLVE_DEADLINE_MARGIN}"
     echo "optimizer_commit=$(git -C .. rev-parse HEAD 2>/dev/null || echo unknown)"
     echo "optimizer_dirty=$(test -n "$(git -C .. status --porcelain 2>/dev/null)" && echo yes || echo no)"
     echo "slurm_job=${SLURM_ARRAY_JOB_ID:-local}_${SLURM_ARRAY_TASK_ID:-0}"
