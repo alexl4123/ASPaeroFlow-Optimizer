@@ -371,6 +371,9 @@ def _save_results(args: argparse.Namespace, app,
             "data_dir": str(args.data_dir) if args.data_dir else None,
             "seed": args.seed,
             "timestep_granularity": args.timestep_granularity,
+            # Which reading of t_actarr - t_exparr the ARRIVAL-DELAY in this run's result line
+            # measures, recorded here exactly as 01_ASPaeroFlow and 04_MIP record it.
+            "arrival_delay_metric": args.arrival_delay_metric,
         }
     }
     with open(out_dir / "manifest.json", "w", encoding="utf-8") as fh:
@@ -523,7 +526,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         solver: Model = Solver(encoding, instance_asp_atoms, seed=seed, wandb_log = wandb_log,
                                solver_options=solver_options,
                                report_solver_stats=args.solver_stats,
-                               evaluation_window=evaluation_window)
+                               evaluation_window=evaluation_window,
+                               arrival_delay_metric=arrival_delay_metric)
         model = solver.solve()
 
         if model is None:

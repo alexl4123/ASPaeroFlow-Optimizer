@@ -72,7 +72,7 @@ def _solver_summary(ctl, models_reported):
 class Solver:
     def __init__(self, encoding, instance, seed = 1, wandb_log = None,
                  solver_options = None, report_solver_stats = False,
-                 evaluation_window = None):
+                 evaluation_window = None, arrival_delay_metric = None):
         self.encoding = encoding
         self.instance = instance
         self.seed = seed
@@ -84,6 +84,10 @@ class Solver:
         # still above it, and it GROWS when this run retries with a larger max_time -- so without
         # this the same static sectorisation scored 1067 here against 1100 from 03_DELAY.
         self.evaluation_window = evaluation_window
+
+        # Reported as ARRIVAL-DELAY-METRIC, the way 01 and 04 report it, so an ASP result line
+        # says which reading of t_actarr - t_exparr produced its ARRIVAL-DELAY.
+        self.arrival_delay_metric = arrival_delay_metric
 
         # Extra clingo flags, chosen by name via --solver-profile (see common/clingo_options.py).
         # An empty list is what this class always used: clingo.Control([]) is clingo.Control().
@@ -205,7 +209,8 @@ class Solver:
 
         current_time = time.time() - self.total_time_start
         self.final_model = Model(overload, arrival_delay, sector_number, sector_diff, reroute, reconfig, flights, navpoint_flights, self.grounding_time, current_time, model.optimality_proven,
-                                 evaluation_window=self.evaluation_window)
+                                 evaluation_window=self.evaluation_window,
+                                 arrival_delay_metric=self.arrival_delay_metric)
         if self.report_solver_stats:
             self.final_model.set_solver_summary({
                 "SOLVER-COST": list(model.cost),
@@ -236,7 +241,7 @@ class Solver:
 class Model:
 
     def __init__(self, overloads, arrival_delay, sector_number, sector_diff, reroute, reconfig, flights, navpoint_flights, grounding_time, current_time, computation_finished,
-                 evaluation_window=None):
+                 evaluation_window=None, arrival_delay_metric=None):
 
         self.overloads = overloads
         self.arrival_delays = arrival_delay
@@ -251,8 +256,10 @@ class Model:
 
         self.navpoint_flights = navpoint_flights
 
-        # See the Solver constructor: the window SECTOR-NUMBER and RECONFIG are scored over.
+        # See the Solver constructor: the window SECTOR-NUMBER and RECONFIG are scored over, and
+        # how the delay they are reported beside was measured.
         self.evaluation_window = evaluation_window
+        self.arrival_delay_metric = arrival_delay_metric
 
         self.grounding_time = grounding_time
         self.current_time = current_time
@@ -282,6 +289,11 @@ class Model:
         output_dict["GROUNDING-TIME"] = self.grounding_time
         output_dict["TOTAL-TIME-TO-THIS-POINT"] = self.current_time
         output_dict["COMPUTATION-FINISHED"] = self.computation_finished
+        # Which reading of t_actarr - t_exparr produced ARRIVAL-DELAY above, as 01 and 04 report
+        # it on their final lines. Omitted when nothing was passed, so a caller that builds a
+        # Model directly still gets exactly the keys it always got.
+        if self.arrival_delay_metric is not None:
+            output_dict["ARRIVAL-DELAY-METRIC"] = str(self.arrival_delay_metric)
         if self.solver_summary:
             output_dict.update(self.solver_summary)
 
