@@ -154,6 +154,97 @@ def load_schedule_for(navaid_sector_path) -> Optional[List[Tuple[int, int, int]]
 
 
 # ---------------------------------------------------------------------------
+# The evaluation window
+# ---------------------------------------------------------------------------
+
+def evaluation_window(flights: np.ndarray, max_time: int, time_granularity: int) -> int:
+    """How many timesteps the instance defines, and the ONLY axis SECTOR-NUMBER and RECONFIG
+    may be summed over.
+
+    This is the width ``build_assignment`` gives the initial allocation, so it is a property of
+    the instance (its filed schedule, ``--max-time`` and ``--timestep-granularity``) and not of
+    whatever horizon a particular solver grew to while searching.
+
+    Why it has to be pinned down: both metrics are sums over the time axis -- SECTOR-NUMBER adds
+    up the open sectors per column, RECONFIG counts the (navpoint, timestep) cells that differ
+    from the initial allocation. A solver that widened its matrices therefore reports a LARGER
+    number for the SAME sectorisation. Measured on one 10-flight instance whose sectorisation
+    nothing changed: 1364 (04_MIP, 124 columns), 484 (03_DELAY, 44), 367 (01_ASPaeroFlow, 31),
+    275 (02_ASP, 25) -- four numbers for one physical fact. On this window all of them are the
+    same number, and a system that really opens more sectors is the only one that stands out.
+
+    `flights` is the instance's flights.csv as (Flight_ID, Navaid_ID, Time) rows.
+    """
+    flights = np.asarray(flights)
+    time_granularity = int(time_granularity)
+    width = int(max(int(flights[:, 2].max()) + 1, (int(max_time) + 1) * time_granularity))
+    remainder = width % time_granularity
+    if remainder:
+        width += time_granularity - remainder
+    return width
+
+
+def to_window(matrix: np.ndarray, width: int) -> np.ndarray:
+    """`matrix` seen over exactly `width` timesteps: padded with its own last column, or cut.
+
+    Padding with the last column is how every solver in this repository already widens an
+    allocation when its horizon grows, and it is the right reading of a shorter axis: an
+    allocation that stops being stated simply persists.
+
+    Returns the array itself when it is already that wide, so the common case copies nothing.
+
+    `width` of None means "leave it alone". A solver sets its window when it builds the initial
+    allocation, so None can only reach here from a path that never built one -- the explainability
+    and controller entry points, which feed a prepared state in and report no benchmark line.
+    Those behave exactly as they did before the window existed.
+    """
+    if width is None:
+        return np.asarray(matrix)
+    matrix = np.asarray(matrix)
+    width = int(width)
+    if matrix.ndim != 2:
+        raise ValueError(f"expected a 2-D (|N| x |T|) array, got shape {matrix.shape}")
+    if width < 0:
+        raise ValueError(f"evaluation window must not be negative (got {width})")
+    if matrix.shape[1] == width:
+        return matrix
+    if matrix.shape[1] > width:
+        return matrix[:, :width]
+    if matrix.shape[1] == 0:
+        raise ValueError("cannot widen a matrix with no columns: there is no last column to hold")
+    return np.hstack([matrix, np.repeat(matrix[:, [-1]], width - matrix.shape[1], axis=1)])
+
+
+def series_to_window(per_timestep, width: int, own_width=None, default=0):
+    """`to_window` for a per-timestep SERIES rather than a matrix, as the ASP path holds it.
+
+    02_ASP never materialises the allocation: clingo hands it one number per timestep
+    (``sector_number(T,NUM)``) and one atom per changed cell (``reconfig(NAV,T)``). Padding the
+    allocation's last column repeats that column's contribution, so the series is padded with
+    its last value; a longer series is cut, exactly as `to_window` cuts columns.
+
+    `per_timestep` maps timestep -> value; absent timesteps count as `default`. `width` of None
+    means "leave it alone", as in `to_window`.
+
+    `own_width` is how many timesteps the series actually covers, which is NOT always
+    `max(per_timestep) + 1`: a series of counts is silent where the count is zero, so a reconfig
+    series that ends at timestep 5 on a 97-timestep axis would otherwise be padded from 5 rather
+    than from the axis's real last column. Pass the axis; it defaults to the highest key present.
+    """
+    if width is None:
+        return [per_timestep.get(t, default) for t in range(max(per_timestep) + 1)] \
+            if per_timestep else []
+    width = int(width)
+    if width < 0:
+        raise ValueError(f"evaluation window must not be negative (got {width})")
+    if own_width is None:
+        own_width = (max(per_timestep) + 1) if per_timestep else 0
+    own_width = int(own_width)
+    last = per_timestep.get(own_width - 1, default) if own_width > 0 else default
+    return [per_timestep.get(t, default) if t < own_width else last for t in range(width)]
+
+
+# ---------------------------------------------------------------------------
 # Building the dense (|N| x |T|) array
 # ---------------------------------------------------------------------------
 
@@ -193,18 +284,9 @@ def build_assignment(flights: np.ndarray,
     order = np.lexsort((flights[:, 2], flights[:, 0]))
     f_sorted = flights[order]
 
-    t = f_sorted[:, 2]
-
     # --- output matrix shape (airplane_id rows, time columns)
-    max_time_dim = int(max(t.max() + 1, (max_time + 1) * time_granularity))
-
-    if max_time_dim % time_granularity != 0:
-        remainder = max_time_dim % time_granularity
-        max_time_dim += time_granularity - remainder
-
-        if max_time_dim % time_granularity != 0:
-            print("[ERROR] - Should never occur - failure in maths")
-            raise Exception("[ERROR IN COMPUTATION]")
+    # One definition, shared with the metric sites: this width IS the evaluation window.
+    max_time_dim = evaluation_window(f_sorted, max_time, time_granularity)
 
     largest_navaid = navaid_sector[navaid_sector.shape[0] - 1, 0]
 

@@ -153,6 +153,11 @@ class Main:
         # How the signed difference t_actarr - t_exparr is scored; see common/arrival_delay.py.
         self._arrival_delay_metric = normalise_arrival_delay_metric(arrival_delay_metric)
 
+        # The timesteps SECTOR-NUMBER and RECONFIG are summed over: the window the INSTANCE
+        # defines, not the horizon this run happened to grow to. Set by SetupBeforeOptimization
+        # from the initial allocation's width; see common/navpoint_sector_allocation.py.
+        self._evaluation_window: Optional[int] = None
+
         # Extra clingo flags, selected by name via --solver-profile; see
         # common/clingo_options.py. Empty list => every Control is built as it always was.
         # convert_global_vars_to_dto() copies vars(self), so this reaches IterationStep too.

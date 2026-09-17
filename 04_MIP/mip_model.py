@@ -8,7 +8,10 @@ from arrival_delay_bootstrap import (
     normalise as normalise_arrival_delay_metric,
 )
 from gurobipy import GRB
-from navpoint_sector_allocation_bootstrap import build_assignment as build_navpoint_sector_assignment
+from navpoint_sector_allocation_bootstrap import (
+    build_assignment as build_navpoint_sector_assignment,
+    to_window as to_evaluation_window,
+)
 
 import pandas as pd
 import numpy as np
@@ -32,7 +35,9 @@ def _save_csv(path: Path, arr):
 class MIPModel:
 
     def __init__(self, sectors, airport_vertices, max_time, max_explored_vertices, seed, timestep_granularity, verbosity, number_threads, navaid_sector_lookup, composite_sector_function, sector_capacity_factor, original_converted_instance_matrix, navaid_sector_time_assignment, old_navaid_sector_time_assignment, start_time,
-                 arrival_delay_metric=DEFAULT_ARRIVAL_DELAY_METRIC):
+                 arrival_delay_metric=DEFAULT_ARRIVAL_DELAY_METRIC,
+                 original_converted_navpoint_matrix=None,
+                 evaluation_window=None):
         
         self.sectors = sectors
         self.airport_vertices = airport_vertices
@@ -47,6 +52,16 @@ class MIPModel:
         self._arrival_delay_metric = normalise_arrival_delay_metric(arrival_delay_metric)
 
         self.original_converted_instance_matrix = original_converted_instance_matrix
+        # REROUTE means "this flight's 4D trajectory changed", and main.py's FINAL result line
+        # reads that off the NAVPOINT rows. The lines this class prints while the search is still
+        # running read it off the SECTOR rows instead, which also counts a flight whose navpoints
+        # never moved but whose sectors were re-drawn under it -- so a timed-out MIP row and a
+        # completed one reported two different quantities under one column heading. The original
+        # navpoint matrix is kept here so both use the one definition.
+        self.original_converted_navpoint_matrix = original_converted_navpoint_matrix
+        # The timesteps SECTOR-NUMBER and RECONFIG are summed over; see
+        # common/navpoint_sector_allocation.evaluation_window.
+        self._evaluation_window = evaluation_window
         self.navaid_sector_time_assignment = navaid_sector_time_assignment
         self.old_navaid_sector_time_assignment = old_navaid_sector_time_assignment
         self.start_time = start_time
@@ -169,12 +184,19 @@ class MIPModel:
                 capacity_overload_mask = capacity_demand_diff_matrix < 0
                 number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
                 total_delay  = delay.sum()
-                number_sectors = self.compute_total_number_sectors(self.navaid_sector_time_assignment)
+                # Scored on the instance's window, so a reopened model cannot inflate either sum
+                # (SECTOR-DIFF counts transitions and keeps this run's own axis).
+                scored_navaid_sector_time_assignment = to_evaluation_window(
+                    self.navaid_sector_time_assignment, self._evaluation_window)
+                number_sectors = self.compute_total_number_sectors(scored_navaid_sector_time_assignment)
                 sector_diff = np.count_nonzero(self.navaid_sector_time_assignment[:, 1:] != self.navaid_sector_time_assignment[:, :-1])
-                original_max_time_converted = self.original_converted_instance_matrix.shape[1]  # original_max_time
-                rerouted_mask = np.any(converted_instance_matrix_tmp[:, :original_max_time_converted] != self.original_converted_instance_matrix, axis=1)     # True if flight differs anywhere
+                # The NAVPOINT rows, the same test main.py's final result line applies.
+                original_max_time_converted = self.original_converted_navpoint_matrix.shape[1]  # original_max_time
+                rerouted_mask = np.any(converted_navpoint_matrix_tmp[:, :original_max_time_converted] != self.original_converted_navpoint_matrix, axis=1)     # True if flight differs anywhere
                 number_reroutes = int(np.count_nonzero(rerouted_mask))
-                number_sector_reconfigurations = np.count_nonzero(self.navaid_sector_time_assignment != self.old_navaid_sector_time_assignment)
+                number_sector_reconfigurations = np.count_nonzero(
+                    scored_navaid_sector_time_assignment
+                    != to_evaluation_window(self.old_navaid_sector_time_assignment, self._evaluation_window))
 
                 current_time = time.time() - self.start_time
                 output_dict = {}
@@ -942,12 +964,19 @@ class MIPModel:
                 capacity_overload_mask = capacity_demand_diff_matrix < 0
                 number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
                 total_delay  = delay.sum()
-                number_sectors = self.compute_total_number_sectors(self.navaid_sector_time_assignment)
+                # Scored on the instance's window, so a reopened model cannot inflate either sum
+                # (SECTOR-DIFF counts transitions and keeps this run's own axis).
+                scored_navaid_sector_time_assignment = to_evaluation_window(
+                    self.navaid_sector_time_assignment, self._evaluation_window)
+                number_sectors = self.compute_total_number_sectors(scored_navaid_sector_time_assignment)
                 sector_diff = np.count_nonzero(self.navaid_sector_time_assignment[:, 1:] != self.navaid_sector_time_assignment[:, :-1])
-                original_max_time_converted = self.original_converted_instance_matrix.shape[1]  # original_max_time
-                rerouted_mask = np.any(converted_instance_matrix_tmp[:, :original_max_time_converted] != self.original_converted_instance_matrix, axis=1)     # True if flight differs anywhere
+                # The NAVPOINT rows, the same test main.py's final result line applies.
+                original_max_time_converted = self.original_converted_navpoint_matrix.shape[1]  # original_max_time
+                rerouted_mask = np.any(converted_navpoint_matrix_tmp[:, :original_max_time_converted] != self.original_converted_navpoint_matrix, axis=1)     # True if flight differs anywhere
                 number_reroutes = int(np.count_nonzero(rerouted_mask))
-                number_sector_reconfigurations = np.count_nonzero(self.navaid_sector_time_assignment != self.old_navaid_sector_time_assignment)
+                number_sector_reconfigurations = np.count_nonzero(
+                    scored_navaid_sector_time_assignment
+                    != to_evaluation_window(self.old_navaid_sector_time_assignment, self._evaluation_window))
 
                 current_time = time.time() - self.start_time
                 output_dict = {}

@@ -22,6 +22,7 @@ from typing import Any, List, Optional, Final
 from datetime import datetime, timezone
 
 from translate import TranslateCSVtoLogicProgram
+from navpoint_sector_allocation_bootstrap import to_window as to_evaluation_window
 from arrival_delay_bootstrap import (
     add_cli_argument as add_arrival_delay_metric_argument,
     asp_metric_fact,
@@ -345,12 +346,18 @@ def _save_csv(path: Path, arr):
     fmt = "%d" if a.dtype.kind in ("i","u","b") else "%g"
     np.savetxt(path, a, fmt=fmt, delimiter=",")
 
-def _save_results(args: argparse.Namespace, app) -> None:
+def _save_results(args: argparse.Namespace, app,
+                  navpoint_sector_allocation_source: str = "instance") -> None:
     """
     Persist the three result matrices if present on `app`:
       - navaid_sector_time_assignment  (|N| x |T|)
       - converted_instance_matrix      (|F| x |T|)
       - converted_navpoint_matrix      (|F| x |T|)
+
+    `navpoint_sector_allocation_source` records where the first of those came from, and is the
+    one place that says so: "instance" when the run could not change the allocation, so the
+    instance's own array is the model's answer, and "not-recorded" when it could, in which case
+    the matrix is absent rather than empty. See the note at the call site.
     """
     out_name = _derive_output_name(args)
     out_dir  = _ensure_dir(Path(args.results_root) / out_name)
@@ -380,10 +387,14 @@ def _save_results(args: argparse.Namespace, app) -> None:
         "saved": saved,
         "format": args.results_format,
         "time_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "navpoint_sector_allocation": navpoint_sector_allocation_source,
         "source": {
             "data_dir": str(args.data_dir) if args.data_dir else None,
             "seed": args.seed,
             "timestep_granularity": args.timestep_granularity,
+            # Which reading of t_actarr - t_exparr the ARRIVAL-DELAY in this run's result line
+            # measures, recorded here exactly as 01_ASPaeroFlow and 04_MIP record it.
+            "arrival_delay_metric": args.arrival_delay_metric,
         }
     }
     with open(out_dir / "manifest.json", "w", encoding="utf-8") as fh:
@@ -584,6 +595,12 @@ def main(argv: Optional[List[str]] = None) -> None:
     setup_seconds = 0.0          # translation + grounding + clasp preparation, last iteration
     deadline_cut = False         # a longer horizon was wanted, and the deadline did not allow it
 
+    # The window SECTOR-NUMBER and RECONFIG are scored over, and the allocation the instance
+    # defines. Both are taken from the FIRST translation and then held: this loop retries with a
+    # larger --max-time when overload persists, and the metrics must not grow with the retries.
+    evaluation_window = None
+    instance_navpoint_sector_allocation = None
+
     while model is None:
 
         if deadline_at is not None and best_model is not None \
@@ -602,7 +619,11 @@ def main(argv: Optional[List[str]] = None) -> None:
             airports_csv, airplanes_csv, airplane_flight_csv, navaid_sector_csv, encoding_path, timestep_granularity, max_time,
             sector_capacity_factor,
             regulation_ground_delay_active, regulation_rerouting_active, regulation_dynamic_sectorization_active)
-        
+
+        if instance_navpoint_sector_allocation is None:
+            instance_navpoint_sector_allocation = transalte_to_logic_program.navaid_sector_time_assignment
+            evaluation_window = int(instance_navpoint_sector_allocation.shape[1])
+
         instance_asp_atoms = "\n".join(asp_instance)
 
         encoding = open(encoding_path, "r").read()
@@ -640,7 +661,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         solver: Model = Solver(encoding, instance_asp_atoms, seed=seed, wandb_log = wandb_log,
                                solver_options=solver_options,
                                report_solver_stats=args.solver_stats,
-                               deadline=deadline_at)
+                               deadline=deadline_at,
+                               evaluation_window=evaluation_window,
+                               arrival_delay_metric=arrival_delay_metric)
         model = solver.solve()
 
         if deadline_at is not None:
@@ -737,12 +760,6 @@ def main(argv: Optional[List[str]] = None) -> None:
         distinct_flights.add(flight.arguments[0])
 
 
-    distinct_navpoints = set()
-    for navpoint_sector in model.get_navaid_sector_time_assignment():
-        distinct_navpoints.add(navpoint_sector.arguments[0])
-        if max_time < int(str(navpoint_sector.arguments[2])):
-            max_time = int(str(navpoint_sector.arguments[2])) 
-
     # The result matrices must reach every timestep a flight uses. They were sized from the
     # navaid_sector atoms alone, which the encoding does not show, so a model with a flight after
     # timestep --max-time + 1 (any T_gran above 1) raised an IndexError after solving. Widen only
@@ -771,14 +788,31 @@ def main(argv: Optional[List[str]] = None) -> None:
         converted_navpoint_matrix[flight_id, flight_time] = flight_navaid
 
 
-    navaid_sector_time_assignment = np.ones((len(distinct_navpoints),max_time+1)) * -1
-    for navaid_sector in model.get_navaid_sector_time_assignment():
-        navaid = int(str(navaid_sector.arguments[0]))
-        sector = int(str(navaid_sector.arguments[1]))
-        time = int(str(navaid_sector.arguments[2]))
-
-        navaid_sector_time_assignment[navaid, time] = sector
-
+    # The navpoint-to-sector allocation this answer set carries.
+    #
+    # It is NOT read back from the model. clingo would hand it over -- navpoint_sector/3 is in
+    # model.symbols(atoms=True) whether or not the encoding shows it -- but there is one atom per
+    # (navpoint, timestep), and collecting them for every improving model is a cost this solver
+    # should not pay on a large instance.
+    #
+    # When the run cannot move a navpoint (--regulation-dynamic-sectorization=0) it does not have
+    # to: encoding.lp then derives navpoint_sector from the instance's own facts and nothing else
+    # (`navpoint_sector(NAV,SEC,T) :- time(T), navpoint_sector(NAV,SEC,0),
+    # -regulation_dynamic_sector_allocation, ...`, and translate.py asserts a navpoint-sector
+    # SCHEDULE as navpoint_sector facts under that same regulation), so the array translate.py
+    # built IS the model's allocation. Writing it makes these runs checkable with
+    # output_checker.py, which needs this matrix and until now got an empty file.
+    #
+    # When the allocation IS a decision (1 or 2) nothing honest can be written cheaply, so
+    # nothing is written at all and the manifest says why. An empty file that looks like an
+    # allocation is worse than an absent one.
+    if regulation_dynamic_sectorization_active == 0:
+        navaid_sector_time_assignment = to_evaluation_window(
+            instance_navpoint_sector_allocation, converted_instance_matrix.shape[1])
+        navpoint_sector_allocation_source = "instance"
+    else:
+        navaid_sector_time_assignment = None
+        navpoint_sector_allocation_source = "not-recorded"
 
     model_data = ModelData(navaid_sector_time_assignment,converted_instance_matrix,converted_navpoint_matrix)
 
@@ -795,7 +829,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     # Save results if requested
     if args.save_results:
-        _save_results(args, model_data)
+        _save_results(args, model_data, navpoint_sector_allocation_source)
 
     if run is not None:
         run.finish()

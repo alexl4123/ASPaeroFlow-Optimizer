@@ -44,6 +44,12 @@ from typing import Dict, List, Tuple
 
 import psutil
 
+from arrival_delay_bootstrap import (
+    ARRIVAL_DELAY_METRICS,
+    CLI_HELP as ARRIVAL_DELAY_CLI_HELP,
+    DEFAULT_ARRIVAL_DELAY_METRIC,
+)
+
 # ---------------------------------------------
 # Exit‑code conventions for the CSVs
 # ---------------------------------------------
@@ -658,7 +664,8 @@ def solve_deadline_for(time_limit: float, margin: float) -> float:
     return time_limit - margin
 
 
-def build_command(system: Dict, paths: Dict[str, Path], python_bin: str, timestep_granularity, seed:int = 11904657, solver_cli: List[str] | None = None) -> List[str]:
+def build_command(system: Dict, paths: Dict[str, Path], python_bin: str, timestep_granularity, seed:int = 11904657, solver_cli: List[str] | None = None,
+                  arrival_delay_metric: str = DEFAULT_ARRIVAL_DELAY_METRIC) -> List[str]:
     """Assemble the command‑line for one solver run."""
     cmd = [
         python_bin,
@@ -674,6 +681,11 @@ def build_command(system: Dict, paths: Dict[str, Path], python_bin: str, timeste
         f"--seed={seed}",
         f"--timestep-granularity={timestep_granularity}",
         f"--number-threads={thread_count_for(system)}",
+        # Named explicitly rather than left to each solver's own default. All three mains happen
+        # to default to the same reading of t_actarr - t_exparr today, so every system in a
+        # campaign was comparing like with like BY COINCIDENCE; one folder changing its default
+        # would have made the ARRIVAL-DELAY column silently mixed. See common/arrival_delay.py.
+        f"--arrival-delay-metric={arrival_delay_metric}",
     ]
 
     if system["verbosity"] is not None:
@@ -915,6 +927,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, default=Path("."), help="Where to place CSVs")
     parser.add_argument("--output-root", type=Path, default=Path("."), help="Where to place CSVs")
     parser.add_argument("--timestep-granularity", type=int, default=1, help="Timestep granularity")
+    # Passed on to every system, so the ARRIVAL-DELAY column is one definition by construction
+    # rather than by each solver happening to default the same way.
+    parser.add_argument("--arrival-delay-metric", type=str,
+                        default=DEFAULT_ARRIVAL_DELAY_METRIC,
+                        choices=list(ARRIVAL_DELAY_METRICS),
+                        help=ARRIVAL_DELAY_CLI_HELP)
     parser.add_argument("--experiment-name", type=str, default="", help="Specify an experiment name for various settings (such as wandb).")
 
     parser.add_argument("--scaling-experiments", type=int, default=0, help="true (val!=0), false (val=0)")
@@ -1246,7 +1264,8 @@ def main() -> None:
 
 
             cmd = build_command(system, paths, args.python_bin, timestep_granularity,
-                                solver_cli=solver_option_cli(system, args))
+                                solver_cli=solver_option_cli(system, args),
+                                arrival_delay_metric=args.arrival_delay_metric)
             cmd += system["cmd"]
 
             #print(" ".join(cmd))

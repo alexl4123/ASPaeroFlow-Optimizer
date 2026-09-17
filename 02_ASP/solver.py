@@ -11,7 +11,10 @@ import json
 
 import clingo
 
+from collections import Counter
 from typing import Final
+
+from navpoint_sector_allocation_bootstrap import series_to_window
 
 OVERLOAD: Final[str] = "overload"
 ARRIVAL_DELAY: Final[str] = "arrival_delay"
@@ -22,8 +25,23 @@ RECONFIG: Final[str] = "reconfig"
 
 FLIGHT: Final[str] = "flight"
 NAVPOINT_FLIGHT: Final[str] = "navpoint_flight"
-NAVAID_SECTOR: Final[str] = "navaid_sector"
-SIGNATURES: Final[set[str]] = {ARRIVAL_DELAY, FLIGHT, REROUTE, NAVPOINT_FLIGHT, NAVAID_SECTOR, OVERLOAD, SECTOR_NUMBER, SECTOR_DIFF, RECONFIG}
+
+#: The atom encoding.lp derives for the navpoint-to-sector allocation. It is deliberately NOT
+#: collected: there is one per (navpoint, timestep), and every improving model would pay for all
+#: of them. The name is written out here because the constant it replaces read "navaid_sector",
+#: which matches no atom this encoding ever derives -- so the allocation collected was always
+#: empty, and nothing said so. 02_ASP/main.py writes the allocation from the instance instead;
+#: see the note there.
+NAVPOINT_SECTOR: Final[str] = "navpoint_sector"
+
+#: The atom names collected from a model. Test membership with `==` against the constants above,
+#: or with `in` against THIS SET -- never with `in` against one of the strings, because
+#: `"flight" in "navpoint_flight"` is a true SUBSTRING test. That is how flight/3 atoms used to
+#: be collected as navpoint flights and overwrite the saved navpoint matrix with the sector one.
+SIGNATURES: Final[frozenset] = frozenset({
+    ARRIVAL_DELAY, FLIGHT, REROUTE, NAVPOINT_FLIGHT, OVERLOAD,
+    SECTOR_NUMBER, SECTOR_DIFF, RECONFIG,
+})
 
 def _solver_summary(ctl, models_reported):
     """Clingo's own view of the finished search.
@@ -98,11 +116,23 @@ class _CostPriorities(clingo.Observer):
 
 class Solver:
     def __init__(self, encoding, instance, seed = 1, wandb_log = None,
-                 solver_options = None, report_solver_stats = False, deadline = None):
+                 solver_options = None, report_solver_stats = False, deadline = None,
+                 evaluation_window = None, arrival_delay_metric = None):
         self.encoding = encoding
         self.instance = instance
         self.seed = seed
         self.wandb_log = wandb_log
+
+        # The timesteps SECTOR-NUMBER and RECONFIG are scored over: the window the INSTANCE
+        # defines, which is what the Python solvers score on too. The ASP time domain is
+        # 0..max_time*T_gran, one column short of (max_time+1)*T_gran at T_gran 1 and shorter
+        # still above it, and it GROWS when this run retries with a larger max_time -- so without
+        # this the same static sectorisation scored 1067 here against 1100 from 03_DELAY.
+        self.evaluation_window = evaluation_window
+
+        # Reported as ARRIVAL-DELAY-METRIC, the way 01 and 04 report it, so an ASP result line
+        # says which reading of t_actarr - t_exparr produced its ARRIVAL-DELAY.
+        self.arrival_delay_metric = arrival_delay_metric
 
         # Extra clingo flags, chosen by name via --solver-profile (see common/clingo_options.py).
         # An empty list is what this class always used: clingo.Control([]) is clingo.Control().
@@ -291,19 +321,24 @@ class Solver:
         parsed = [symbol for symbol in model.symbols(atoms=True) if symbol.name in SIGNATURES]
 
 
-        flights = [symbol for symbol in parsed if symbol.name in FLIGHT]
-        navpoint_flights = [symbol for symbol in parsed if symbol.name in NAVPOINT_FLIGHT]
-        navaid_sector_time = [symbol for symbol in parsed if symbol.name in NAVAID_SECTOR]
+        # Exact names throughout. `symbol.name in FLIGHT` asked whether the name is a SUBSTRING
+        # of "flight", and `in NAVPOINT_FLIGHT` whether it is a substring of "navpoint_flight" --
+        # which "flight" is, so every flight/3 atom was also collected as a navpoint flight and
+        # the saved converted_navpoint_matrix came out as a copy of the sector matrix.
+        flights = [symbol for symbol in parsed if symbol.name == FLIGHT]
+        navpoint_flights = [symbol for symbol in parsed if symbol.name == NAVPOINT_FLIGHT]
 
         overload = [symbol for symbol in parsed if symbol.name == OVERLOAD]
         arrival_delay = [symbol for symbol in parsed if symbol.name == ARRIVAL_DELAY]
         sector_number = [symbol for symbol in parsed if symbol.name == SECTOR_NUMBER]
         sector_diff = [symbol for symbol in parsed if symbol.name == SECTOR_DIFF]
-        reroute = [symbol for symbol in parsed if symbol.name in REROUTE]
-        reconfig = [symbol for symbol in parsed if symbol.name in RECONFIG]
-        
+        reroute = [symbol for symbol in parsed if symbol.name == REROUTE]
+        reconfig = [symbol for symbol in parsed if symbol.name == RECONFIG]
+
         current_time = time.time() - self.total_time_start
-        self.final_model = Model(overload, arrival_delay, sector_number, sector_diff, reroute, reconfig, flights, navpoint_flights, navaid_sector_time, self.grounding_time, current_time, model.optimality_proven)
+        self.final_model = Model(overload, arrival_delay, sector_number, sector_diff, reroute, reconfig, flights, navpoint_flights, self.grounding_time, current_time, model.optimality_proven,
+                                 evaluation_window=self.evaluation_window,
+                                 arrival_delay_metric=self.arrival_delay_metric)
         if self.report_solver_stats:
             self.final_model.set_solver_summary({
                 "SOLVER-COST": list(model.cost),
@@ -333,7 +368,8 @@ class Solver:
 
 class Model:
 
-    def __init__(self, overloads, arrival_delay, sector_number, sector_diff, reroute, reconfig, flights, navpoint_flights, navaid_sector_time, grounding_time, current_time, computation_finished):
+    def __init__(self, overloads, arrival_delay, sector_number, sector_diff, reroute, reconfig, flights, navpoint_flights, grounding_time, current_time, computation_finished,
+                 evaluation_window=None, arrival_delay_metric=None):
 
         self.overloads = overloads
         self.arrival_delays = arrival_delay
@@ -347,7 +383,11 @@ class Model:
         self.flights = flights
 
         self.navpoint_flights = navpoint_flights
-        self.navaid_sector_time = navaid_sector_time
+
+        # See the Solver constructor: the window SECTOR-NUMBER and RECONFIG are scored over, and
+        # how the delay they are reported beside was measured.
+        self.evaluation_window = evaluation_window
+        self.arrival_delay_metric = arrival_delay_metric
 
         self.grounding_time = grounding_time
         self.current_time = current_time
@@ -377,6 +417,11 @@ class Model:
         output_dict["GROUNDING-TIME"] = self.grounding_time
         output_dict["TOTAL-TIME-TO-THIS-POINT"] = self.current_time
         output_dict["COMPUTATION-FINISHED"] = self.computation_finished
+        # Which reading of t_actarr - t_exparr produced ARRIVAL-DELAY above, as 01 and 04 report
+        # it on their final lines. Omitted when nothing was passed, so a caller that builds a
+        # Model directly still gets exactly the keys it always got.
+        if self.arrival_delay_metric is not None:
+            output_dict["ARRIVAL-DELAY-METRIC"] = str(self.arrival_delay_metric)
         if self.solver_summary:
             output_dict.update(self.solver_summary)
 
@@ -390,10 +435,27 @@ class Model:
         overload_sum = sum([int(symbol.arguments[2].number) for symbol in self.overloads])
         return overload_sum
     
+    def _asp_time_axis(self):
+        """How many timesteps this model covers: the encoding's `time/1` domain.
+
+        `sector_number(T,NUM)` is derived for every `time(T)`, so the highest T among those atoms
+        IS the axis. A count series like reconfig cannot say this for itself -- it is silent
+        wherever the count is zero -- which is why both metrics ask here.
+        """
+        if not self.sector_numbers:
+            return None
+        return max(symbol.arguments[0].number for symbol in self.sector_numbers) + 1
+
     def get_total_reconfig(self):
 
-        total = sum(1 for reroute in self.reconfig)
-        return total
+        # One per (navpoint, timestep) that differs from the reference allocation, summed over
+        # the instance's window rather than over this run's own time axis. See the note in the
+        # Solver constructor; padding repeats the last column's cells, which is what a persisting
+        # reconfiguration means.
+        per_timestep = Counter(symbol.arguments[1].number for symbol in self.reconfig)
+        total = sum(series_to_window(per_timestep, self.evaluation_window,
+                                     own_width=self._asp_time_axis()))
+        return int(total)
 
     def get_total_atfm_delay(self):
 
@@ -403,8 +465,13 @@ class Model:
 
     def get_total_sector_number(self):
 
-        total = sum(operator.attrgetter("arguments")(sector_number)[1].number for sector_number in self.sector_numbers)
-        return total
+        # The open sectors per timestep, summed over the instance's window rather than over this
+        # run's own time axis; see the note in the Solver constructor.
+        per_timestep = {symbol.arguments[0].number: symbol.arguments[1].number
+                        for symbol in self.sector_numbers}
+        total = sum(series_to_window(per_timestep, self.evaluation_window,
+                                     own_width=self._asp_time_axis()))
+        return int(total)
 
     def get_total_sector_diff(self):
 
@@ -431,6 +498,3 @@ class Model:
     
     def get_navpoint_flights(self):
         return self.navpoint_flights
-    
-    def get_navaid_sector_time_assignment(self):
-        return self.navaid_sector_time

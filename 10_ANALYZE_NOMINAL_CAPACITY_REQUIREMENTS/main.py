@@ -22,6 +22,7 @@ from edge_cost_bootstrap import edge_duration_timesteps, load_graph_edges
 from navpoint_sector_allocation_bootstrap import (
     build_assignment as build_navpoint_sector_assignment,
     load_schedule_for as load_navpoint_sector_schedule,
+    to_window as to_evaluation_window,
 )
 
 import argparse
@@ -115,6 +116,10 @@ class Main:
     """Application entry‑point.
 
    """
+
+    #: The timesteps SECTOR-NUMBER and RECONFIG are summed over, set from the initial
+    #: allocation's width when the run builds it. None => score the matrix as it stands.
+    _evaluation_window = None
 
     def __init__(
         self,
@@ -312,6 +317,10 @@ class Main:
         navaid_sector_time_assignment = self.create_initial_navpoint_sector_assignment(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity,
                                                                                         schedule=self.navaid_sector_schedule, airports=self.airports)
 
+        # The window SECTOR-NUMBER and RECONFIG are scored over; see
+        # common/navpoint_sector_allocation.evaluation_window.
+        self._evaluation_window = int(navaid_sector_time_assignment.shape[1])
+
         # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
         converted_navpoint_matrix, _ = self.instance_navpoint_matrix(self.flights, navaid_sector_time_assignment.shape[1], fill_value=-1)
         #converted_instance_matrix, planned_arrival_times = OptimizeFlights.instance_to_matrix_vectorized(self.flights, self.airplane_flight, navaid_sector_time_assignment.shape[1], self._timestep_granularity, navaid_sector_time_assignment)
@@ -401,7 +410,8 @@ class Main:
         # Track to Weights & Biases when enabled
         current_time = time.time() - original_start_time
 
-        number_sectors = self.compute_total_number_sectors(navaid_sector_time_assignment)
+        number_sectors = self.compute_total_number_sectors(
+            to_evaluation_window(navaid_sector_time_assignment, self._evaluation_window))
 
         if self._wandb_log is not None:
 
@@ -1129,12 +1139,16 @@ class Main:
             
             iteration += 1
 
-            number_sectors = self.compute_total_number_sectors(navaid_sector_time_assignment)
+            # Both sums run over the window the INSTANCE defines, not this run's own horizon, so a
+            # widened matrix cannot inflate them. SECTOR-DIFF stays on the run's own axis.
+            scored_navaid_sector_time_assignment = to_evaluation_window(
+                navaid_sector_time_assignment, self._evaluation_window)
+            number_sectors = self.compute_total_number_sectors(scored_navaid_sector_time_assignment)
             sector_diff = np.count_nonzero(navaid_sector_time_assignment[:, 1:] != navaid_sector_time_assignment[:, :-1])
 
-            diff_tmp = navaid_sector_time_assignment.shape[1] - original_navaid_sector_time_assignment.shape[1]
-            tmp_navaid_sector_time_assignment = np.hstack([original_navaid_sector_time_assignment, np.repeat(original_navaid_sector_time_assignment[:, [-1]], diff_tmp, axis=1)])
-            number_sector_reconfigurations = np.count_nonzero(navaid_sector_time_assignment != tmp_navaid_sector_time_assignment)
+            tmp_navaid_sector_time_assignment = to_evaluation_window(
+                original_navaid_sector_time_assignment, self._evaluation_window)
+            number_sector_reconfigurations = np.count_nonzero(scored_navaid_sector_time_assignment != tmp_navaid_sector_time_assignment)
 
             original_max_time_converted = original_converted_instance_matrix.shape[1]  # original_max_time
             rerouted_mask = np.any(converted_instance_matrix[:, :original_max_time_converted] != original_converted_instance_matrix, axis=1)     # True if flight differs anywhere
@@ -1236,12 +1250,16 @@ class Main:
         #per_flight   = delay.tolist()
 
         # Track to Weights & Biases when enabled
-        number_sectors = self.compute_total_number_sectors(navaid_sector_time_assignment)
+        # Both sums run over the window the INSTANCE defines, not this run's own horizon, so a
+        # widened matrix cannot inflate them. SECTOR-DIFF stays on the run's own axis.
+        scored_navaid_sector_time_assignment = to_evaluation_window(
+            navaid_sector_time_assignment, self._evaluation_window)
+        number_sectors = self.compute_total_number_sectors(scored_navaid_sector_time_assignment)
         sector_diff = np.count_nonzero(navaid_sector_time_assignment[:, 1:] != navaid_sector_time_assignment[:, :-1])
 
-        diff_tmp = navaid_sector_time_assignment.shape[1] - original_navaid_sector_time_assignment.shape[1]
-        tmp_navaid_sector_time_assignment = np.hstack([original_navaid_sector_time_assignment, np.repeat(original_navaid_sector_time_assignment[:, [-1]], diff_tmp, axis=1)])
-        number_sector_reconfigurations = np.count_nonzero(navaid_sector_time_assignment != tmp_navaid_sector_time_assignment)
+        tmp_navaid_sector_time_assignment = to_evaluation_window(
+            original_navaid_sector_time_assignment, self._evaluation_window)
+        number_sector_reconfigurations = np.count_nonzero(scored_navaid_sector_time_assignment != tmp_navaid_sector_time_assignment)
 
         original_max_time_converted = original_converted_instance_matrix.shape[1]  # original_max_time
         rerouted_mask = np.any(converted_instance_matrix[:, :original_max_time_converted] != original_converted_instance_matrix, axis=1)     # True if flight differs anywhere

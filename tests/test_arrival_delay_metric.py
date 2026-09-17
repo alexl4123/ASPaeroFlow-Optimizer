@@ -163,5 +163,48 @@ class TestEveryFolderExposesTheOption(unittest.TestCase):
                     self.assertIn(m, out.stdout, f"{rel} help does not mention {m}")
 
 
+class TestTheBenchmarkCallerNamesTheMetric(unittest.TestCase):
+    """A campaign's ARRIVAL-DELAY column must be one definition by construction.
+
+    The caller used to pass no metric at all, so every system fell back to its own default. They
+    all default to the same reading today, which made the column comparable BY COINCIDENCE: one
+    folder changing its default would have produced a silently mixed column, with nothing in the
+    CSVs to say so.
+    """
+
+    PATHS = {key: Path(f"/instance/{key}.csv") for key in
+             ("graph-edges", "sectors", "flights", "airports", "airplanes",
+              "airplane-flight", "navaid-sector")}
+
+    def _caller(self):
+        import importlib.util
+        folder = REPO / "06_benchmark_start_script"
+        if str(folder) not in sys.path:
+            sys.path.insert(0, str(folder))
+        spec = importlib.util.spec_from_file_location(
+            "benchmark_caller", folder / "start_benchmark_caller.py")
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+        except ImportError as exc:                    # psutil is the runner's own dependency
+            self.skipTest(f"benchmark caller not importable: {exc}")
+        return module
+
+    def test_every_built_command_names_the_metric(self):
+        caller = self._caller()
+        system = {"script": REPO / "02_ASP" / "main.py", "encoding": None, "verbosity": None}
+        for metric in ad.ARRIVAL_DELAY_METRICS:
+            with self.subTest(metric=metric):
+                cmd = caller.build_command(system, self.PATHS, "python", 1,
+                                           arrival_delay_metric=metric)
+                self.assertIn(f"--arrival-delay-metric={metric}", cmd)
+
+    def test_the_default_is_the_repository_default(self):
+        caller = self._caller()
+        system = {"script": REPO / "04_MIP" / "main.py", "encoding": None, "verbosity": None}
+        cmd = caller.build_command(system, self.PATHS, "python", 1)
+        self.assertIn(f"--arrival-delay-metric={ad.DEFAULT_ARRIVAL_DELAY_METRIC}", cmd)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

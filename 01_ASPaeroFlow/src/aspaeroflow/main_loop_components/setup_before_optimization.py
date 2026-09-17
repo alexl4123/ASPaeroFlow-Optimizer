@@ -5,6 +5,7 @@ from src.aspaeroflow.edge_cost_bootstrap import edge_duration_timesteps, load_gr
 from src.aspaeroflow.navpoint_sector_allocation_bootstrap import (
     build_assignment as build_navpoint_sector_assignment,
     load_schedule_for as load_navpoint_sector_schedule,
+    to_window as to_evaluation_window,
 )
 
 import argparse
@@ -170,6 +171,10 @@ class SetupBeforeOptimization:
             navaid_sector_time_assignment = self.create_initial_navpoint_sector_assignment(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity,
                                                                                             schedule=self.navaid_sector_schedule, airports=self.airports)
 
+            # The window SECTOR-NUMBER and RECONFIG are scored over, fixed here and never again:
+            # this run may widen its matrices later, and the two metrics must not grow with them.
+            self._evaluation_window = int(navaid_sector_time_assignment.shape[1])
+
             # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
             converted_navpoint_matrix, _ = self.instance_navpoint_matrix(self.flights, navaid_sector_time_assignment.shape[1], fill_value=-1)
             #converted_instance_matrix, planned_arrival_times = OptimizeFlights.instance_to_matrix_vectorized(self.flights, self.airplane_flight, navaid_sector_time_assignment.shape[1], self._timestep_granularity, navaid_sector_time_assignment)
@@ -244,7 +249,8 @@ class SetupBeforeOptimization:
             # Track to Weights & Biases when enabled
             current_time = time.time() - original_start_time
 
-            number_sectors = compute_total_number_sectors(navaid_sector_time_assignment)
+            number_sectors = compute_total_number_sectors(
+                to_evaluation_window(navaid_sector_time_assignment, self._evaluation_window))
 
             if self._wandb_log is not None:
 
