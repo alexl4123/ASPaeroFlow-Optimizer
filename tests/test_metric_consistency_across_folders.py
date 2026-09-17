@@ -164,6 +164,30 @@ class TestEveryFolderScoresOnTheInstanceWindow(unittest.TestCase):
                       "is max_time*T_gran + 1 and not the instance's window")
 
 
+class TestOneRerouteDefinitionPerSystem(unittest.TestCase):
+    """REROUTE is "the flight's trajectory changed", read off the NAVPOINT rows everywhere.
+
+    04_MIP's final result line always did that, while the lines mip_model.py prints during the
+    search compared the SECTOR rows -- so a timed-out MIP row and a completed one carried two
+    different quantities under one column heading. That is invisible in the CSV, which is why it
+    is checked here rather than by comparing numbers.
+    """
+
+    REROUTE_MASK = re.compile(r"rerouted_mask\s*=\s*np\.any\(\s*([^\n]*?),\s*axis=1\)")
+
+    def test_every_reroute_site_compares_navpoint_matrices(self):
+        for rel in ["04_MIP/main.py", "04_MIP/mip_model.py",
+                    "01_ASPaeroFlow/src/aspaeroflow/main_loop_components/after_optimization.py",
+                    "01_ASPaeroFlow/src/aspaeroflow/main_loop_components/evaluate_solution.py"]:
+            text = "\n".join(line for line in (REPO / rel).read_text().splitlines()
+                             if not line.strip().startswith("#"))
+            for expression in self.REROUTE_MASK.findall(text):
+                with self.subTest(file=rel, expression=expression.strip()):
+                    self.assertEqual(expression.count("navpoint"), 2,
+                                     f"{rel}: REROUTE is computed from {expression.strip()}, "
+                                     "which is not a comparison of two navpoint matrices")
+
+
 class TestTheAspCollectsAtomsByExactName(unittest.TestCase):
     """`symbol.name in NAVPOINT_FLIGHT` is a SUBSTRING test, and "flight" is a substring."""
 
