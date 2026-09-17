@@ -33,6 +33,7 @@ import warnings
 from ..auxiliaries.dto_helpers import convert_dto_to_global_vars, convert_global_vars_to_dto
 from ..auxiliaries.computation_helpers import compute_total_number_sectors, last_valid_pos, system_loads_computation, minimize_number_of_sectors_new
 from ..auxiliaries.communication_helpers import decode_ndarray, encode_ndarray
+from ..navpoint_sector_allocation_bootstrap import to_window as to_evaluation_window
 
 from ..optimize_flights import OptimizeFlights
 
@@ -480,12 +481,16 @@ class EvaluateSolution:
         
         iteration += 1
 
-        number_sectors = compute_total_number_sectors(navaid_sector_time_assignment)
+        # Both sums run over the window the INSTANCE defines, not this run's own horizon; see the
+        # note at the same computation in after_optimization.py. SECTOR-DIFF is unchanged.
+        scored_navaid_sector_time_assignment = to_evaluation_window(
+            navaid_sector_time_assignment, self._evaluation_window)
+        number_sectors = compute_total_number_sectors(scored_navaid_sector_time_assignment)
         sector_diff = np.count_nonzero(navaid_sector_time_assignment[:, 1:] != navaid_sector_time_assignment[:, :-1])
 
-        diff_tmp = navaid_sector_time_assignment.shape[1] - original_navaid_sector_time_assignment.shape[1]
-        tmp_navaid_sector_time_assignment = np.hstack([original_navaid_sector_time_assignment, np.repeat(original_navaid_sector_time_assignment[:, [-1]], diff_tmp, axis=1)])
-        number_sector_reconfigurations = np.count_nonzero(navaid_sector_time_assignment != tmp_navaid_sector_time_assignment)
+        tmp_navaid_sector_time_assignment = to_evaluation_window(
+            original_navaid_sector_time_assignment, self._evaluation_window)
+        number_sector_reconfigurations = np.count_nonzero(scored_navaid_sector_time_assignment != tmp_navaid_sector_time_assignment)
 
         original_max_time_converted = original_converted_instance_matrix.shape[1]  # original_max_time
         #rerouted_mask = np.any(converted_instance_matrix[:, :original_max_time_converted] != original_converted_instance_matrix, axis=1)     # True if flight differs anywhere

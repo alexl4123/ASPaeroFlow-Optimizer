@@ -50,7 +50,10 @@ from concurrent.futures import ProcessPoolExecutor
 
 from mip_model import MIPModel, MAX, LINEAR, TRIANGULAR
 from edge_cost_bootstrap import edge_duration_timesteps, load_graph_edges
-from navpoint_sector_allocation_bootstrap import load_schedule_for as load_navpoint_sector_schedule
+from navpoint_sector_allocation_bootstrap import (
+    load_schedule_for as load_navpoint_sector_schedule,
+    to_window as to_evaluation_window,
+)
 from datetime import datetime, timezone
 
 # ---------------------------------------------------------------------------
@@ -93,6 +96,10 @@ class Main:
     """Application entry‑point.
 
    """
+
+    #: The timesteps SECTOR-NUMBER and RECONFIG are summed over, set from the initial
+    #: allocation's width when the run builds it. None => score the matrix as it stands.
+    _evaluation_window = None
 
     def __init__(
         self,
@@ -241,6 +248,12 @@ class Main:
         navaid_sector_time_assignment = MIPModel.create_initial_navpoint_sector_assignment(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity,
                                                                                            schedule=self.navaid_sector_schedule, airports=self.airports)
 
+        # The window SECTOR-NUMBER and RECONFIG are scored over: what the INSTANCE defines, not
+        # the horizon this run grows to. The MIP widens its matrices every time it reopens the
+        # model, so without this the same unchanged sectorisation scored 1364 here against 275
+        # from 02_ASP. See common/navpoint_sector_allocation.evaluation_window.
+        self._evaluation_window = int(navaid_sector_time_assignment.shape[1])
+
         # 1.) Create flights matrix (|F|x|T|) --> For easier matrix handling
         #converted_instance_matrix, planned_arrival_times = self.instance_to_matrix_vectorized(self.flights, self.airplane_flight, self.navaid_sector,  self._max_time, self._timestep_granularity, navaid_sector_lookup)
 
@@ -272,7 +285,8 @@ class Main:
         current_time = time.time() - start_time
         capacity_overload_mask = capacity_demand_diff_matrix < 0
         number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
-        number_sectors = self.compute_total_number_sectors(navaid_sector_time_assignment)
+        number_sectors = self.compute_total_number_sectors(
+            to_evaluation_window(navaid_sector_time_assignment, self._evaluation_window))
         output_dict = {}
         output_dict["OVERLOAD"] = int(number_of_conflicts)
         output_dict["ARRIVAL-DELAY"] = int(0)
@@ -312,14 +326,19 @@ class Main:
 
             number_of_conflicts = np.abs(capacity_demand_diff_matrix[capacity_overload_mask]).sum()
             total_delay  = delay.sum()
-            number_sectors = self.compute_total_number_sectors(navaid_sector_time_assignment)
+            # Both sums run over the instance's window; SECTOR-DIFF keeps the run's own axis.
+            scored_navaid_sector_time_assignment = to_evaluation_window(
+                navaid_sector_time_assignment, self._evaluation_window)
+            number_sectors = self.compute_total_number_sectors(scored_navaid_sector_time_assignment)
             sector_diff = np.count_nonzero(navaid_sector_time_assignment[:, 1:] != navaid_sector_time_assignment[:, :-1])
 
             original_max_time_converted = original_converted_instance_matrix.shape[1]  # original_max_time
             #rerouted_mask = np.any(converted_instance_matrix[:, :original_max_time_converted] != original_converted_instance_matrix, axis=1)     # True if flight differs anywhere
             rerouted_mask = np.any(converted_navpoint_matrix[:, :original_max_time_converted] != original_converted_navpoint_matrix, axis=1)     # True if flight differs anywhere
             number_reroutes = int(np.count_nonzero(rerouted_mask))
-            number_sector_reconfigurations = np.count_nonzero(navaid_sector_time_assignment != old_navaid_sector_time_assignment)
+            number_sector_reconfigurations = np.count_nonzero(
+                scored_navaid_sector_time_assignment
+                != to_evaluation_window(old_navaid_sector_time_assignment, self._evaluation_window))
         else:
             number_of_conflicts = -10
             total_delay = -10
@@ -390,7 +409,8 @@ class Main:
 
         max_delay = 24
 
-        mipModel = MIPModel(self.sectors, self.airports, max_time, self._max_explored_vertices, self._seed, self._timestep_granularity, self.verbosity, self._number_threads, navaid_sector_lookup, self._composite_sector_function, self._sector_capacity_factor,original_converted_instance_matrix, navaid_sector_time_assignment, old_navaid_sector_time_assignment, start_time, arrival_delay_metric=self._arrival_delay_metric)
+        mipModel = MIPModel(self.sectors, self.airports, max_time, self._max_explored_vertices, self._seed, self._timestep_granularity, self.verbosity, self._number_threads, navaid_sector_lookup, self._composite_sector_function, self._sector_capacity_factor,original_converted_instance_matrix, navaid_sector_time_assignment, old_navaid_sector_time_assignment, start_time, arrival_delay_metric=self._arrival_delay_metric,
+                            evaluation_window=self._evaluation_window)
 
         converted_instance_matrix, converted_navpoint_matrix, capacity_time_matrix = mipModel.create_model(converted_instance_matrix, capacity_time_matrix, unit_graphs, self.airplanes, max_delay, planned_arrival_times, airplane_flight, self.flights, navaid_sector_time_assignment, converted_navpoint_matrix)
 

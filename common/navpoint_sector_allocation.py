@@ -192,7 +192,14 @@ def to_window(matrix: np.ndarray, width: int) -> np.ndarray:
     allocation that stops being stated simply persists.
 
     Returns the array itself when it is already that wide, so the common case copies nothing.
+
+    `width` of None means "leave it alone". A solver sets its window when it builds the initial
+    allocation, so None can only reach here from a path that never built one -- the explainability
+    and controller entry points, which feed a prepared state in and report no benchmark line.
+    Those behave exactly as they did before the window existed.
     """
+    if width is None:
+        return np.asarray(matrix)
     matrix = np.asarray(matrix)
     width = int(width)
     if matrix.ndim != 2:
@@ -216,8 +223,12 @@ def series_to_window(per_timestep, width: int, default=0):
     allocation's last column repeats that column's contribution, so the series is padded with
     its last value; a longer series is cut, exactly as `to_window` cuts columns.
 
-    `per_timestep` maps timestep -> value; absent timesteps count as `default`.
+    `per_timestep` maps timestep -> value; absent timesteps count as `default`. `width` of None
+    means "leave it alone", as in `to_window`.
     """
+    if width is None:
+        return [per_timestep.get(t, default) for t in range(max(per_timestep) + 1)] \
+            if per_timestep else []
     width = int(width)
     if width < 0:
         raise ValueError(f"evaluation window must not be negative (got {width})")
