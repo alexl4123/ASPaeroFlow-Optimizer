@@ -22,33 +22,49 @@ it says, so re-running a single task is `sbatch --array=<task_id>` and nothing e
 
 TIERS. Each is a separate sbatch submission with its own -t and --cpus-per-task, because their
 job shapes differ. The script prints the exact submission lines for the manifest it just wrote.
+Every tier runs single-threaded clasp search: the author wants the ablation to measure the
+search configuration alone, so there is no thread tier.
 
-    P  preflight   4 jobs.   One instance, four profiles, short limit. Proves the flags reach
-                   clingo and that --solver-stats lands in the recorded JSON before anything
-                   large is launched.
+    P  preflight   One instance, four profiles, the two tier-A systems, short limit. Proves the
+                   flags reach clingo and that --solver-stats lands in the recorded JSON before
+                   anything large is launched.
     A  main grid   4 profiles x every small instance, running the two exact configurations the
                    large family also runs (05_ASP_rp_dp_sp, 05_ASP_rp_d_sp). This tier produces
                    the recommendation.
-    B  breadth     4 profiles x all 27 exact-ASP variants on a small stratified subsample.
-                   Answers "does the tier-A recommendation generalise across the variant grid?"
-                   and carries a built-in control: the encoding's only live #heuristic directive
-                   grounds to nothing unless dynamic sectorisation is PARTIAL, so `domain` must
-                   behave exactly like `default` on every _ns and _s variant. If it does not,
-                   something in the pipeline is wrong.
-    C  threads     A deliberately small thread probe, {default, usc-domain} at 4 threads on one
-                   region, compared against the 1-thread cells tier A already has. Separate
-                   because 4 threads changes what is being measured -- see the design document.
+    B  breadth     4 profiles x TEN exact-ASP variants (variant set "breadth10") on a small
+                   stratified subsample. Answers "does the tier-A recommendation generalise across
+                   the variant grid?" without paying for all 27:
 
-WHY tier A RUNS ONLY THE TWO NAMED VARIANTS
-Not only because they are the best-performing exact configurations. The benchmark caller cannot
-express any other subset: the per-variant flags (--experiment-asp-r-d-s and friends) are parsed
-and then never read in build_system_config(), so the exact-ASP systems are selectable only as
-"all 27" or as those two named singles. A four-variant tier A is not submittable today.
+                       rp_dp_sp                          the tier-A centre
+                       rp_d_sp   rp_nd_sp                ground delay varied (d, nd)
+                       rp_dp_ns  rp_dp_s                 sectorisation varied (ns, s)
+                       nr_dp_sp  r_dp_sp                 rerouting varied (nr, r)
+                       nr_nd_ns  r_d_s                   the two corners: nothing enabled, all full
+                       r_d_ns                            fully loaded without sectorisation
+
+                   One factor at a time around the centre (rp, dp, sp), plus the two corners and a
+                   fully loaded setup without sectorisation, so every level of every axis appears.
+                   It also carries the built-in control: the encoding's only live #heuristic
+                   directive grounds to nothing unless dynamic sectorisation is PARTIAL, so
+                   `domain` must behave exactly like `default` (and usc-domain like usc) on every
+                   variant that is not _sp -- five of the ten here. If it does not, something in the
+                   pipeline is wrong; analyze_asp_ablation.py checks it on whichever non-_sp cells
+                   exist.
+
+WHY tier B NEEDS ONE ROW PER SOLVER RUN
+The caller's --experiment-* flags cannot express the ten: the per-variant flags
+(--experiment-asp-r-d-s and friends) are parsed and then never read in build_system_config(), so
+the exact-ASP systems are selectable only as "all 27" or as the two named singles. Tier B therefore
+enables all 27 exactly as the "all27" variant set does and picks ONE of them per row with the
+caller's --only-system. Without --per-run-systems a tier-B row could only mean "all 27", so this
+script refuses to build tier B without it, and run_asp_ablation.slurm refuses a breadth10 row that
+names no system.
 
 Usage:
-    ./build_ablation_manifest.py                          # reads ../05_instances/problems.tsv
+    ./build_ablation_manifest.py --per-run-systems        # reads ../05_instances/problems.tsv
     ./build_ablation_manifest.py --tiers P                # preflight rows only
-    ./build_ablation_manifest.py --assume-grid            # size the campaign before the data
+    ./build_ablation_manifest.py --assume-grid --per-run-systems
+                                                          # size the campaign before the data
                                                           # has been regenerated
 """
 from __future__ import annotations
@@ -71,8 +87,23 @@ ALL_PROFILES = ("default", "usc", "domain", "usc-domain")
 
 #: How many solver runs one job performs, per variant set. "named2" is the two exact
 #: configurations run_all_benchmarks.slurm also puts on the large family; "all27" is the full
-#: ground-delay x rerouting x dynamic-sectorisation cross.
-RUNS_PER_VARIANT_SET = {"named2": 2, "all27": 27}
+#: ground-delay x rerouting x dynamic-sectorisation cross; "breadth10" is tier B's ten (see the
+#: module docstring), which exists only as one row per run.
+RUNS_PER_VARIANT_SET = {"named2": 2, "all27": 27, "breadth10": 10}
+
+#: Tiers this script knows, in submission order.
+ALL_TIERS = ("P", "A", "B")
+
+#: Tier B's variants, as the <rerouting>_<delay>_<sectorisation> suffix of the system keys
+#: all27_systems() builds. Order is the order of the rows.
+BREADTH10_VARIANTS = (
+    "rp_dp_sp",                  # centre: the tier-A configuration
+    "rp_d_sp", "rp_nd_sp",       # ground delay varied
+    "rp_dp_ns", "rp_dp_s",       # dynamic sectorisation varied
+    "nr_dp_sp", "r_dp_sp",       # rerouting varied
+    "nr_nd_ns", "r_d_s",         # the two corners
+    "r_d_ns",                    # fully loaded, no sectorisation
+)
 
 #: capacity_level of the small-scaling family in problems.tsv. That family has no PCAP sweep,
 #: so the expansion script writes NONE, and this is how the two families are told apart.
@@ -102,6 +133,26 @@ def all27_systems() -> List[str]:
     return keys
 
 
+def breadth10_systems() -> List[str]:
+    """Tier B's ten system keys, taken from all27_systems() so the index is the caller's own."""
+    by_variant = {key.split("_ASP_", 1)[1]: key for key in all27_systems()}
+    missing = [v for v in BREADTH10_VARIANTS if v not in by_variant]
+    if missing or len(set(BREADTH10_VARIANTS)) != 10:
+        raise ValueError(f"BREADTH10_VARIANTS is not ten distinct all-27 variants: {missing}")
+    return [by_variant[v] for v in BREADTH10_VARIANTS]
+
+
+def systems_of(variants: str) -> List[str]:
+    """The system keys one variant set stands for."""
+    if variants == "named2":
+        return list(NAMED2_SYSTEMS)
+    if variants == "all27":
+        return all27_systems()
+    if variants == "breadth10":
+        return breadth10_systems()
+    raise ValueError(f"unknown variant set {variants!r}")
+
+
 def verify_system_keys() -> int:
     """Compare all27_systems() with what start_benchmark_caller.py actually builds."""
     import types
@@ -128,6 +179,15 @@ def verify_system_keys() -> int:
     expected = all27_systems() + list(NAMED2_SYSTEMS)
     if built == expected:
         print(f"[ok] system keys match the caller ({len(built)} systems)")
+        # Tier B's ten are picked out of that same list with --only-system, so each has to be a
+        # key the caller builds under the "all27" flags.
+        breadth = breadth10_systems()
+        absent = [key for key in breadth if key not in built]
+        if absent:
+            print(f"[MISMATCH] breadth10 keys the caller does not build: {absent}",
+                  file=sys.stderr)
+            return 1
+        print(f"[ok] breadth10 (tier B) keys are all built by the caller: {', '.join(breadth)}")
         return 0
     print("[MISMATCH] all27_systems() disagrees with build_system_config()", file=sys.stderr)
     print(f"  caller:   {built}", file=sys.stderr)
@@ -207,7 +267,10 @@ def build_rows(problems, instances_of, args) -> List[List[str]]:
         # runner refuses the row rather than silently running all 27 if that flag is absent.
         systems = ["-"]
         if args.per_run_systems:
-            systems = list(NAMED2_SYSTEMS) if variants == "named2" else all27_systems()
+            systems = systems_of(variants)
+        elif variants == "breadth10":
+            # Guarded in main() too. A breadth10 row without a system would read as "all 27".
+            raise SystemExit("[ERROR] the breadth10 variant set needs --per-run-systems")
         for system in systems:
             runs = 1 if system != "-" else RUNS_PER_VARIANT_SET[variants]
             rows.append([
@@ -218,9 +281,9 @@ def build_rows(problems, instances_of, args) -> List[List[str]]:
     def pad_to_chunk_boundary():
         """Start every tier on a fresh array task.
 
-        Tiers are submitted separately and tier C asks for five CPUs rather than two, so an array
-        task straddling two tiers would run a four-thread unit inside a two-CPU allocation. With
-        CHUNK=1 this never pads; with CHUNK>1 it inserts rows the runner skips.
+        Tiers are submitted separately, each with its own -t, so an array task straddling two
+        tiers would run under the other tier's walltime request. With CHUNK=1 this never pads;
+        with CHUNK>1 it inserts rows the runner skips.
         """
         while args.chunk > 1 and len(rows) % args.chunk != 0:
             rows.append([str(len(rows) + 1), "PAD", "-", "0", "-", "-", "-", "-", "-", "0"])
@@ -250,14 +313,7 @@ def build_rows(problems, instances_of, args) -> List[List[str]]:
                 chosen = select(available, set(args.tier_b_sizes), {args.tier_b_seed})
                 for profile in ALL_PROFILES:
                     for inst in chosen:
-                        emit("B", profile, 1, "all27", name, inst, granularity)
-
-            elif tier == "C":
-                if args.tier_c_region not in name:
-                    continue
-                for profile in args.tier_c_profiles:
-                    for inst in available:
-                        emit("C", profile, args.tier_c_threads, "named2", name, inst, granularity)
+                        emit("B", profile, 1, "breadth10", name, inst, granularity)
 
     return rows
 
@@ -307,8 +363,8 @@ def summarise(rows, time_limit: int, chunk: int, max_array: int) -> None:
         acc["first"] = min(acc["first"], int(row[0]))
         acc["last"] = max(acc["last"], int(row[0]))
 
-    cpus = {"P": 2, "A": 2, "B": 2, "C": 5}
-    label = {"P": "preflight", "A": "main grid", "B": "variant breadth", "C": "thread probe"}
+    cpus = {"P": 2, "A": 2, "B": 2}
+    label = {"P": "preflight", "A": "main grid", "B": "variant breadth"}
 
     def hours_per_task(acc):
         """Worst-case wall time of ONE array task, which is what the -t request has to cover."""
@@ -321,7 +377,7 @@ def summarise(rows, time_limit: int, chunk: int, max_array: int) -> None:
     print("-" * 88)
     total_rows = total_runs = total_tasks = 0
     total_core_h = 0.0
-    for tier in ("P", "A", "B", "C"):
+    for tier in ALL_TIERS:
         if tier not in tiers:
             continue
         acc = tiers[tier]
@@ -348,7 +404,7 @@ def summarise(rows, time_limit: int, chunk: int, max_array: int) -> None:
               f"       `scontrol show config | grep MaxArraySize`.")
 
     print("\nSubmit one tier at a time (nothing is submitted by this script):")
-    for tier in ("P", "A", "B", "C"):
+    for tier in ALL_TIERS:
         if tier not in tiers:
             continue
         acc = tiers[tier]
@@ -373,8 +429,9 @@ def main() -> int:
                         help="Where the expansion script put the instances (default ../05_instances)")
     parser.add_argument("--out", type=Path, default=Path("ablation_tasks.tsv"),
                         help="Manifest to write (default ablation_tasks.tsv)")
-    parser.add_argument("--tiers", type=str, default="P,A,B,C",
-                        help="Comma-separated tiers to emit, in order. Default P,A,B,C.")
+    parser.add_argument("--tiers", type=str, default="P,A,B",
+                        help="Comma-separated tiers to emit, in order. Default P,A,B. Tier B "
+                             "needs --per-run-systems.")
     parser.add_argument("--time-limit", type=int, default=1800,
                         help="Per-run limit used ONLY for the cost estimate printed here "
                              "(default 1800, the value the papers use)")
@@ -390,24 +447,16 @@ def main() -> int:
     parser.add_argument("--per-run-systems", action="store_true",
                         help="Emit one row per SOLVER RUN instead of one per variant set. "
                              "Requires start_benchmark_caller.py to support --only-system, which "
-                             "the per-run job restructuring is adding. This is what turns the "
-                             "27-variant tier B from one 13.5 h job into 27 short ones.")
+                             "the per-run job restructuring added. REQUIRED for tier B, whose "
+                             "ten variants no --experiment-* flag can select.")
     parser.add_argument("--verify-system-keys", action="store_true",
                         help="Check the mirrored 27 system keys against build_system_config() "
                              "in start_benchmark_caller.py, then exit.")
 
     parser.add_argument("--tier-b-sizes", type=str, default="10,20,30,40",
-                        help="Flight counts in the tier-B subsample (default 10,20,30,40: the "
-                             "sizes where 27 variants x 4 profiles is affordable)")
+                        help="Flight counts in the tier-B subsample (default 10,20,30,40)")
     parser.add_argument("--tier-b-seed", type=int, default=11904657,
                         help="Single seed for tier B (default 11904657, the generator's own)")
-    parser.add_argument("--tier-c-region", type=str, default="CENTRAL-EUROPE",
-                        help="Substring of the problem directory used for the thread probe")
-    parser.add_argument("--tier-c-profiles", type=str, default="default,usc-domain",
-                        help="Profiles in the thread probe (default: the two extremes)")
-    parser.add_argument("--tier-c-threads", type=int, default=4,
-                        help="clasp search threads for the probe (default 4, the count measured "
-                             "at 0.18 s on an instance one thread did not close in 25 s)")
     parser.add_argument("--preflight-seed", type=int, default=11904657)
 
     parser.add_argument("--assume-grid", action="store_true",
@@ -429,14 +478,15 @@ def main() -> int:
 
     args.tiers = [t.strip().upper() for t in args.tiers.split(",") if t.strip()]
     for tier in args.tiers:
-        if tier not in ("P", "A", "B", "C"):
-            raise SystemExit(f"[ERROR] unknown tier {tier!r}; expected P, A, B or C")
+        if tier not in ALL_TIERS:
+            raise SystemExit(f"[ERROR] unknown tier {tier!r}; expected one of "
+                             f"{', '.join(ALL_TIERS)} (the 4-thread tier C was dropped: the "
+                             f"ablation measures single-threaded search only)")
+    if "B" in args.tiers and not args.per_run_systems:
+        raise SystemExit("[ERROR] tier B runs ten of the 27 exact-ASP variants, which only "
+                         "--only-system can select: pass --per-run-systems (or leave B out of "
+                         "--tiers). Without it a tier-B row could only mean all 27.")
     args.tier_b_sizes = [int(x) for x in args.tier_b_sizes.split(",") if x.strip()]
-    args.tier_c_profiles = [p.strip() for p in args.tier_c_profiles.split(",") if p.strip()]
-    for profile in args.tier_c_profiles:
-        if profile not in ALL_PROFILES:
-            raise SystemExit(f"[ERROR] unknown profile {profile!r}; expected one of "
-                             f"{', '.join(ALL_PROFILES)}")
     args.sizes_all = [int(x) for x in args.sizes.split(",") if x.strip()]
     seeds_all = [int(x) for x in args.seeds.split(",") if x.strip()]
 

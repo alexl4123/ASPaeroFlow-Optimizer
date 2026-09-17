@@ -26,14 +26,14 @@
 # deliberately the shape the per-run job restructuring wants; if that work has landed and the
 # caller understands --only-instance / --only-system, this script uses them automatically.
 #
-# HOW TO RUN IT (build the index first; it prints these lines itself):
+# HOW TO RUN IT (build the index first; it prints the exact lines, waves and ROW_OFFSET included):
 #
-#   ./build_ablation_manifest.py
-#   sbatch -t 02:00:00 --cpus-per-task=2 --array=1-4%40      run_asp_ablation.slurm   # preflight
-#   # ... read the preflight report, THEN:
-#   sbatch -t 02:00:00 --cpus-per-task=2 --array=5-804%40    run_asp_ablation.slurm   # tier A
-#   sbatch -t 15:00:00 --cpus-per-task=2 --array=805-884%40  run_asp_ablation.slurm   # tier B
-#   sbatch -t 02:00:00 --cpus-per-task=5 --array=885-964%40  run_asp_ablation.slurm   # tier C
+#   ./build_ablation_manifest.py --per-run-systems
+#   sbatch -t 02:00:00 --cpus-per-task=2 --export=ALL,CHUNK=1,ROW_OFFSET=0 --array=1-8%40 run_asp_ablation.slurm   # preflight
+#   # ... read the preflight report, THEN tier A (1,600 rows) and tier B (800 rows), as printed.
+#
+# TIERS: P preflight, A main grid (named2), B breadth (breadth10: ten of the 27 variants, one row
+# per solver run). There is no thread tier any more: every unit runs single-threaded search.
 #
 # PARTITION: broadwell, for the same reason run_all_benchmarks.slurm pins it -- long jobs
 # elsewhere get cancelled. If broadwell is a node FEATURE here rather than a partition, keep your
@@ -46,11 +46,10 @@
 # so the %N in --array should be that number times the node count. Check with:
 #     sinfo -N -p broadwell -o "%n %c %m"
 #
-# THREADS: tier C runs four clasp threads, which needs --cpus-per-task=5 (four search threads
-# plus the Python parent). It reaches clasp as --solver-arg=--parallel-mode=4, NOT as
-# --number-threads: the caller hard-codes SOLVER_SEARCH_THREADS = {"02_ASP": 1} as a module
-# constant and exposes no CLI flag for it. build_options() drops the generated --parallel-mode=1
-# in favour of the later raw flag, which is what makes the override work at all.
+# THREADS: every tier the manifest builder emits runs ONE clasp search thread, the caller's
+# SOLVER_SEARCH_THREADS = {"02_ASP": 1}. The threads column is still honoured below (a value above 1
+# would reach clasp as --solver-arg=--parallel-mode=N and need more --cpus-per-task), but no tier
+# produces one: the 4-thread tier C was dropped.
 
 set -euo pipefail
 
@@ -138,6 +137,17 @@ run_unit () {
       # The full ground-delay x rerouting x dynamic-sectorisation cross. The two named singles
       # are switched OFF here: they are duplicates of two of the 27 under different keys, and
       # running both would pay twice for the same measurement.
+      EXPERIMENTS+=( --experiment-all-asp-variants=1
+                     --experiment-asp-rp-dp-sp=0 --experiment-asp-rp-d-sp=0 ) ;;
+    breadth10)
+      # Tier B: ten of the 27. No --experiment-* flag selects them, so the 27 are enabled exactly
+      # as for all27 and the row's SYSTEM column picks one with --only-system. A breadth10 row
+      # without a system would silently run all 27, so it is refused.
+      if [ "$SYSTEM" = "-" ]; then
+        echo "[ERROR] row ${row_id}: variant set breadth10 needs one system per row;" >&2
+        echo "        rebuild the manifest with ./build_ablation_manifest.py --per-run-systems" >&2
+        return 1
+      fi
       EXPERIMENTS+=( --experiment-all-asp-variants=1
                      --experiment-asp-rp-dp-sp=0 --experiment-asp-rp-d-sp=0 ) ;;
     *) echo "[ERROR] row ${row_id}: unknown variant set '${VARIANTS}'" >&2; return 1 ;;
