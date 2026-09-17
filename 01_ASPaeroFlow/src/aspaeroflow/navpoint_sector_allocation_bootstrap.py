@@ -35,8 +35,11 @@ from common.navpoint_sector_allocation import (  # noqa: E402
     change_points,
     describe,
     epoch_starts,
+    evaluation_window,
     is_time_varying,
     load_schedule,
     load_schedule_for,
     schedule_path_beside,
+    series_to_window,
+    to_window,
 )
