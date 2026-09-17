@@ -29,7 +29,15 @@ if str(REPO) not in sys.path:
 
 
 def _load_02_asp_solver():
-    """02_ASP runs as a top-level script, so its solver is loaded by path."""
+    """02_ASP runs as a top-level script, so its solver is loaded by path.
+
+    Its own folder goes on sys.path first, because that is where the module finds its siblings
+    when main.py runs it for real: solver.py reaches common/ through
+    02_ASP/navpoint_sector_allocation_bootstrap.py, exactly as translate.py does.
+    """
+    folder = str(REPO / "02_ASP")
+    if folder not in sys.path:
+        sys.path.insert(0, folder)
     spec = util.spec_from_file_location("asp02_solver", REPO / "02_ASP" / "solver.py")
     module = util.module_from_spec(spec)
     sys.modules[spec.name] = module

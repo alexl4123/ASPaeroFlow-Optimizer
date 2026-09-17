@@ -21,8 +21,23 @@ RECONFIG: Final[str] = "reconfig"
 
 FLIGHT: Final[str] = "flight"
 NAVPOINT_FLIGHT: Final[str] = "navpoint_flight"
-NAVAID_SECTOR: Final[str] = "navaid_sector"
-SIGNATURES: Final[set[str]] = {ARRIVAL_DELAY, FLIGHT, REROUTE, NAVPOINT_FLIGHT, NAVAID_SECTOR, OVERLOAD, SECTOR_NUMBER, SECTOR_DIFF, RECONFIG}
+
+#: The atom encoding.lp derives for the navpoint-to-sector allocation. It is deliberately NOT
+#: collected: there is one per (navpoint, timestep), and every improving model would pay for all
+#: of them. The name is written out here because the constant it replaces read "navaid_sector",
+#: which matches no atom this encoding ever derives -- so the allocation collected was always
+#: empty, and nothing said so. 02_ASP/main.py writes the allocation from the instance instead;
+#: see the note there.
+NAVPOINT_SECTOR: Final[str] = "navpoint_sector"
+
+#: The atom names collected from a model. Test membership with `==` against the constants above,
+#: or with `in` against THIS SET -- never with `in` against one of the strings, because
+#: `"flight" in "navpoint_flight"` is a true SUBSTRING test. That is how flight/3 atoms used to
+#: be collected as navpoint flights and overwrite the saved navpoint matrix with the sector one.
+SIGNATURES: Final[frozenset] = frozenset({
+    ARRIVAL_DELAY, FLIGHT, REROUTE, NAVPOINT_FLIGHT, OVERLOAD,
+    SECTOR_NUMBER, SECTOR_DIFF, RECONFIG,
+})
 
 def _solver_summary(ctl, models_reported):
     """Clingo's own view of the finished search.
@@ -163,19 +178,22 @@ class Solver:
         parsed = [symbol for symbol in model.symbols(atoms=True) if symbol.name in SIGNATURES]
 
 
-        flights = [symbol for symbol in parsed if symbol.name in FLIGHT]
-        navpoint_flights = [symbol for symbol in parsed if symbol.name in NAVPOINT_FLIGHT]
-        navaid_sector_time = [symbol for symbol in parsed if symbol.name in NAVAID_SECTOR]
+        # Exact names throughout. `symbol.name in FLIGHT` asked whether the name is a SUBSTRING
+        # of "flight", and `in NAVPOINT_FLIGHT` whether it is a substring of "navpoint_flight" --
+        # which "flight" is, so every flight/3 atom was also collected as a navpoint flight and
+        # the saved converted_navpoint_matrix came out as a copy of the sector matrix.
+        flights = [symbol for symbol in parsed if symbol.name == FLIGHT]
+        navpoint_flights = [symbol for symbol in parsed if symbol.name == NAVPOINT_FLIGHT]
 
         overload = [symbol for symbol in parsed if symbol.name == OVERLOAD]
         arrival_delay = [symbol for symbol in parsed if symbol.name == ARRIVAL_DELAY]
         sector_number = [symbol for symbol in parsed if symbol.name == SECTOR_NUMBER]
         sector_diff = [symbol for symbol in parsed if symbol.name == SECTOR_DIFF]
-        reroute = [symbol for symbol in parsed if symbol.name in REROUTE]
-        reconfig = [symbol for symbol in parsed if symbol.name in RECONFIG]
-        
+        reroute = [symbol for symbol in parsed if symbol.name == REROUTE]
+        reconfig = [symbol for symbol in parsed if symbol.name == RECONFIG]
+
         current_time = time.time() - self.total_time_start
-        self.final_model = Model(overload, arrival_delay, sector_number, sector_diff, reroute, reconfig, flights, navpoint_flights, navaid_sector_time, self.grounding_time, current_time, model.optimality_proven)
+        self.final_model = Model(overload, arrival_delay, sector_number, sector_diff, reroute, reconfig, flights, navpoint_flights, self.grounding_time, current_time, model.optimality_proven)
         if self.report_solver_stats:
             self.final_model.set_solver_summary({
                 "SOLVER-COST": list(model.cost),
@@ -205,7 +223,7 @@ class Solver:
 
 class Model:
 
-    def __init__(self, overloads, arrival_delay, sector_number, sector_diff, reroute, reconfig, flights, navpoint_flights, navaid_sector_time, grounding_time, current_time, computation_finished):
+    def __init__(self, overloads, arrival_delay, sector_number, sector_diff, reroute, reconfig, flights, navpoint_flights, grounding_time, current_time, computation_finished):
 
         self.overloads = overloads
         self.arrival_delays = arrival_delay
@@ -219,7 +237,6 @@ class Model:
         self.flights = flights
 
         self.navpoint_flights = navpoint_flights
-        self.navaid_sector_time = navaid_sector_time
 
         self.grounding_time = grounding_time
         self.current_time = current_time
@@ -303,6 +320,3 @@ class Model:
     
     def get_navpoint_flights(self):
         return self.navpoint_flights
-    
-    def get_navaid_sector_time_assignment(self):
-        return self.navaid_sector_time
