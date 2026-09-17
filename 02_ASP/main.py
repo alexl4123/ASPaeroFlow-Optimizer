@@ -424,6 +424,13 @@ def _process_start_monotonic() -> float:
     return _MAIN_LOADED_AT
 
 
+#: How much longer the next horizon's uninterruptible setup is allowed to be than the last one's
+#: when the re-solve loop decides whether it still fits before the deadline. Measured: ctl.ground()
+#: grew by 8-26% per horizon step (24 -> 34) on a 30-flight central-Europe instance, variant
+#: rp_d_sp, so 1.5 leaves room for that and for timing noise.
+RESOLVE_SETUP_GROWTH = 1.5
+
+
 def _since(moment, process_start):
     return round(moment - process_start, 3) if moment is not None else None
 
@@ -574,17 +581,18 @@ def main(argv: Optional[List[str]] = None) -> None:
     last_max_time = None         # the horizon that search ran at
     best_model = None            # the most recent model the re-solve loop set aside for a
     best_max_time = None         #   longer horizon, and the horizon it was found at
-    setup_seconds = 0.0          # translation + grounding time of the most recent iteration
+    setup_seconds = 0.0          # translation + grounding + clasp preparation, last iteration
     deadline_cut = False         # a longer horizon was wanted, and the deadline did not allow it
 
     while model is None:
 
         if deadline_at is not None and best_model is not None \
-                and deadline_at - _time.monotonic() <= setup_seconds:
+                and deadline_at - _time.monotonic() <= RESOLVE_SETUP_GROWTH * setup_seconds:
             # The re-solve loop wants a longer horizon, but translating, grounding and preparing
-            # it -- none of which can be interrupted -- took setup_seconds last time and there is
-            # no more than that left. Starting it would at best leave no time to search, and at worst run into the
-            # external kill and lose the result in hand. Report the model we have instead.
+            # it -- none of which can be interrupted -- took setup_seconds last time, a longer
+            # horizon takes longer, and there is not enough left. Starting it would at best leave
+            # no time to search, and at worst run into the external kill and lose the result in
+            # hand. Report the model we have instead.
             deadline_cut = True
             break
         iteration_started_at = _time.monotonic()
