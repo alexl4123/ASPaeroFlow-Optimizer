@@ -114,6 +114,33 @@ def hms(seconds: int) -> str:
     return f"{seconds // 3600:02d}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
 
 
+def max_array_tasks(max_array_size: int) -> int:
+    """The most tasks one `--array=1-N` may hold under a given MaxArraySize.
+
+    SLURM's MaxArraySize bounds the task INDEX, not the count: the highest index allowed is
+    MaxArraySize - 1. At MaxArraySize=50000 the cluster rejected `sbatch --array=1-50000` with
+    "Invalid job array specification", and accepts 1-49999.
+    """
+    return max(1, max_array_size - 1)
+
+
+def plan_waves(tasks: int, chunk: int, max_array_size: int) -> List[tuple]:
+    """(UNIT_OFFSET, n_tasks) per wave, each submitted as --array=1-<n_tasks>.
+
+    Wave k covers array tasks k*per_wave+1 .. of the whole worklist, so its UNIT_OFFSET is the
+    number of units the earlier waves covered. No wave has more than max_array_tasks() tasks, so no
+    printed index reaches MaxArraySize.
+    """
+    per_wave = max_array_tasks(max_array_size)
+    waves = []
+    done = 0
+    while done < tasks:
+        n = min(per_wave, tasks - done)
+        waves.append((done * chunk, n))
+        done += n
+    return waves
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -201,7 +228,8 @@ def main() -> int:
     chunk = max(1, a.chunk)
     tasks = math.ceil(total / chunk)
     max_array = a.max_array_size or detect_max_array_size()
-    min_chunk = math.ceil(total / max_array) if max_array else chunk
+    # Indices, not counts: see max_array_tasks().
+    min_chunk = math.ceil(total / max_array_tasks(max_array))
     walltime = chunk * (a.time_limit + PER_UNIT_OVERHEAD_S) + PER_TASK_OVERHEAD_S
 
     print(f"worklist:  {out_path}")
@@ -219,23 +247,24 @@ def main() -> int:
     # the same worklist can be submitted as several arrays, each starting where the last ended.
     # Raising CHUNK instead would undo the point of the exercise -- at MaxArraySize=1001 a 59,000
     # unit campaign would need CHUNK >= 59, i.e. ~30-hour tasks.
-    waves = math.ceil(tasks / max_array) if max_array else 1
-    tasks_per_wave = min(tasks, max_array)
+    plan = plan_waves(tasks, chunk, max_array)
+    waves = len(plan)
+    tasks_per_wave = min(tasks, max_array_tasks(max_array))
     if waves > 1:
-        print(f"  {tasks:,} tasks > MaxArraySize, so submit {waves} WAVES of at most "
+        print(f"  {tasks:,} tasks exceed the highest array index MaxArraySize={max_array:,} "
+              f"allows ({max_array_tasks(max_array):,}), so submit {waves} WAVES of at most "
               f"{tasks_per_wave:,} tasks. The jobs stay {hms(walltime)}; only the number of "
               f"sbatch calls goes up.")
         print(f"  (Raising CHUNK instead would work too -- CHUNK >= {min_chunk} fits in one "
               f"array -- but each task would then run up to "
               f"{hms(min_chunk * (a.time_limit + PER_UNIT_OVERHEAD_S) + PER_TASK_OVERHEAD_S)}.)")
     else:
-        print(f"  [OK] {tasks:,} <= {max_array:,}: one array is enough.")
+        print(f"  [OK] {tasks:,} <= {max_array_tasks(max_array):,} (the highest array index "
+              f"MaxArraySize={max_array:,} allows): one array is enough.")
     print()
     folder = a.folder or "<FOLDER>"
     print("Submit with:")
-    for wave in range(waves):
-        offset = wave * tasks_per_wave * chunk
-        n = min(tasks_per_wave, tasks - wave * tasks_per_wave)
+    for wave, (offset, n) in enumerate(plan):
         print(f"  sbatch -t {hms(walltime)} \\")
         print(f"         --export=ALL,FOLDER={folder},CHUNK={chunk},RUN_MIP={a.run_mip}"
               f"{f',UNIT_OFFSET={offset}' if waves > 1 else ''} \\")

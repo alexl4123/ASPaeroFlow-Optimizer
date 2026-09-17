@@ -262,6 +262,30 @@ def build_rows(problems, instances_of, args) -> List[List[str]]:
     return rows
 
 
+def max_array_tasks(max_array_size: int) -> int:
+    """The most tasks one `--array=1-N` may hold: MaxArraySize bounds the INDEX, so N <= size - 1.
+
+    At MaxArraySize=50000 the cluster rejected --array=1-50000 as an invalid job array
+    specification. Same rule as build_worklist.max_array_tasks().
+    """
+    return max(1, max_array_size - 1)
+
+
+def plan_waves(first_row: int, tasks: int, chunk: int, max_array_size: int):
+    """(ROW_OFFSET, n_tasks) per wave of one tier, each submitted as --array=1-<n_tasks>.
+
+    first_row is the tier's first manifest row (1-based). Task t of a wave runs rows
+    ROW_OFFSET + (t-1)*CHUNK + 1 .. ROW_OFFSET + t*CHUNK, as run_asp_ablation.slurm computes them.
+    """
+    per_wave = max_array_tasks(max_array_size)
+    waves, done = [], 0
+    while done < tasks:
+        n = min(per_wave, tasks - done)
+        waves.append((first_row - 1 + done * chunk, n))
+        done += n
+    return waves
+
+
 def summarise(rows, time_limit: int, chunk: int, max_array: int) -> None:
     """Row counts, worst-case core-hours and the submission lines, per tier.
 
@@ -315,10 +339,13 @@ def summarise(rows, time_limit: int, chunk: int, max_array: int) -> None:
     print(f"\nWorst case assumes every run uses the full {time_limit} s. The small family is "
           f"built so exact\nmethods CLOSE instances, so the real cost is well below this -- see "
           f"the design document\nfor the expected-case arithmetic.")
-    if total_tasks > max_array:
-        print(f"\n[note] {total_tasks} array tasks against --max-array-size={max_array}, so the "
-              f"submission lines\n       below split each tier into WAVES that move ROW_OFFSET. "
-              f"Check the real cap with\n       `scontrol show config | grep MaxArraySize`.")
+    if any((acc["last"] - acc["first"] + chunk) // chunk > max_array_tasks(max_array)
+           for acc in tiers.values()):
+        print(f"\n[note] a tier has more array tasks than MaxArraySize={max_array} allows in one "
+              f"array (at most\n       {max_array_tasks(max_array)}: the highest index is "
+              f"MaxArraySize - 1), so the submission lines below\n       split it into WAVES "
+              f"that move ROW_OFFSET. Check the real cap with\n"
+              f"       `scontrol show config | grep MaxArraySize`.")
 
     print("\nSubmit one tier at a time (nothing is submitted by this script):")
     for tier in ("P", "A", "B", "C"):
@@ -333,14 +360,10 @@ def summarise(rows, time_limit: int, chunk: int, max_array: int) -> None:
         # A tier longer than MaxArraySize is submitted as several WAVES rather than as fewer,
         # longer tasks: ROW_OFFSET moves the window instead of CHUNK making each job bigger,
         # which is the whole point of the per-run job shape.
-        wave_start = acc["first"] - 1
-        while wave_start < acc["last"]:
-            wave_tasks = min(max_array, tasks)
+        for row_offset, wave_tasks in plan_waves(acc["first"], tasks, chunk, max_array):
             print(f"  sbatch -t {hours:02d}:00:00 --cpus-per-task={cpus[tier]} "
-                  f"--export=ALL,CHUNK={chunk},ROW_OFFSET={wave_start} "
+                  f"--export=ALL,CHUNK={chunk},ROW_OFFSET={row_offset} "
                   f"--array=1-{wave_tasks}%40 run_asp_ablation.slurm")
-            wave_start += wave_tasks * chunk
-            tasks -= wave_tasks
 
 
 def main() -> int:
@@ -359,9 +382,11 @@ def main() -> int:
                         help="Manifest rows per array task (default 1: one job per unit). Raise "
                              "it if the cluster's MaxArraySize is smaller than the row count; "
                              "the runner reads the same value from $CHUNK.")
-    parser.add_argument("--max-array-size", type=int, default=1000,
-                        help="Largest job array this cluster accepts (default 1000). A tier with "
-                             "more tasks than this is submitted as several waves.")
+    parser.add_argument("--max-array-size", type=int, default=1001,
+                        help="The cluster's MaxArraySize, as `scontrol show config` reports it "
+                             "(default 1001, SLURM's own default). The highest array index SLURM "
+                             "accepts is one less, so a tier with more tasks than that is "
+                             "submitted as several waves.")
     parser.add_argument("--per-run-systems", action="store_true",
                         help="Emit one row per SOLVER RUN instead of one per variant set. "
                              "Requires start_benchmark_caller.py to support --only-system, which "

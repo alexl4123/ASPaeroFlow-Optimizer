@@ -42,8 +42,9 @@
 #     scontrol show config | grep MaxArraySize
 #
 # UNIT_OFFSET is the way out, and it is why CHUNK does not have to grow with the campaign. Submit
-# the SAME worklist as several WAVES of at most MaxArraySize tasks each, each wave starting where
-# the last one ended:
+# the SAME worklist as several WAVES of at most MaxArraySize - 1 tasks each (MaxArraySize bounds
+# the task INDEX: at MaxArraySize=50000, --array=1-50000 is rejected and 1-49999 is accepted), each
+# wave starting where the last one ended -- build_worklist.py prints these lines:
 #     sbatch --export=ALL,FOLDER=F,CHUNK=1,UNIT_OFFSET=0    --array=1-1000%40 run_benchmark_units.slurm
 #     sbatch --export=ALL,FOLDER=F,CHUNK=1,UNIT_OFFSET=1000 --array=1-1000%40 run_benchmark_units.slurm
 #     ...
