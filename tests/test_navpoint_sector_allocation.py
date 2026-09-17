@@ -203,5 +203,87 @@ class TestScheduleFile(unittest.TestCase):
                     self.assertIn("Navaid_ID,Sector_ID,From_Time", str(ctx.exception))
 
 
+def sector_number(assignment):
+    """SECTOR-NUMBER, as every folder computes it: distinct sectors per column, summed."""
+    return int(sum(len(set(assignment[:, t].tolist())) for t in range(assignment.shape[1])))
+
+
+class TestTheEvaluationWindow(unittest.TestCase):
+    """SECTOR-NUMBER and RECONFIG are sums over time, so the axis has to be the instance's.
+
+    Without this, a solver that widened its matrices reported a larger number for the very same
+    sectorisation: 1364 / 484 / 367 / 275 from the four systems on one 10-flight instance where
+    nothing in the airspace differed.
+    """
+
+    def test_it_is_the_width_build_assignment_uses(self):
+        self.assertEqual(nsa.evaluation_window(FLIGHTS, MAX_TIME, GRANULARITY),
+                         build().shape[1])
+
+    def test_a_flight_past_max_time_widens_it_to_a_whole_number_of_buckets(self):
+        # The fixture's flight lands at t=11, past (MAX_TIME + 1) * GRANULARITY would otherwise
+        # be the only term. The window stays a multiple of the granularity either way.
+        self.assertEqual(nsa.evaluation_window(FLIGHTS, MAX_TIME, GRANULARITY), 12)
+        late = np.array([[0, 9, 2], [0, 1, 5], [0, 10, 13]])
+        self.assertEqual(nsa.evaluation_window(late, MAX_TIME, GRANULARITY), 16)
+        self.assertEqual(nsa.evaluation_window(late, MAX_TIME, GRANULARITY) % GRANULARITY, 0)
+
+    def test_padding_holds_the_last_column(self):
+        widened = nsa.to_window(build(), 20)
+        self.assertEqual(widened.shape[1], 20)
+        for t in range(12, 20):
+            np.testing.assert_array_equal(widened[:, t], build()[:, -1])
+
+    def test_truncation_drops_the_extra_columns(self):
+        np.testing.assert_array_equal(nsa.to_window(build(), 5), build()[:, :5])
+
+    def test_a_widened_matrix_scores_what_the_narrow_one_scored(self):
+        """The actual defect: the same allocation on a longer axis must not score higher."""
+        base = build()
+        on_its_own_axis = sector_number(base)
+        widened = np.hstack([base, np.repeat(base[:, [-1]], 100, axis=1)])
+        self.assertGreater(sector_number(widened), on_its_own_axis)          # the old behaviour
+        self.assertEqual(sector_number(nsa.to_window(widened, base.shape[1])),
+                         on_its_own_axis)
+
+    def test_reconfig_counts_the_same_cells_on_either_axis(self):
+        """A navpoint that moves and stays moved contributes once per remaining column."""
+        moved = build().copy()
+        moved[3, 6:] = 0
+        window = moved.shape[1]
+        expected = int(np.count_nonzero(moved != build()))
+        widened = np.hstack([moved, np.repeat(moved[:, [-1]], 40, axis=1)])
+        reference = np.hstack([build(), np.repeat(build()[:, [-1]], 40, axis=1)])
+        self.assertGreater(int(np.count_nonzero(widened != reference)), expected)
+        self.assertEqual(
+            int(np.count_nonzero(nsa.to_window(widened, window)
+                                 != nsa.to_window(reference, window))),
+            expected)
+
+    def test_none_leaves_the_matrix_alone(self):
+        base = build()
+        self.assertIs(nsa.to_window(base, None), base)
+
+    def test_a_series_is_padded_and_cut_the_same_way(self):
+        """02_ASP holds these metrics as one value per timestep, not as a matrix."""
+        counts = {0: 11, 1: 11, 2: 11}
+        self.assertEqual(nsa.series_to_window(counts, 5), [11, 11, 11, 11, 11])
+        self.assertEqual(nsa.series_to_window(counts, 2), [11, 11])
+
+    def test_a_silent_series_is_padded_from_its_axis_and_not_from_its_last_entry(self):
+        """A count series says nothing where the count is zero, so it cannot state its own axis.
+
+        reconfig(NAV,T) exists only where something moved. Padding from the highest atom would
+        repeat that count across the rest of the window; padding from the time domain repeats
+        the zero that is actually there.
+        """
+        reconfig = {3: 2, 4: 2}
+        self.assertEqual(sum(nsa.series_to_window(reconfig, 10, own_width=8)), 4)
+        self.assertEqual(sum(nsa.series_to_window(reconfig, 10)), 4 + 2 * 5)   # without the axis
+
+    def test_an_empty_series_is_zero_over_the_whole_window(self):
+        self.assertEqual(nsa.series_to_window({}, 4), [0, 0, 0, 0])
+
+
 if __name__ == "__main__":
     unittest.main()
