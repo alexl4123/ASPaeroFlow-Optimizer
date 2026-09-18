@@ -73,6 +73,18 @@ SOLVE_DEADLINE_MARGIN="${SOLVE_DEADLINE_MARGIN:-30}"  # seconds before the limit
 
 [ -f "$MANIFEST" ] || { echo "[ERROR] $MANIFEST not found -- run ./build_ablation_manifest.py first" >&2; exit 1; }
 
+# INSTANCE_ROOT is normally passed as INSTANCE_ROOT=$OPT/05_instances. If $OPT is not set in the
+# shell that runs sbatch, that expands to the bare "/05_instances" and EVERY task dies on a
+# FileNotFoundError deep inside the caller -- 2,400 of them on 2026-09-18. Fail here instead,
+# once, with the reason named.
+if [ ! -d "$INSTANCE_ROOT" ]; then
+  echo "[ERROR] INSTANCE_ROOT '$INSTANCE_ROOT' does not exist." >&2
+  case "$INSTANCE_ROOT" in
+    /05_instances*) echo "        That is \$OPT/05_instances with \$OPT empty: export OPT in the shell you submit from." >&2 ;;
+  esac
+  exit 1
+fi
+
 mkdir -p "output/${FOLDER}" logs
 
 # Same environment the main campaign uses. Guarded so the script can be exercised with
