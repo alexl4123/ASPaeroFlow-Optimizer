@@ -51,6 +51,15 @@ search configuration alone, so there is no thread tier.
                    pipeline is wrong; analyze_asp_ablation.py checks it on whichever non-_sp cells
                    exist.
 
+    U  usc scaling usc only x ALL 27 exact-ASP variants x every small instance, one row per solver
+                   run. Not part of the ablation proper, which ends at B: once tiers A and B showed
+                   usc closing far more than default, the question became how far usc carries
+                   across the whole variant grid and up the flight counts. The default-search
+                   counterpart is the V2 campaign itself, which runs all 27 on the same small
+                   instances with the same 1800 s limit and memory cap. Build it into its OWN
+                   manifest (--tiers U --out usc27_tasks.tsv) so the ablation's rows keep their
+                   numbers, and analyse it with analyze_usc27.py.
+
 WHY tier B NEEDS ONE ROW PER SOLVER RUN
 The caller's --experiment-* flags cannot express the ten: the per-variant flags
 (--experiment-asp-r-d-s and friends) are parsed and then never read in build_system_config(), so
@@ -92,7 +101,7 @@ ALL_PROFILES = ("default", "usc", "domain", "usc-domain")
 RUNS_PER_VARIANT_SET = {"named2": 2, "all27": 27, "breadth10": 10}
 
 #: Tiers this script knows, in submission order.
-ALL_TIERS = ("P", "A", "B")
+ALL_TIERS = ("P", "A", "B", "U")
 
 #: Tier B's variants, as the <rerouting>_<delay>_<sectorisation> suffix of the system keys
 #: all27_systems() builds. Order is the order of the rows.
@@ -315,6 +324,10 @@ def build_rows(problems, instances_of, args) -> List[List[str]]:
                     for inst in chosen:
                         emit("B", profile, 1, "breadth10", name, inst, granularity)
 
+            elif tier == "U":
+                for inst in available:
+                    emit("U", "usc", 1, "all27", name, inst, granularity)
+
     return rows
 
 
@@ -342,7 +355,8 @@ def plan_waves(first_row: int, tasks: int, chunk: int, max_array_size: int):
     return waves
 
 
-def summarise(rows, time_limit: int, chunk: int, max_array: int) -> None:
+def summarise(rows, time_limit: int, chunk: int, max_array: int,
+              manifest: str = "ablation_tasks.tsv") -> None:
     """Row counts, worst-case core-hours and the submission lines, per tier.
 
     Core-hours are counted on SOLVER cores (the threads a run actually uses). The ALLOCATION is
@@ -363,8 +377,9 @@ def summarise(rows, time_limit: int, chunk: int, max_array: int) -> None:
         acc["first"] = min(acc["first"], int(row[0]))
         acc["last"] = max(acc["last"], int(row[0]))
 
-    cpus = {"P": 2, "A": 2, "B": 2}
-    label = {"P": "preflight", "A": "main grid", "B": "variant breadth"}
+    cpus = {"P": 2, "A": 2, "B": 2, "U": 2}
+    label = {"P": "preflight", "A": "main grid", "B": "variant breadth",
+             "U": "usc over all 27 variants"}
 
     def hours_per_task(acc):
         """Worst-case wall time of ONE array task, which is what the -t request has to cover."""
@@ -417,8 +432,12 @@ def summarise(rows, time_limit: int, chunk: int, max_array: int) -> None:
         # longer tasks: ROW_OFFSET moves the window instead of CHUNK making each job bigger,
         # which is the whole point of the per-run job shape.
         for row_offset, wave_tasks in plan_waves(acc["first"], tasks, chunk, max_array):
+            # The runner reads ablation_tasks.tsv unless told otherwise, so a manifest written
+            # elsewhere (tier U's usc27_tasks.tsv) has to be named on the line or every task
+            # would run a row of the ablation instead.
+            extra = "" if manifest == "ablation_tasks.tsv" else f",MANIFEST={manifest}"
             print(f"  sbatch -t {hours:02d}:00:00 --cpus-per-task={cpus[tier]} "
-                  f"--export=ALL,CHUNK={chunk},ROW_OFFSET={row_offset} "
+                  f"--export=ALL,CHUNK={chunk},ROW_OFFSET={row_offset}{extra} "
                   f"--array=1-{wave_tasks}%40 run_asp_ablation.slurm")
 
 
@@ -486,6 +505,14 @@ def main() -> int:
         raise SystemExit("[ERROR] tier B runs ten of the 27 exact-ASP variants, which only "
                          "--only-system can select: pass --per-run-systems (or leave B out of "
                          "--tiers). Without it a tier-B row could only mean all 27.")
+    if "U" in args.tiers and not args.per_run_systems:
+        raise SystemExit("[ERROR] tier U without --per-run-systems would put all 27 runs of an "
+                         "instance into ONE job, up to 27 x the time limit (13.5 h at 1800 s). "
+                         "Pass --per-run-systems: one job per solver run.")
+    if "U" in args.tiers and args.out.name == "ablation_tasks.tsv":
+        raise SystemExit("[ERROR] tier U goes into its own manifest so the ablation's row numbers "
+                         "stay valid: pass --out usc27_tasks.tsv (and MANIFEST=usc27_tasks.tsv "
+                         "to the runner, as the printed sbatch lines do).")
     args.tier_b_sizes = [int(x) for x in args.tier_b_sizes.split(",") if x.strip()]
     args.sizes_all = [int(x) for x in args.sizes.split(",") if x.strip()]
     seeds_all = [int(x) for x in args.seeds.split(",") if x.strip()]
@@ -520,7 +547,7 @@ def main() -> int:
             fh.write("\t".join(row) + "\n")
     print(f"wrote {args.out} ({len(rows)} rows, {args.chunk} row(s) per array task)")
 
-    summarise(rows, args.time_limit, args.chunk, args.max_array_size)
+    summarise(rows, args.time_limit, args.chunk, args.max_array_size, args.out.name)
     return 0
 
 

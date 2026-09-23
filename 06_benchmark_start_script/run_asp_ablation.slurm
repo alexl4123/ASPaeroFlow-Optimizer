@@ -34,6 +34,11 @@
 #
 # TIERS: P preflight, A main grid (named2), B breadth (breadth10: ten of the 27 variants, one row
 # per solver run). There is no thread tier any more: every unit runs single-threaded search.
+# U is not part of the ablation: usc over ALL 27 variants on every small instance, one row per
+# solver run, built into its own manifest and read with analyze_usc27.py:
+#
+#   ./build_ablation_manifest.py --per-run-systems --tiers U --out usc27_tasks.tsv
+#   sbatch -J usc27 ... --export=ALL,...,MANIFEST=usc27_tasks.tsv ... run_asp_ablation.slurm
 #
 # PARTITION: broadwell, for the same reason run_all_benchmarks.slurm pins it -- long jobs
 # elsewhere get cancelled. If broadwell is a node FEATURE here rather than a partition, keep your
