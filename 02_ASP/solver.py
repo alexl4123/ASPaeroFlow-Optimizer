@@ -70,6 +70,26 @@ def _solver_summary(ctl, models_reported):
     return summary
 
 
+def _program_stats(ctl):
+    """The size of the ground program clasp solved, for --program-stats (02_ASP/main.py).
+
+    problem.lp is the logic program as the grounder handed it over (atoms, rules, bodies);
+    problem.generator is clasp's translation of it (variables and constraints). Diagnostics only:
+    a failure to read them never fails a solve.
+    """
+    stats = {}
+    try:
+        problem = ctl.statistics["problem"]
+        for key, name in (("atoms", "PROGRAM-ATOMS"), ("rules", "PROGRAM-RULES"),
+                          ("bodies", "PROGRAM-BODIES")):
+            stats[name] = int(problem["lp"][key])
+        for key, name in (("vars", "PROGRAM-VARS"), ("constraints", "PROGRAM-CONSTRAINTS")):
+            stats[name] = int(problem["generator"][key])
+    except Exception:
+        pass
+    return stats
+
+
 def _finite_or_none(vector):
     """A clingo cost or bound vector, or None when it holds anything but finite numbers.
 
@@ -117,7 +137,8 @@ class _CostPriorities(clingo.Observer):
 class Solver:
     def __init__(self, encoding, instance, seed = 1, wandb_log = None,
                  solver_options = None, report_solver_stats = False, deadline = None,
-                 evaluation_window = None, arrival_delay_metric = None):
+                 evaluation_window = None, arrival_delay_metric = None,
+                 report_program_stats = False):
         self.encoding = encoding
         self.instance = instance
         self.seed = seed
@@ -169,6 +190,9 @@ class Solver:
         self.solve_ended_at = None
         self.solve_summary = None
         self.cost_priorities = None
+        # Opt-in (main.py --program-stats): the ground program's size, read after the search.
+        self.report_program_stats = bool(report_program_stats)
+        self.program_stats = None
 
 
     def solve(self):
@@ -183,6 +207,7 @@ class Solver:
         self.solve_ended_at = None
         self.solve_summary = None
         self.cost_priorities = None
+        self.program_stats = None
 
         start_time = time.time()
         self.total_time_start = start_time
@@ -222,6 +247,8 @@ class Solver:
                     else:
                         solve_result = self._solve_until_deadline(ctl)
                     self.search_exhausted = bool(solve_result.exhausted)
+                    if self.report_program_stats:
+                        self.program_stats = _program_stats(ctl)
             finally:
                 os.dup2(saved_fd2,fd2)
                 os.close(saved_fd2)
