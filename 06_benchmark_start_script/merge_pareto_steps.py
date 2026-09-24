@@ -140,7 +140,7 @@ def pilot_check(fronts: Dict[str, pl.Front]) -> List[str]:
     for label, expected in pl.PILOT_EXPECTED.items():
         front = fronts.get(label)
         if front is None:
-            out.append(f"| {label} | {expected} | (no steps) | | NO |")
+            out.append(f"| {label} | {' '.join(map(str, expected))} | (no steps) | | NO |")
             continue
         here = [c for c, ok in zip(front.corners, front.point_proven) if ok]
         match = here == expected and front.cls == "exact"
