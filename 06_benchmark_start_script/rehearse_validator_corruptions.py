@@ -390,7 +390,9 @@ def main() -> int:
     tg = vs.problem_granularity(problem, problem_dir, a.instance_root, None)
 
     def run_dir_of(base: Path, system: str, instance: str) -> Path:
-        return base / "solver_outputs" / folders.folder(system) / instance
+        # the folder the SOURCE problem keeps this run in (its own, or a legacy one), reused for
+        # the copy so that the copy has the same layout
+        return base / "solver_outputs" / folders.locate(problem_dir, system, instance) / instance
 
     instance = a.instance
     if instance is None:

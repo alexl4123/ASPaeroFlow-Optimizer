@@ -206,7 +206,7 @@ def main() -> int:
     for family, n in sorted(per_family.items()):
         print(f"           {n:>9,} units  {family}")
     if dropped:
-        print(f"dropped:   " + ", ".join(f"{n:,} {o}" for o, n in sorted(dropped.items()))
+        print("dropped:   " + ", ".join(f"{n:,} {o}" for o, n in sorted(dropped.items()))
               + " (not finished in the source campaign)")
 
     max_array = a.max_array_size or detect_max_array_size() or DEFAULT_MAX_ARRAY_SIZE

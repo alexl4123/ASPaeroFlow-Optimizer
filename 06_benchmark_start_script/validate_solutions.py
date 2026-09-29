@@ -68,6 +68,29 @@ OBJECTIVES, as the solvers compute them (W = the instance's evaluation window)
                    filed one -- i.e. delayed AND/OR rerouted (the papers' K_r)
     RECONFIG       number of (v, t), t < W, with sec(v, t) != the instance's allocation
 
+MODEL-TIME METRICS (agreed 2026-09-29; the columns model_*, next to the claimed values)
+
+    Model time t = file timestep t + shift, --time-offset formal (shift 1, default: model time 0
+    is the closed initial state, so a departure at file t = 0 happens at model t = 1) or plain
+    (shift 0). Two windows, each ending at model t_end = file t_end + shift:
+      instance window  file t_end = 24 * T_gran
+      solution window  file t_end = max(24 * T_gran, t_last), t_last = the latest landing
+    SECTOR-NUMBER  sum over model t = 1 .. t_end of the number of active sectors
+    SECTOR-DIFF    sum over model t = 2 .. t_end of the vertices whose sector differs between
+                   t-1 and t (ATMOS Def. 13, t in T>1)
+    RECONFIG       sum over model t = 0 .. t_end of the vertices whose sector differs from the
+                   instance's own allocation at t (its last state beyond what it defines); model
+                   t = 0 under the formal offset is the instance's allocation and counts 0
+
+RERUN MODE (--campaign-folder output/<CAMPAIGN>)
+
+    For a folder that reruns runs of an earlier campaign (e.g. to regenerate lost matrices):
+    each matrix is judged against the CAMPAIGN's claims for the same (instance, system), the
+    rerun's own last line is compared with the campaign's (rerun_same_as_campaign,
+    rerun_deviations; a difference fails as nondeterministic:<METRIC>), and the rerun's own line
+    is also checked against its matrix (rerun_claim:<METRIC>). A run that finished in the
+    campaign but not in the rerun is NO_MATRIX / rerun_not_finished (exit 1).
+
 STATUSES AND EXIT CODES
 
     VALID       every check passed, every claimed objective reproduced          exit 0
@@ -75,8 +98,9 @@ STATUSES AND EXIT CODES
                 (the solvers write matrices only on a normal exit). A run that
                 finished without one is flagged finished_run_without_matrix     exit 1
                 A run whose matrix another system overwrote in a shared folder
-                (03A_CASA writes to solver_outputs/03_DELAY) is flagged
-                matrix_overwritten_by:<system>; counted in the summary          exit 0
+                (the V2 campaign's 03A_CASA wrote to solver_outputs/03_DELAY; see
+                LEGACY_FOLDERS) is flagged matrix_overwritten_by:<system>;
+                counted in the summary                                          exit 0
     UNVERIFIED  matrix present but lacks the sector allocation (02_ASP with
                 dynamic sectorisation does not write it)                        exit 1
     MISMATCH    consistency failure (claim != recomputation)                    exit 1
@@ -91,6 +115,8 @@ USAGE
 
     ./validate_solutions.py --problem-dir output/20260918_V2/output_<PROBLEM> \\
         --instance-root ../05_instances --out-dir output/VALIDATION_20260918 [--resume]
+    ./validate_solutions.py --problem-dir output/20260930_V2_RERUN_DC/output_<PROBLEM> \\
+        --campaign-folder output/20260918_V2 --instance-root ../05_instances --out-dir ...
     ./validate_solutions.py --summarize --out-dir output/VALIDATION_20260918
 """
 from __future__ import annotations
@@ -116,7 +142,7 @@ from scipy.sparse.csgraph import connected_components
 
 #: The systems whose results are published. --systems all validates whatever is present.
 PUBLISHED_SYSTEMS: Tuple[str, ...] = (
-    "01_ASPaeroFlow", "0B_Sector_NoReroute_NoDelay", "0C_Sector_NoReroute_Delay",
+    "01_ASPaeroFlow", "0_Sequential", "0B_Sector_NoReroute_NoDelay", "0C_Sector_NoReroute_Delay",
     "0D_Sector_Reroute_NoDelay", "02_RerouteDelay", "2A_Reroute", "03_DELAY", "03A_CASA",
     "04_MIP", "05_ASP_rp_dp_sp", "05_ASP_rp_d_sp",
 )
@@ -132,6 +158,14 @@ KNOTS_TO_METRES_PER_SECOND = 0.51444
 MAX_TIME_HOURS = 24
 
 ARRIVAL_DELAY_METRICS = ("signed", "floored", "absolute")
+
+#: Model time t = file timestep t + shift. "formal": model time 0 is the closed initial state
+#: before the first file timestep (departures at file t = 0 happen at model t = 1); "plain":
+#: model time = file time.
+TIME_OFFSETS = {"formal": 1, "plain": 0}
+
+#: The metrics recomputed in model time, in an instance and a solution window.
+MODEL_METRICS: Tuple[str, ...] = ("SECTOR-NUMBER", "SECTOR-DIFF", "RECONFIG")
 
 VALID, NO_MATRIX, UNVERIFIED, MISMATCH, INVALID, ERROR = (
     "VALID", "NO_MATRIX", "UNVERIFIED", "MISMATCH", "INVALID", "ERROR")
@@ -151,9 +185,16 @@ CONSISTENCY_CHECKS: Tuple[str, ...] = ("sector_rows", "capacity_matrix", "alloca
 #: Informational counts, never a failure.
 INFO_FIELDS: Tuple[str, ...] = (
     "n_flights", "matrix_width", "window_W", "n_path_changed", "n_delayed_only",
-    "n_airport_waits", "n_landing_after_day", "overload_from_saved_sector_rows",
-    "paper_active_sectors", "paper_sector_changes", "paper_reconfigurations",
+    "n_airport_waits", "n_landing_after_day", "t_last", "overload_from_saved_sector_rows",
 )
+
+#: The agreed model-time values (see MODEL-TIME METRICS in the module docstring).
+MODEL_FIELDS: List[str] = (["time_offset", "model_end_instance", "model_end_solution"]
+                           + [f"model_{w}_{m}" for m in MODEL_METRICS for w in ("instance", "solution")])
+
+#: Rerun mode only: the rerun's own result line, and whether it equals the campaign's.
+RERUN_FIELDS: List[str] = (["campaign_outcome", "rerun_same_as_campaign", "rerun_deviations"]
+                           + [f"rerun_claimed_{m}" for m in METRICS])
 
 OUTCOMES = {"": "ok", "T": "TIMEOUT", "M": "MEMOUT", "E": "ERROR", "P": "UNPARSED"}
 
@@ -161,10 +202,13 @@ CSV_COLUMNS: List[str] = (
     ["folder", "problem", "instance", "system", "outcome", "status", "failed_checks", "note",
      "matrix_dir", "matrix_owner", "arrival_delay_metric", "timestep_granularity"]
     + [f"{kind}_{m}" for m in METRICS for kind in ("claimed", "recomputed")]
+    + MODEL_FIELDS
     + [f"v_{c}" for c in HARD_CHECKS]
     + [f"c_{c}" for c in CONSISTENCY_CHECKS]
     + list(INFO_FIELDS)
-    + ["claimed_computation_finished", "first_violation", "seconds"]
+    + ["claimed_computation_finished"]
+    + RERUN_FIELDS
+    + ["first_violation", "seconds"]
 )
 
 MATRIX_NAMES = ("converted_navpoint_matrix", "converted_instance_matrix",
@@ -486,6 +530,7 @@ class Evaluation:
         self.hard: Dict[str, int] = {c: 0 for c in HARD_CHECKS}
         self.consistency: Dict[str, int] = {c: 0 for c in CONSISTENCY_CHECKS}
         self.info: Dict[str, Optional[int]] = {k: None for k in INFO_FIELDS}
+        self.model: Dict[str, Optional[int]] = {k: None for k in MODEL_FIELDS[1:]}
         self.examples: List[str] = []
         self.unverified: List[str] = []
 
@@ -515,7 +560,8 @@ def _column_groups(allocation: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
 def evaluate_solution(inst: Instance, nav: np.ndarray, sec: Optional[np.ndarray],
                       alloc: Optional[np.ndarray], capm: Optional[np.ndarray],
-                      metric: str, check_connectivity: bool = True) -> Evaluation:
+                      metric: str, check_connectivity: bool = True,
+                      time_offset: str = "formal") -> Evaluation:
     ev = Evaluation()
     N, F, W, tg = inst.n_vertices, inst.n_flights, inst.window, inst.tg
 
@@ -664,6 +710,8 @@ def evaluate_solution(inst: Instance, nav: np.ndarray, sec: Optional[np.ndarray]
     delta = sol_arr - inst.filed_arr[fl_ok]
     ev.recomputed["ARRIVAL-DELAY"] = int(apply_arrival_delay_metric(delta, metric).sum())
     ev.info["n_landing_after_day"] = int(np.count_nonzero(sol_arr > inst.day_end))
+    t_last = int(sol_arr.max()) if len(sol_arr) else 0
+    ev.info["t_last"] = t_last
 
     ff, ft, fv = inst.filed_matrix_entries()
     span = np.int64(max(width, inst.max_filed_time + 1, W) + 1)
@@ -758,22 +806,25 @@ def evaluate_solution(inst: Instance, nav: np.ndarray, sec: Optional[np.ndarray]
                                 f"sector {int(s_bad[0])} t={int(start + t_bad[0])}: saved capacity "
                                 f"{int(capm[s_bad[0], start + t_bad[0]])}, max-composition {int(capvec[s_bad[0]])}")
 
-    # ---- SECTOR-NUMBER, SECTOR-DIFF, RECONFIG (and the paper's windows) -------------------
+    # ---- SECTOR-NUMBER, SECTOR-DIFF, RECONFIG as the solvers report them -------------------
     t_window = np.arange(W)
     ev.recomputed["SECTOR-NUMBER"] = int(distinct[group_of(t_window)].sum())
-    day = np.arange(1, inst.day_end + 1)
-    ev.info["paper_active_sectors"] = int(distinct[group_of(day)].sum())
 
     sector_diff = 0
     for g in range(1, n_groups):
         sector_diff += int(np.count_nonzero(alloc[:, starts[g]] != alloc[:, starts[g - 1]]))
     ev.recomputed["SECTOR-DIFF"] = sector_diff
-    paper_changes = 0
-    for t in range(1, inst.day_end + 1):
-        g1, g0 = group_of(np.array([t]))[0], group_of(np.array([t - 1]))[0]
-        if g1 != g0:
-            paper_changes += int(np.count_nonzero(alloc[:, starts[g1]] != alloc[:, starts[g0]]))
-    ev.info["paper_sector_changes"] = paper_changes
+
+    def changes_into(first_file: int, last_file: int) -> int:
+        """Number of (v, f), f in [first_file, last_file], with sec(v, f-1) != sec(v, f)."""
+        f = np.arange(max(first_file, 1), last_file + 1)
+        if not len(f):
+            return 0
+        g1, g0 = group_of(f), group_of(f - 1)
+        total = 0
+        for i in np.flatnonzero(g1 != g0):
+            total += int(np.count_nonzero(alloc[:, starts[g1[i]]] != alloc[:, starts[g0[i]]]))
+        return total
 
     def reconfig_over(timesteps: np.ndarray) -> int:
         total = 0
@@ -788,7 +839,22 @@ def evaluate_solution(inst: Instance, nav: np.ndarray, sec: Optional[np.ndarray]
         return total
 
     ev.recomputed["RECONFIG"] = reconfig_over(t_window)
-    ev.info["paper_reconfigurations"] = reconfig_over(np.arange(0, inst.day_end + 1))
+
+    # ---- the agreed model-time metrics: instance window and solution window ---------------
+    # Model time t = file timestep t + shift (1 formal, 0 plain). Instance window: file t_end =
+    # 24*T_gran; solution window: file t_end = max(24*T_gran, t_last), t_last the latest landing.
+    shift = TIME_OFFSETS[time_offset]
+    for window, file_end in (("instance", inst.day_end), ("solution", max(inst.day_end, t_last))):
+        ev.model[f"model_end_{window}"] = file_end + shift
+        # active sectors at model t = 1 .. t_end  <->  file t = 1 - shift .. file_end
+        ev.model[f"model_{window}_SECTOR-NUMBER"] = int(
+            distinct[group_of(np.arange(1 - shift, file_end + 1))].sum())
+        # changes from model t-1 to t, t = 2 .. t_end (ATMOS Def. 13)  <->  into file t = 2 - shift ..
+        ev.model[f"model_{window}_SECTOR-DIFF"] = changes_into(2 - shift, file_end)
+        # model t = 0 .. t_end against the instance's allocation  <->  file t = -shift .. file_end.
+        # Under the formal offset model t = 0 (file t = -1) is the closed initial state, i.e. the
+        # instance's own allocation, and contributes nothing.
+        ev.model[f"model_{window}_RECONFIG"] = reconfig_over(np.arange(0, file_end + 1))
 
     # ---- occupancy under the half rule, and OVERLOAD ---------------------------------------
     # A flight at vertex x_j at t_j and x_{j+1} at t_{j+1} occupies sec(x_j, t) for
@@ -845,19 +911,25 @@ def evaluate_solution(inst: Instance, nav: np.ndarray, sec: Optional[np.ndarray]
 # Campaign layout
 # ---------------------------------------------------------------------------------------------
 
-def results_dirs() -> Dict[str, str]:
-    """system key -> the solver_outputs/ folder it writes to, from build_system_config itself.
+#: Results folders used by campaigns run before a system got a folder of its own. The V2
+#: campaign (818136e) wrote 03A_CASA's matrices into solver_outputs/03_DELAY. A legacy folder is
+#: consulted only in a problem folder that has no solver_outputs/<own folder> at all, i.e. one
+#: written by that older code.
+LEGACY_FOLDERS: Dict[str, Tuple[str, ...]] = {"03A_CASA": ("03_DELAY",)}
 
-    Read from THIS checkout's start_benchmark_caller.py, so run the validator from a checkout whose
-    build_system_config is the campaign's: at 818136e 2A_Reroute writes to 0A_Reroute and
-    03A_CASA to 03_DELAY. A checkout that gave 03A_CASA its own folder would look for matrices
-    the campaign never wrote there.
-    """
-    fallback = {"2A_Reroute": "0A_Reroute", "03A_CASA": "03_DELAY"}
+
+def results_dirs() -> Dict[str, str]:
+    """system key -> the solver_outputs/ folder it writes to, from build_system_config itself,
+    with every opt-in system switched on so that its folder is known too."""
+    fallback = {"2A_Reroute": "0A_Reroute", "03A_CASA": "03A_CASA", "0_Sequential": "0_Sequential"}
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from start_benchmark_caller import build_arg_parser, build_system_config  # noqa: E402
-        args = build_arg_parser().parse_args(["."])
+        parser = build_arg_parser()
+        try:
+            args = parser.parse_args([".", "--experiment-sequential=1"])
+        except SystemExit:                        # a caller that predates the opt-in systems
+            args = parser.parse_args(["."])
         systems = build_system_config(Path(__file__).resolve().parent, Path("OUT"), "validate", args)
         mapping = {}
         for system in systems:
@@ -872,27 +944,35 @@ def results_dirs() -> Dict[str, str]:
 
 
 class Folders:
+    """Where a system's matrices are, in the layout of the problem folder at hand."""
+
     def __init__(self):
         self.mapping = results_dirs()
 
-    def folder(self, system: str) -> str:
+    def own(self, system: str) -> str:
         return self.mapping.get(system, system)
 
-    def sharing(self, system: str) -> List[str]:
-        """Other systems that write to the same solver_outputs/ folder."""
-        mine = self.folder(system)
-        return [s for s, f in self.mapping.items() if f == mine and s != system]
+    def candidates(self, problem_dir: Path, system: str) -> List[str]:
+        own = self.own(system)
+        if (problem_dir / "solver_outputs" / own).is_dir():
+            return [own]
+        return [own] + [f for f in LEGACY_FOLDERS.get(system, ()) if f != own]
+
+    def locate(self, problem_dir: Path, system: str, instance: str) -> str:
+        """The folder holding this run's matrices: its own, else (old layout) a legacy one."""
+        for folder in self.candidates(problem_dir, system):
+            run_dir = problem_dir / "solver_outputs" / folder / instance
+            if run_dir.is_dir() and any(run_dir.iterdir()):
+                return folder
+        return self.own(system)
+
+    def writers(self, problem_dir: Path, folder: str) -> List[str]:
+        """Every system that may have written into `folder` in this problem folder's layout."""
+        systems = set(self.mapping) | set(LEGACY_FOLDERS)
+        return sorted(s for s in systems if folder in self.candidates(problem_dir, s))
 
 
-def load_claims(problem_dir: Path, instance: str, system: str) -> Tuple[str, dict]:
-    """(outcome, last JSON line) of one run, from individual_outputs/<INSTANCE>_<SYSTEM>.json."""
-    path = problem_dir / "individual_outputs" / f"{instance}_{system}.json"
-    lines = None
-    if path.is_file():
-        try:
-            lines = json.loads(path.read_text(encoding="utf-8")).get("object")
-        except (json.JSONDecodeError, AttributeError):
-            lines = None
+def _last_line(lines) -> Tuple[str, dict]:
     if isinstance(lines, str):                 # a propagated failure code without any output
         return OUTCOMES.get(lines, lines), {}
     if not isinstance(lines, list) or not lines or not isinstance(lines[-1], dict):
@@ -901,27 +981,84 @@ def load_claims(problem_dir: Path, instance: str, system: str) -> Tuple[str, dic
     return OUTCOMES.get(last.get("ERROR"), str(last.get("ERROR"))), last
 
 
-def discover_runs(problem_dir: Path, systems: Optional[List[str]]) -> List[Tuple[str, str]]:
-    """(instance, system) pairs of this problem folder, from individual_outputs/."""
-    folder = problem_dir / "individual_outputs"
-    if not folder.is_dir():
-        raise ValidatorError(f"{folder} does not exist")
-    names = sorted(p.name for p in folder.glob("*.json"))
+def _json(path: Path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+class ClaimSource:
+    """The result lines of one problem folder's runs, wherever the merge left them.
+
+    individual_outputs/<I>_<S>.json first. A merge with --allow-incomplete writes that file only
+    for systems complete across the problem's instances, so a rerun of the finished runs alone
+    leaves some without it; then the unit's shard (units/shards/<P>/<I>/<S>/), then the merged
+    hotstart_state.json, which is large and read only if needed.
+    """
+
+    def __init__(self, problem_dir: Path, problem: str):
+        self.problem_dir = problem_dir
+        self.shards = problem_dir.parent / "units" / "shards" / problem
+        self._hotstart = None
+
+    def lines(self, instance: str, system: str):
+        data = _json(self.problem_dir / "individual_outputs" / f"{instance}_{system}.json")
+        if isinstance(data, dict) and "object" in data:
+            return data["object"], "individual_outputs"
+        shard = self.shards / instance / system
+        data = _json(shard / "individual_outputs" / f"{instance}_{system}.json")
+        if isinstance(data, dict) and "object" in data:
+            return data["object"], "shard"
+        data = _json(shard / "hotstart_state.json")
+        rec = data.get("records", {}).get(instance, {}).get(system) if isinstance(data, dict) else None
+        if isinstance(rec, dict) and "solution_value" in rec:
+            return rec["solution_value"], "shard"
+        if self._hotstart is None:
+            data = _json(self.problem_dir / "hotstart_state.json")
+            self._hotstart = data.get("records", {}) if isinstance(data, dict) else {}
+        rec = self._hotstart.get(instance, {}).get(system)
+        if isinstance(rec, dict) and "solution_value" in rec:
+            return rec["solution_value"], "hotstart_state"
+        return None, ""
+
+    def claims(self, instance: str, system: str) -> Tuple[str, dict, str]:
+        """(outcome, last result line, where it was found)."""
+        lines, where = self.lines(instance, system)
+        outcome, last = _last_line(lines)
+        return (outcome if where else "missing"), last, where
+
+
+def discover_runs(problem_dir: Path, problem: str, systems: Optional[List[str]],
+                  folders: Folders) -> List[Tuple[str, str]]:
+    """(instance, system) pairs of this problem folder: individual_outputs/ plus, where the
+    campaign's worklist is next to it, every unit of this problem (a unit the merge left without
+    an individual_outputs file is still validated, not silently skipped)."""
     known = systems
     if known is None:                              # --systems all: every system the caller knows
-        known = sorted(set(results_dirs()) | set(PUBLISHED_SYSTEMS), key=len, reverse=True)
-    runs = []
-    for name in names:
-        for system in sorted(known, key=len, reverse=True):
-            suffix = f"_{system}.json"
-            if name.endswith(suffix):
-                runs.append((name[: -len(suffix)], system))
-                break
-    if systems is not None:
-        order = {s: i for i, s in enumerate(systems)}
-        runs = [r for r in runs if r[1] in order]
-        runs.sort(key=lambda r: (r[0], order[r[1]]))
-    return runs
+        known = sorted(set(folders.mapping) | set(PUBLISHED_SYSTEMS), key=len, reverse=True)
+    found = set()
+    folder = problem_dir / "individual_outputs"
+    if folder.is_dir():
+        for name in sorted(p.name for p in folder.glob("*.json")):
+            for system in sorted(known, key=len, reverse=True):
+                suffix = f"_{system}.json"
+                if name.endswith(suffix):
+                    found.add((name[: -len(suffix)], system))
+                    break
+    worklist = problem_dir.parent / "units" / "worklist.tsv"
+    if worklist.is_file():
+        with worklist.open(encoding="utf-8") as fh:
+            header = fh.readline().rstrip("\n").split("\t")
+            i_p, i_i, i_s = header.index("problem_dir"), header.index("instance"), header.index("system")
+            for line in fh:
+                fields = line.rstrip("\n").split("\t")
+                if len(fields) > i_s and fields[i_p] == problem and fields[i_s] in known:
+                    found.add((fields[i_i], fields[i_s]))
+    if not found and not folder.is_dir():
+        raise ValidatorError(f"{folder} does not exist and no worklist lists this problem")
+    order = {s: i for i, s in enumerate(systems if systems is not None else sorted(known))}
+    return sorted((r for r in found if r[1] in order), key=lambda r: (r[0], order[r[1]]))
 
 
 def problem_granularity(problem: str, problem_dir: Path, instance_root: Path,
@@ -1004,29 +1141,37 @@ def _claims_match(claims: dict, recomputed: Dict[str, Optional[int]]) -> Tuple[b
     return not wrong, wrong
 
 
+def _deviations(campaign: dict, rerun: dict) -> List[str]:
+    """Where a rerun's result line differs from the campaign's (six objectives, finished flag)."""
+    out = []
+    for key in METRICS + ("COMPUTATION-FINISHED",):
+        a, b = campaign.get(key, "<absent>"), rerun.get(key, "<absent>")
+        if a != b:
+            out.append(f"{key} campaign={a} rerun={b}")
+    return out
+
+
 def validate_problem(problem_dir: Path, instance_root: Path, out_dir: Path, systems: Optional[List[str]],
                      folders: Folders, resume: bool, tg_override: Optional[int], default_metric: str,
-                     check_connectivity: bool, verbose: bool) -> int:
+                     check_connectivity: bool, verbose: bool, time_offset: str = "formal",
+                     campaign_root: Optional[Path] = None) -> int:
     problem_dir = problem_dir.resolve()
     problem = problem_dir.name[len("output_"):] if problem_dir.name.startswith("output_") else problem_dir.name
     campaign = problem_dir.parent.name
     target_dir = out_dir / campaign
     target_dir.mkdir(parents=True, exist_ok=True)
     csv_path = target_dir / f"validation_{problem}.csv"
+    rerun = campaign_root is not None
 
-    runs = discover_runs(problem_dir, systems)
+    runs = discover_runs(problem_dir, problem, systems, folders)
     done = set()
     if resume and csv_path.is_file():
         with csv_path.open(newline="", encoding="utf-8") as fh:
-            for row in csv.DictReader(fh):
-                if row.get("status") != ERROR:
-                    done.add((row["instance"], row["system"]))
-        # rewrite without the ERROR rows, which are retried
-        kept = []
-        with csv_path.open(newline="", encoding="utf-8") as fh:
             kept = [row for row in csv.DictReader(fh) if row.get("status") != ERROR]
+        done = {(row["instance"], row["system"]) for row in kept}
+        # rewrite without the ERROR rows, which are retried
         with csv_path.open("w", newline="", encoding="utf-8") as fh:
-            writer = csv.DictWriter(fh, fieldnames=CSV_COLUMNS)
+            writer = csv.DictWriter(fh, fieldnames=CSV_COLUMNS, extrasaction="ignore")
             writer.writeheader()
             writer.writerows(kept)
     else:
@@ -1034,6 +1179,11 @@ def validate_problem(problem_dir: Path, instance_root: Path, out_dir: Path, syst
             csv.DictWriter(fh, fieldnames=CSV_COLUMNS).writeheader()
 
     tg = problem_granularity(problem, problem_dir, instance_root, tg_override)
+    own_source = ClaimSource(problem_dir, problem)
+    campaign_source = None
+    if rerun:
+        campaign_dir = Path(campaign_root) / f"output_{problem}"
+        campaign_source = ClaimSource(campaign_dir, problem)
     worst = 0
     by_instance: Dict[str, List[str]] = {}
     for instance, system in runs:
@@ -1058,24 +1208,42 @@ def validate_problem(problem_dir: Path, instance_root: Path, out_dir: Path, syst
         except Exception as exc:
             inst_error = f"instance: {type(exc).__name__}: {exc}"
 
-        # every system's claims, and every matrix folder evaluated once
-        claims = {s: load_claims(problem_dir, instance, s) for s in set(inst_systems) |
-                  {o for s in todo for o in folders.sharing(s)}}
+        # where each run's matrices are, and which other systems wrote into the same folder
+        located = {s: folders.locate(problem_dir, s, instance) for s in todo}
+        involved = set(todo) | {w for f in set(located.values()) for w in folders.writers(problem_dir, f)}
+        for s in involved - set(located):
+            located[s] = folders.locate(problem_dir, s, instance)
+        own = {s: own_source.claims(instance, s) for s in involved}
+        # the claims a matrix is judged against: the campaign's in rerun mode, the run's own otherwise
+        reference = ({s: campaign_source.claims(instance, s) for s in involved} if rerun else own)
         evaluations: Dict[Path, Tuple[Optional[Evaluation], List[str], dict, float, str]] = {}
 
         for system in todo:
             t0 = time.time()
-            outcome, claim = claims[system]
-            run_dir = problem_dir / "solver_outputs" / folders.folder(system) / instance
+            outcome, own_line, own_where = own[system]
+            ref_outcome, claim, ref_where = reference[system]
+            folder = located[system]
+            run_dir = problem_dir / "solver_outputs" / folder / instance
             row = {c: "" for c in CSV_COLUMNS}
             row.update(folder=campaign, problem=problem, instance=instance, system=system,
                        outcome=outcome, matrix_dir=str(run_dir.relative_to(problem_dir)),
-                       timestep_granularity=tg,
+                       timestep_granularity=tg, time_offset=time_offset,
                        claimed_computation_finished=claim.get("COMPUTATION-FINISHED", ""))
             for m in METRICS:
                 row[f"claimed_{m}"] = claim.get(m, "")
             failed: List[str] = []
             notes: List[str] = []
+            if own_where and own_where != "individual_outputs":
+                notes.append(f"result line read from {own_where}")
+            deviations: List[str] = []
+            if rerun:
+                row["campaign_outcome"] = ref_outcome
+                for m in METRICS:
+                    row[f"rerun_claimed_{m}"] = own_line.get(m, "")
+                if own_line and claim:
+                    deviations = _deviations(claim, own_line)
+                    row["rerun_same_as_campaign"] = not deviations
+                    row["rerun_deviations"] = "; ".join(deviations)
             try:
                 if inst_error:
                     row["status"] = ERROR
@@ -1088,6 +1256,9 @@ def validate_problem(problem_dir: Path, instance_root: Path, out_dir: Path, syst
                     row["matrix_dir"] = ""
                     if outcome == "ok":
                         row["failed_checks"] = "finished_run_without_matrix"
+                    elif rerun and ref_outcome == "ok":
+                        row["failed_checks"] = "rerun_not_finished"
+                        row["note"] = f"finished in the campaign, {outcome} in the rerun"
                     rows.append(row)
                     continue
 
@@ -1096,8 +1267,8 @@ def validate_problem(problem_dir: Path, instance_root: Path, out_dir: Path, syst
                     mats, manifest, read_problems = _load_run_matrices(run_dir)
                     source = manifest.get("source", {}) if isinstance(manifest, dict) else {}
                     run_tg = source.get("timestep_granularity")
-                    metric = str(claim.get("ARRIVAL-DELAY-METRIC") or source.get("arrival_delay_metric")
-                                 or default_metric).lower()
+                    metric = str(claim.get("ARRIVAL-DELAY-METRIC") or own_line.get("ARRIVAL-DELAY-METRIC")
+                                 or source.get("arrival_delay_metric") or default_metric).lower()
                     if metric not in ARRIVAL_DELAY_METRICS:
                         metric = default_metric
                     ev = None
@@ -1111,7 +1282,8 @@ def validate_problem(problem_dir: Path, instance_root: Path, out_dir: Path, syst
                                                mats["converted_instance_matrix"],
                                                mats["navaid_sector_time_assignment"],
                                                mats["capacity_time_matrix"], metric,
-                                               check_connectivity=check_connectivity)
+                                               check_connectivity=check_connectivity,
+                                               time_offset=time_offset)
                     evaluations[run_dir] = (ev, read_problems, manifest, time.time() - t_eval, metric)
                     del mats
                 ev, read_problems, manifest, eval_seconds, metric = evaluations[run_dir]
@@ -1133,6 +1305,8 @@ def validate_problem(problem_dir: Path, instance_root: Path, out_dir: Path, syst
                     row[f"c_{c}"] = ev.consistency[c]
                 for k in INFO_FIELDS:
                     row[k] = "" if ev.info[k] is None else ev.info[k]
+                for k, value in ev.model.items():
+                    row[k] = "" if value is None else value
                 row["first_violation"] = " | ".join(ev.examples)
 
                 hard = [c for c in HARD_CHECKS if ev.hard[c]]
@@ -1146,14 +1320,15 @@ def validate_problem(problem_dir: Path, instance_root: Path, out_dir: Path, syst
                 if not check_connectivity:
                     notes.append("connectivity not checked")
                 inconsistent = [f"{c}" for c in CONSISTENCY_CHECKS if ev.consistency[c]]
-                ok_self, wrong_self = _claims_match(claim, ev.recomputed)
+                ok_ref, wrong_ref = _claims_match(claim, ev.recomputed)
 
-                # a folder shared with other systems: whose matrix is this?
+                # a folder more than one system wrote into: whose matrix is this?
                 owner = system
-                others = folders.sharing(system)
+                others = [o for o in folders.writers(problem_dir, folder)
+                          if o != system and located.get(o) == folder]
                 if others:
                     matches = [s for s in [system] + others
-                               if claims.get(s, ("", {}))[1] and _claims_match(claims[s][1], ev.recomputed)[0]]
+                               if reference[s][1] and _claims_match(reference[s][1], ev.recomputed)[0]]
                     if system in matches and len(matches) == 1:
                         owner = system
                     elif system in matches:
@@ -1171,29 +1346,36 @@ def validate_problem(problem_dir: Path, instance_root: Path, out_dir: Path, syst
                     # The folder holds another system's matrix. For a run that finished, its own
                     # matrix was overwritten; for one that did not, there never was one.
                     row["status"] = NO_MATRIX
-                    if outcome == "ok":
+                    if ref_outcome == "ok":
                         row["failed_checks"] = f"matrix_overwritten_by:{owner}"
-                    row["note"] = "; ".join(notes + [f"solver_outputs/{folders.folder(system)}/{instance} "
+                    row["note"] = "; ".join(notes + [f"solver_outputs/{folder}/{instance} "
                                                      f"holds {owner}'s solution"])
                     # every recomputed value and count belongs to the other system's solution
                     for key in ([f"recomputed_{m}" for m in METRICS] + [f"v_{c}" for c in HARD_CHECKS]
                                 + [f"c_{c}" for c in CONSISTENCY_CHECKS] + list(INFO_FIELDS)
-                                + ["first_violation"]):
+                                + MODEL_FIELDS[1:] + ["first_violation"]):
                         row[key] = ""
                     rows.append(row)
                     continue
 
-                if not claim:
-                    notes.append("no claims (no JSON line)")
+                claim_failures = [f"claim:{m}" for m in wrong_ref]
+                if rerun:
+                    if not claim:
+                        claim_failures.append("no_campaign_claims")
+                    claim_failures += [f"nondeterministic:{d.split(' ', 1)[0]}" for d in deviations]
+                    if own_line:
+                        claim_failures += [f"rerun_claim:{m}" for m in _claims_match(own_line, ev.recomputed)[1]]
+                elif not claim:
+                    claim_failures.append("no_claims")
                 if ev.unverified:
                     notes.append("not recomputable without the sector allocation: " + ",".join(ev.unverified))
 
                 if hard:
                     row["status"] = INVALID
-                    failed = hard + inconsistent + [f"claim:{m}" for m in wrong_self]
-                elif inconsistent or not ok_self or not claim:
+                    failed = hard + inconsistent + claim_failures
+                elif inconsistent or claim_failures:
                     row["status"] = MISMATCH
-                    failed = inconsistent + [f"claim:{m}" for m in wrong_self] + (["no_claims"] if not claim else [])
+                    failed = inconsistent + claim_failures
                 elif ev.unverified:
                     row["status"] = UNVERIFIED
                     failed = [f"unverified:{m}" for m in ev.unverified]
@@ -1224,7 +1406,8 @@ def validate_problem(problem_dir: Path, instance_root: Path, out_dir: Path, syst
         del evaluations
 
     summary = summarize_rows(read_rows([csv_path]))
-    summary.update(problem=problem, folder=campaign, csv=str(csv_path),
+    summary.update(problem=problem, folder=campaign, csv=str(csv_path), time_offset=time_offset,
+                   rerun_of=str(campaign_root) if rerun else "",
                    seconds=round(time.time() - t_problem, 1), exit_code=summary["exit_code"])
     (target_dir / f"validation_{problem}.summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
@@ -1250,7 +1433,8 @@ def severity(row: dict) -> int:
         return 2
     if status in (MISMATCH, UNVERIFIED):
         return 1
-    if status == NO_MATRIX and row.get("failed_checks", "").startswith("finished_run_without_matrix"):
+    if status == NO_MATRIX and row.get("failed_checks", "").startswith(
+            ("finished_run_without_matrix", "rerun_not_finished")):
         return 1
     # NO_MATRIX with matrix_overwritten_by:<system> is the known 03_DELAY / 03A_CASA folder
     # collision: reported in every row and in the summary, but not allowed to turn every task's
@@ -1280,9 +1464,17 @@ def summarize_rows(rows: List[dict]) -> dict:
         for check in filter(None, (row.get("failed_checks") or "").split(";")):
             key = check.split(":")[0] if check.startswith("matrix_overwritten") else check
             by_check[key] = by_check.get(key, 0) + 1
+    by_determinism: Dict[str, int] = {}
+    for row in rows:
+        same = str(row.get("rerun_same_as_campaign", ""))
+        if same:
+            by_determinism[same] = by_determinism.get(same, 0) + 1
     worst = max((severity(r) for r in rows), default=0)
-    return {"n_runs": len(rows), "by_status": by_status, "by_system": by_system,
-            "by_check": by_check, "exit_code": worst}
+    summary = {"n_runs": len(rows), "by_status": by_status, "by_system": by_system,
+               "by_check": by_check, "exit_code": worst}
+    if by_determinism:
+        summary["rerun_same_as_campaign"] = by_determinism
+    return summary
 
 
 def write_campaign_summary(out_dir: Path) -> int:
@@ -1319,6 +1511,16 @@ def write_campaign_summary(out_dir: Path) -> int:
     if owners:
         lines += ["", "Matrices found in a shared folder that belong to another system:", ""]
         lines += [f"- {k}: {v}" for k, v in sorted(owners.items())]
+    if summary.get("rerun_same_as_campaign"):
+        lines += ["", "Rerun result line equal to the campaign's (True) or not (False): "
+                  + ", ".join(f"{k}: {v}" for k, v in sorted(summary["rerun_same_as_campaign"].items()))]
+        deviating = [r for r in rows if str(r.get("rerun_same_as_campaign")) == "False"]
+        with (out_dir / "validation_rerun_deviations.csv").open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=["folder", "problem", "instance", "system", "status",
+                                                    "rerun_deviations"], extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(deviating)
+        lines += [f"Every deviation, one row per run: validation_rerun_deviations.csv ({len(deviating)})"]
     lines += ["", f"Flagged runs (exit code > 0): {len(flagged)} -> validation_flagged_runs.csv"]
     (out_dir / "validation_summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))
@@ -1346,6 +1548,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--arrival-delay-metric", default="signed", choices=ARRIVAL_DELAY_METRICS,
                     help="used only when neither the result line nor manifest.json names the metric "
                          "(04_MIP's manifest does not); the campaign caller's default is signed")
+    ap.add_argument("--time-offset", default="formal", choices=list(TIME_OFFSETS),
+                    help="model time = file timestep + 1 (formal, default) or + 0 (plain), for the "
+                         "model_* columns")
+    ap.add_argument("--campaign-folder", type=Path, default=None,
+                    help="RERUN MODE: the campaign this folder reruns (e.g. output/20260918_V2). "
+                         "Matrices are judged against the campaign's claims for the same (instance, "
+                         "system), and the rerun's own result line is compared with the campaign's.")
     ap.add_argument("--no-connectivity", action="store_true",
                     help="do not require en-route sectors to be connected (LPNMR's model; ATMOS requires it)")
     ap.add_argument("--resume", action="store_true",
@@ -1377,7 +1586,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         try:
             worst = max(worst, validate_problem(problem_dir, a.instance_root, a.out_dir, systems, folders,
                                                 a.resume, a.timestep_granularity, a.arrival_delay_metric,
-                                                not a.no_connectivity, a.verbose))
+                                                not a.no_connectivity, a.verbose, a.time_offset,
+                                                a.campaign_folder))
         except ValidatorError as exc:
             print(f"[ERROR] {problem_dir}: {exc}", file=sys.stderr)
             worst = max(worst, 3)
