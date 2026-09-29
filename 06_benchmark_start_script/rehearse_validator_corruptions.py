@@ -45,7 +45,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Tuple
 
 import numpy as np
 
@@ -117,7 +117,7 @@ def c_edge_break(run_dir, problem_dir, inst):
         tr = trajectory(nav, f)
         if len(tr) < 3:
             continue
-        (t0, v0), (t1, v1), (t2, v2) = tr[0], tr[1], tr[2]
+        (_, v0), (t1, v1), (_, v2) = tr[0], tr[1], tr[2]
         on_path = {v for _, v in tr}
         for x in range(inst.n_vertices):
             if (not inst.is_airport[x] and x not in on_path and x not in adj[v0]

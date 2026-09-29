@@ -98,7 +98,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import math
 import re
 import sys
 import time
@@ -619,8 +618,7 @@ def evaluate_solution(inst: Instance, nav: np.ndarray, sec: Optional[np.ndarray]
     seg_flight = rows[j]
     wait = (a == b) & inst.is_airport[a]
     ev.info["n_airport_waits"] = int(np.count_nonzero(wait))
-    stay_enroute = (a == b) & ~inst.is_airport[a]      # already counted by not_simple
-    move = a != b
+    move = a != b                     # a stay at an en-route vertex is counted by not_simple
     found, dist = inst.lookup_edges(a[move], b[move])
     if not np.all(found):
         k = int(np.flatnonzero(~found)[0])
@@ -636,7 +634,6 @@ def evaluate_solution(inst: Instance, nav: np.ndarray, sec: Optional[np.ndarray]
         ev.hard_fail("edge_time", int(np.count_nonzero(bad)),
                      f"flight {int(rows[idx])}: {int(vals[idx])}->{int(vals[idx + 1])} takes "
                      f"{int(dt[move][k])} timesteps, model {int(expected[k])}")
-    del stay_enroute
 
     # ---- rotations ----------------------------------------------------------------------
     prev, nxt = inst.rotation_prev, inst.rotation_next
@@ -1313,7 +1310,7 @@ def write_campaign_summary(out_dir: Path) -> int:
         if r.get("matrix_owner") and r["matrix_owner"] != r["system"]:
             key = f"{r['system']} -> {r['matrix_owner']}"
             owners[key] = owners.get(key, 0) + 1
-    lines = [f"# Solution-matrix validation summary", "",
+    lines = ["# Solution-matrix validation summary", "",
              f"{len(paths)} problem folder(s), {summary['n_runs']} runs, exit code {summary['exit_code']}.", "",
              "| " + " | ".join(table[0]) + " |", "|" + "---|" * len(table[0])]
     lines += ["| " + " | ".join(r) + " |" for r in table[1:]]
