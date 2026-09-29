@@ -70,10 +70,12 @@ OBJECTIVES, as the solvers compute them (W = the instance's evaluation window)
 STATUSES AND EXIT CODES
 
     VALID       every check passed, every claimed objective reproduced          exit 0
-    NO_MATRIX   no matrix for this run. Expected for TIMEOUT/MEMOUT/ERROR runs  exit 0,
-                (the solvers write matrices only on a normal exit); a run that
-                finished without one, or whose matrix was overwritten by another
-                system, is flagged in failed_checks                             exit 1
+    NO_MATRIX   no matrix for this run. Expected for TIMEOUT/MEMOUT/ERROR runs  exit 0
+                (the solvers write matrices only on a normal exit). A run that
+                finished without one is flagged finished_run_without_matrix     exit 1
+                A run whose matrix another system overwrote in a shared folder
+                (03A_CASA writes to solver_outputs/03_DELAY) is flagged
+                matrix_overwritten_by:<system>; counted in the summary          exit 0
     UNVERIFIED  matrix present but lacks the sector allocation (02_ASP with
                 dynamic sectorisation does not write it)                        exit 1
     MISMATCH    consistency failure (claim != recomputation)                    exit 1
@@ -449,7 +451,7 @@ def read_matrix(path: Path) -> np.ndarray:
                 array = bundle[bundle.files[0]]
         else:
             try:
-                array = pd.read_csv(path, header=None, dtype=np.int64, engine="c").to_numpy()
+                array = pd.read_csv(path, header=None, dtype=np.int32, engine="c").to_numpy()
             except (ValueError, OverflowError):
                 array = pd.read_csv(path, header=None, dtype=np.float64, engine="c").to_numpy()
     except pd.errors.EmptyDataError:
@@ -1233,8 +1235,11 @@ def severity(row: dict) -> int:
         return 2
     if status in (MISMATCH, UNVERIFIED):
         return 1
-    if status == NO_MATRIX and row.get("failed_checks"):
+    if status == NO_MATRIX and row.get("failed_checks", "").startswith("finished_run_without_matrix"):
         return 1
+    # NO_MATRIX with matrix_overwritten_by:<system> is the known 03_DELAY / 03A_CASA folder
+    # collision: reported in every row and in the summary, but not allowed to turn every task's
+    # exit code into 1 and so hide a real MISMATCH behind it.
     return 0
 
 
@@ -1258,8 +1263,8 @@ def summarize_rows(rows: List[dict]) -> dict:
         by_system.setdefault(row["system"], {})
         by_system[row["system"]][status] = by_system[row["system"]].get(status, 0) + 1
         for check in filter(None, (row.get("failed_checks") or "").split(";")):
-            by_check[check.split(":")[0] if check.startswith("matrix_overwritten") else check] = \
-                by_check.get(check, 0) + 1
+            key = check.split(":")[0] if check.startswith("matrix_overwritten") else check
+            by_check[key] = by_check.get(key, 0) + 1
     worst = max((severity(r) for r in rows), default=0)
     return {"n_runs": len(rows), "by_status": by_status, "by_system": by_system,
             "by_check": by_check, "exit_code": worst}
