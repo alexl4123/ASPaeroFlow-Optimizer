@@ -99,14 +99,28 @@ def family_name(capacity_level: str, run_mip: str) -> str:
     return FAMILY_SMALL if capacity_level == "NONE" else FAMILY_LARGE
 
 
-def experiment_flags(capacity_level: str, run_mip: str, licence_found: bool = True) -> List[str]:
-    """The --experiment-* flags run_all_benchmarks.slurm would pass for this problem."""
+#: Systems that exist only when asked for. A unit of one of these gets its switch appended to the
+#: family's flags; every other unit gets exactly the flags it got before these systems existed.
+OPT_IN_SYSTEMS = {"0_Sequential": "--experiment-sequential=1"}
+
+
+def experiment_flags(capacity_level: str, run_mip: str, licence_found: bool = True,
+                     system: str | None = None) -> List[str]:
+    """The --experiment-* flags run_all_benchmarks.slurm would pass for this problem.
+
+    With `system` naming an opt-in system (OPT_IN_SYSTEMS), its switch is appended so that
+    --only-system can select it; for any other system, or none, the result is unchanged.
+    """
     mip_flag = f"--experiment-mip={1 if mip_enabled(run_mip, licence_found) else 0}"
     if run_mip == "only":
-        return [mip_flag, *_MIP_ONLY_OFF]
-    if capacity_level == "NONE":
-        return [mip_flag]
-    return [mip_flag, *_LARGE_OFF]
+        flags = [mip_flag, *_MIP_ONLY_OFF]
+    elif capacity_level == "NONE":
+        flags = [mip_flag]
+    else:
+        flags = [mip_flag, *_LARGE_OFF]
+    if system in OPT_IN_SYSTEMS:
+        flags.append(OPT_IN_SYSTEMS[system])
+    return flags
 
 
 def main() -> int:
@@ -117,11 +131,14 @@ def main() -> int:
     ap.add_argument("--mip-licence", default="yes", choices=["yes", "no"],
                     help="for --run-mip=auto: whether this node has a usable Gurobi licence")
     ap.add_argument("--print", dest="what", default="flags", choices=["flags", "family"])
+    ap.add_argument("--system", default=None,
+                    help="the unit's system; an opt-in system (0_Sequential) gets its switch added")
     a = ap.parse_args()
     if a.what == "family":
         print(family_name(a.capacity_level, a.run_mip))
     else:
-        for flag in experiment_flags(a.capacity_level, a.run_mip, a.mip_licence == "yes"):
+        for flag in experiment_flags(a.capacity_level, a.run_mip, a.mip_licence == "yes",
+                                     system=a.system):
             print(flag)
     return 0
 

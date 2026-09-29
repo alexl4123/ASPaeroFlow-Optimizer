@@ -160,6 +160,65 @@ class TestUnitCommandLine(unittest.TestCase):
                         self.assertEqual(a, b)
 
 
+class TestOptInAndResultsFolders(unittest.TestCase):
+    """0_Sequential exists only when asked for, and no two systems share a results folder.
+
+    The shared folder is not hypothetical: until 2026-09-29 03A_CASA wrote into 03_DELAY's folder,
+    and the merge kept one matrix per instance, so the V2 campaign lost 03_DELAY's matrices.
+    """
+
+    CASES = [("NONE", "yes"), ("PCAP100", "yes"), ("PCAP100", "no"), ("PCAP100", "only")]
+
+    def systems(self, flags, output_path=Path("output/F/output_P")):
+        args = caller.build_arg_parser().parse_args(["problem", *flags, *COMMON])
+        return args, caller.build_system_config(BENCH, output_path, "P", args)
+
+    @staticmethod
+    def results_root(system):
+        return next(a for a in system["cmd"] if a.startswith("--results-root="))
+
+    def test_sequential_is_off_by_default(self):
+        for capacity, run_mip in self.CASES:
+            with self.subTest(capacity=capacity, run_mip=run_mip):
+                _, systems = self.systems(families.experiment_flags(capacity, run_mip))
+                self.assertNotIn("0_Sequential", [s["key"] for s in systems])
+
+    def test_families_add_the_switch_only_for_the_opt_in_system(self):
+        for capacity, run_mip in self.CASES:
+            base = families.experiment_flags(capacity, run_mip)
+            for key in ("01_ASPaeroFlow", "03_DELAY", "03A_CASA", "04_MIP", None):
+                self.assertEqual(families.experiment_flags(capacity, run_mip, system=key), base)
+            self.assertEqual(families.experiment_flags(capacity, run_mip, system="0_Sequential"),
+                             base + ["--experiment-sequential=1"])
+
+    def test_sequential_is_aspaeroflow_plus_the_flag(self):
+        args, systems = self.systems(families.experiment_flags("PCAP100", "no", system="0_Sequential"))
+        by_key = {s["key"]: s for s in systems}
+        paths = TestUnitCommandLine.PATHS
+
+        def full(system):
+            return caller.build_command(system, paths, "/bin/python", 1,
+                                        solver_cli=caller.solver_option_cli(system, args)) + system["cmd"]
+
+        ours, theirs = full(by_key["0_Sequential"]), full(by_key["01_ASPaeroFlow"])
+        self.assertEqual(ours[-1], "--sequential-execution=true")
+        # only the results folder and the W&B suffix carry the system's name
+        renamed = [a.replace("01_ASPaeroFlow", "0_Sequential")
+                   if a.startswith(("--results-root=", "--wandb-experiment-name-suffix=")) else a
+                   for a in theirs]
+        self.assertEqual(ours[:-1], renamed)
+
+    def test_no_two_systems_share_a_results_folder(self):
+        flags = families.experiment_flags("NONE", "yes", system="0_Sequential")
+        _, systems = self.systems(flags)
+        roots = [self.results_root(s) for s in systems]
+        self.assertEqual(len(roots), len(set(roots)), "two systems write to one solver_outputs folder")
+        by_key = {s["key"]: self.results_root(s) for s in systems}
+        self.assertTrue(by_key["03A_CASA"].endswith("/solver_outputs/03A_CASA"))
+        self.assertTrue(by_key["03_DELAY"].endswith("/solver_outputs/03_DELAY"))
+        self.assertTrue(by_key["0_Sequential"].endswith("/solver_outputs/0_Sequential"))
+
+
 class TestSelectors(unittest.TestCase):
     def test_systems_keep_build_order(self):
         systems = [{"key": k} for k in ("01_A", "04_MIP", "05_ASP_rp_d_sp")]

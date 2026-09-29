@@ -114,7 +114,8 @@ echo "Worklist:  ${WORKLIST}  (${N_UNITS} units)"
 echo "Units:     ${FIRST_UNIT}..${LAST_UNIT}  (CHUNK=${CHUNK}, UNIT_OFFSET=${UNIT_OFFSET})"
 echo "Output:    output/${FOLDER}/units/shards/"
 
-source "$HOME/miniconda3/etc/profile.d/conda.sh"
+# CONDA_SH only so the script can be rehearsed off the cluster; the default is the cluster's.
+source "${CONDA_SH:-$HOME/miniconda3/etc/profile.d/conda.sh}"
 conda activate potassco
 
 # ---- Gurobi licence selection: the per-node licence beats WLS -----------------------------
@@ -265,9 +266,12 @@ for (( UNIT = FIRST_UNIT; UNIT <= LAST_UNIT; UNIT++ )); do
   # strictly needed once --only-system has named the system, and they are passed anyway as a
   # guard: if the worklist and the family rules ever disagree, the caller exits with "no such
   # enabled system" instead of quietly running work the campaign did not ask for.
+  # --system adds the switch of an opt-in system (0_Sequential); for every other system the
+  # flags are exactly the ones run_all_benchmarks.slurm passes.
   mapfile -t EXPERIMENTS < <(./benchmark_families.py --capacity-level "$CAP_LEVEL" \
                                                      --run-mip "$RUN_MIP" \
-                                                     --mip-licence "$MIP_LICENCE")
+                                                     --mip-licence "$MIP_LICENCE" \
+                                                     --system "$SYSTEM")
 
   UNIT_START="$(date -Is)"
   UNIT_RC=0
