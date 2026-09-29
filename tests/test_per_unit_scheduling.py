@@ -201,7 +201,7 @@ class TestResultWriter(unittest.TestCase):
     and ram_usage.csv are unaffected -- their header is the full system list up front.
     """
 
-    def test_header_discovery_is_order_dependent(self):
+    def test_late_reporting_system_keeps_its_column(self):
         instances = ["i1", "i2"]
         systems = ["S_late", "S_always"]
         sol = {
@@ -215,12 +215,11 @@ class TestResultWriter(unittest.TestCase):
             out = Path(tmp)
             caller.write_result_csvs(out, instances, systems, exec_time, ram, sol)
             overload = (out / "overload.csv").read_text().splitlines()
-            # Header: S_always first (seen on i1), S_late appended when it turns up on i2.
-            self.assertEqual(overload[0], "Instance,S_always,S_late")
-            # i1 is SHORT: S_late contributed nothing.
-            self.assertEqual(overload[1], "i1,1")
-            # i2 is written in SYSTEM order (S_late=7 then S_always=2), so under that header the
-            # two values are swapped. This is the defect; it is what the current code does.
+            # Until 2026-09-29 the header was S_always,S_late (order of appearance), i1 was short
+            # and i2's values sat under the wrong names (8 V2 problems). Now: system order, full
+            # rows, -1 where a system reported nothing.
+            self.assertEqual(overload[0], "Instance,S_late,S_always")
+            self.assertEqual(overload[1], "i1,-1,1")
             self.assertEqual(overload[2], "i2,7,2")
             # execution_time.csv is immune: its header is the whole system list, up front.
             self.assertEqual((out / "execution_time.csv").read_text().splitlines()[0],
