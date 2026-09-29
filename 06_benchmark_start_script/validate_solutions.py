@@ -849,7 +849,13 @@ def evaluate_solution(inst: Instance, nav: np.ndarray, sec: Optional[np.ndarray]
 # ---------------------------------------------------------------------------------------------
 
 def results_dirs() -> Dict[str, str]:
-    """system key -> the solver_outputs/ folder it writes to, from build_system_config itself."""
+    """system key -> the solver_outputs/ folder it writes to, from build_system_config itself.
+
+    Read from THIS checkout's start_benchmark_caller.py, so run the validator from a checkout whose
+    build_system_config is the campaign's: at 818136e 2A_Reroute writes to 0A_Reroute and
+    03A_CASA to 03_DELAY. A checkout that gave 03A_CASA its own folder would look for matrices
+    the campaign never wrote there.
+    """
     fallback = {"2A_Reroute": "0A_Reroute", "03A_CASA": "03_DELAY"}
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent))

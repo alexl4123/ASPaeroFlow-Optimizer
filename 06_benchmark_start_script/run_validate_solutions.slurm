@@ -22,8 +22,8 @@
 #   SYSTEMS        published | all | comma list                       (default published)
 #   EXTRA          further validate_solutions.py flags, e.g. "--no-connectivity"
 #
-# The task count is the number of problem folders divided by CHUNK:
-#     ls -d <OUTPUT_ROOT>/<FOLDER>/output_*/ | wc -l
+# The task count is the number of problem folders divided by CHUNK, and task N is line N of
+#     ls -d <OUTPUT_ROOT>/<FOLDER>/output_*/ | LC_ALL=C sort
 #
 # SIZE, measured on the laptop and scaled to the V2 campaign's 40,455 finished runs: the largest
 # single run (31,622 flights, 19,537 vertices, 3,000 timesteps) takes 17 s and 2.3 GB; a problem
@@ -63,7 +63,8 @@ mkdir -p logs "$OUT"
 [ -d "${OUTPUT_ROOT}/${FOLDER}" ] || { echo "[ERROR] ${OUTPUT_ROOT}/${FOLDER} not found (run from 06_benchmark_start_script)" >&2; exit 3; }
 [ -d "$INSTANCE_ROOT" ] || { echo "[ERROR] INSTANCE_ROOT $INSTANCE_ROOT not found" >&2; exit 3; }
 
-mapfile -t PROBLEMS < <(find "${OUTPUT_ROOT}/${FOLDER}" -mindepth 1 -maxdepth 1 -type d -name 'output_*' | sort)
+# LC_ALL=C: the array index must name the same folder on every node, whatever its locale.
+mapfile -t PROBLEMS < <(find "${OUTPUT_ROOT}/${FOLDER}" -mindepth 1 -maxdepth 1 -type d -name 'output_*' | LC_ALL=C sort)
 N_PROBLEMS=${#PROBLEMS[@]}
 FIRST=$(( (SLURM_ARRAY_TASK_ID - 1) * CHUNK ))
 if [ "$FIRST" -ge "$N_PROBLEMS" ]; then
