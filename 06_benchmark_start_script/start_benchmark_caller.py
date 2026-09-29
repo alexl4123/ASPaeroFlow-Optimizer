@@ -820,6 +820,42 @@ RESULT_METRICS: List[str] = [
 ]
 
 
+def metric_rows(instance_names: List[str], system_names: List[str], sol_value: Dict[str, Dict],
+                metric: str) -> Tuple[List[str], List[List]]:
+    """Header and rows of one metric CSV.
+
+    The columns are the systems that report `metric` on at least one instance, in system_names
+    order, and a system without a value on an instance gets -1 there. Every row therefore has one
+    field per column, and a value always sits under its own system's name.
+
+    Until 2026-09-29 the header was built in order of FIRST APPEARANCE while the instances were
+    walked, and a row skipped every system not yet in the header. A system that reported the
+    metric only from the second instance on was appended at the end of the header, so the rows
+    before that point were short and later values sat under the wrong column name (8 of 325
+    problems of the V2 campaign, all USA-EAST-COAST-20x10 at T_gran = 1). Where every reporting
+    system appears on the first instance, which covers every problem the defect did not touch,
+    the output of this function is identical to the old one.
+    """
+    reporting = [s for s in system_names
+                 if any(metric in sol_value[inst][s][-1] for inst in instance_names)]
+    rows = []
+    for inst in instance_names:
+        row = [inst]
+        for s in reporting:
+            final = sol_value[inst][s][-1]
+            row.append(final[metric] if metric in final else -1)
+        rows.append(row)
+    return ["Instance"] + reporting, rows
+
+
+def write_metric_csvs(output_path: Path, instance_names: List[str], system_names: List[str],
+                      sol_value: Dict[str, Dict]) -> None:
+    """The per-metric CSVs of one problem directory (see metric_rows)."""
+    for metric in RESULT_METRICS:
+        head, rows = metric_rows(instance_names, system_names, sol_value, metric)
+        write_csv(output_path / f"{metric.lower()}.csv", head, rows)
+
+
 def write_result_csvs(
     output_path: Path,
     instance_names: List[str],
@@ -843,39 +879,9 @@ def write_result_csvs(
     def dicts_to_rows(container: Dict[str, Dict[str, float | int]]) -> List[List]:
         return [[inst] + [container[inst][name] for name in system_names] for inst in instance_names]
 
-    def sol_value_to_rows(container, metric):
-
-        own_heads = {}
-        own_heads["Instance"] = 1
-
-        output_list = []
-        for inst in instance_names:
-            tmp_list = [inst]
-
-            for system_name in system_names:
-
-                final_sol_dict = container[inst][system_name][-1]
-
-                if metric in final_sol_dict:
-                    if system_name not in own_heads:
-                        own_heads[system_name] = 1
-
-                    tmp_list.append(final_sol_dict[metric])
-
-                else:
-                    if system_name in own_heads:
-                        tmp_list.append(-1)
-
-            output_list.append(tmp_list)
-
-        return own_heads, output_list
-
     write_csv(output_path / "execution_time.csv", header, dicts_to_rows(exec_time))
     write_csv(output_path / "ram_usage.csv", header, dicts_to_rows(ram_usage))
-
-    for metric in RESULT_METRICS:
-        metric_values = sol_value_to_rows(sol_value, metric)
-        write_csv(output_path / f"{metric.lower()}.csv", metric_values[0], metric_values[1])
+    write_metric_csvs(output_path, instance_names, system_names, sol_value)
 
     for inst in instance_names:
         for system_name in system_names:
