@@ -20,6 +20,9 @@
 #   INSTANCE_ROOT  folder with <PROBLEM>/<INSTANCE>/                  (default ../05_instances)
 #   CHUNK          problem folders per task                           (default 1)
 #   SYSTEMS        published | all | comma list                       (default published)
+#   CAMPAIGN_FOLDER  RERUN MODE: the campaign FOLDER reruns, as a path (e.g. $OPT/.../output/20260918_V2);
+#                  matrices are judged against its claims and each rerun line is compared with its
+#   TIME_OFFSET    formal (default) | plain: the model-time convention of the model_* columns
 #   EXTRA          further validate_solutions.py flags, e.g. "--no-connectivity"
 #
 # The task count is the number of problem folders divided by CHUNK, and task N is line N of
@@ -57,6 +60,10 @@ INSTANCE_ROOT="${INSTANCE_ROOT:-../05_instances}"
 CHUNK="${CHUNK:-1}"
 SYSTEMS="${SYSTEMS:-published}"
 EXTRA="${EXTRA:-}"
+CAMPAIGN_FOLDER="${CAMPAIGN_FOLDER:-}"
+TIME_OFFSET="${TIME_OFFSET:-formal}"
+RERUN=()
+[ -n "$CAMPAIGN_FOLDER" ] && RERUN=(--campaign-folder "$CAMPAIGN_FOLDER")
 : "${SLURM_ARRAY_TASK_ID:?this script is an array job; submit it with --array=1-N}"
 
 mkdir -p logs "$OUT"
@@ -80,6 +87,7 @@ done
 echo "Job:      ${SLURM_JOB_NAME:-v2valid} ${SLURM_ARRAY_JOB_ID:-local}_${SLURM_ARRAY_TASK_ID}  host $(hostname)"
 echo "Folder:   ${OUTPUT_ROOT}/${FOLDER}  (${N_PROBLEMS} problem folders; this task: $(( ${#ARGS[@]} / 2 )))"
 echo "Commit:   $(git -C .. rev-parse --short HEAD 2>/dev/null || echo unknown)"
+[ -n "$CAMPAIGN_FOLDER" ] && echo "Rerun of: $CAMPAIGN_FOLDER"
 echo "Started:  $(date -Is)"
 
 # CONDA_SH only so the script can be rehearsed off the cluster; the default is the cluster's.
@@ -87,7 +95,7 @@ source "${CONDA_SH:-$HOME/miniconda3/etc/profile.d/conda.sh}"
 conda activate potassco
 
 RC=0
-python -u ./validate_solutions.py "${ARGS[@]}" \
+python -u ./validate_solutions.py "${ARGS[@]}" ${RERUN[@]+"${RERUN[@]}"} --time-offset "$TIME_OFFSET" \
     --instance-root "$INSTANCE_ROOT" --out-dir "$OUT" --systems "$SYSTEMS" --resume $EXTRA || RC=$?
 
 echo "Finished: $(date -Is)  exit ${RC}"
