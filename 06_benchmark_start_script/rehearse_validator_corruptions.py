@@ -137,7 +137,18 @@ def c_edge_time(run_dir, problem_dir, inst):
             nav[f, t1], nav[f, t1 + 1] = -1, v1
             write(run_dir, MATS[0], nav)
             return f"flight {f}: {v1} reached at {t1 + 1} instead of {t1}"
-    raise RuntimeError("no flight with a stretchable second edge")
+    # every edge takes one timestep (coarse T_gran): hold the flight one extra timestep on its
+    # first edge instead, i.e. move everything after the departure one timestep later
+    for f in range(inst.n_flights):
+        tr = trajectory(nav, f)
+        if len(tr) >= 2 and tr[-1][0] + 1 < nav.shape[1]:
+            for t, _ in tr[1:]:
+                nav[f, t] = -1
+            for t, v in tr[1:]:
+                nav[f, t + 1] = v
+            write(run_dir, MATS[0], nav)
+            return f"flight {f}: first edge {tr[0][1]}->{tr[1][1]} takes {tr[1][0] + 1 - tr[0][0]} timesteps"
+    raise RuntimeError("no flight with a stretchable edge")
 
 
 def c_departs_early(run_dir, problem_dir, inst):

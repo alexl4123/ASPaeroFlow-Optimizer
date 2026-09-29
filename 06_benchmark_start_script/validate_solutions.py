@@ -47,6 +47,7 @@ HARD CONSTRAINTS (a violation makes the run INVALID)
     sector_disconnected                  en-route sectors are connected (ATMOS Def. 11; LPNMR
                                          does not require it -- see --no-connectivity)
     matrix_unreadable / matrix_shape     files readable, shapes consistent (and as manifest.json says)
+    granularity_mismatch                 the run was given another T_gran than its problem has
 
 CONSISTENCY (a failure makes the run a MISMATCH)
 
@@ -138,7 +139,8 @@ VALID, NO_MATRIX, UNVERIFIED, MISMATCH, INVALID, ERROR = (
 
 #: Hard constraints of the model. Any count > 0 makes a run INVALID.
 HARD_CHECKS: Tuple[str, ...] = (
-    "matrix_unreadable", "matrix_shape", "flight_missing", "extra_flight_rows", "bad_vertex_id",
+    "matrix_unreadable", "matrix_shape", "granularity_mismatch", "flight_missing",
+    "extra_flight_rows", "bad_vertex_id",
     "endpoints", "continues_after_destination", "departs_before_filed", "not_an_edge",
     "edge_time", "not_simple", "rotation_place", "rotation_overlap", "rotation_no_turnaround",
     "bad_sector_id", "sector_representative", "airport_not_atomic", "sector_disconnected",
@@ -407,6 +409,10 @@ class Instance:
         problems = []
         f, t, v = self.filed_f, self.filed_t, self.filed_v
         same = f[1:] == f[:-1]
+        if np.any(same & (t[1:] == t[:-1])):
+            problems.append("flights.csv lists a flight twice at one timestep")
+        if np.any(self.filed_origin == self.filed_dest):
+            problems.append("a filed flight lands where it departed")
         a, b, dt, fl = v[:-1][same], v[1:][same], (t[1:] - t[:-1])[same], f[:-1][same]
         found, dist = self.lookup_edges(a, b)
         if not np.all(found):
@@ -1093,7 +1099,8 @@ def validate_problem(problem_dir: Path, instance_root: Path, out_dir: Path, syst
                         metric = default_metric
                     ev = None
                     if run_tg is not None and int(run_tg) != tg:
-                        read_problems.append(f"run used timestep granularity {run_tg}, problem has {tg}")
+                        read_problems.append(f"granularity_mismatch: the run used timestep granularity "
+                                             f"{run_tg}, the problem has {tg}")
                     if mats["converted_navpoint_matrix"] is None:
                         read_problems.append("converted_navpoint_matrix missing or unreadable")
                     else:
@@ -1109,6 +1116,7 @@ def validate_problem(problem_dir: Path, instance_root: Path, out_dir: Path, syst
 
                 if ev is None:
                     row["status"] = INVALID
+                    row["v_matrix_unreadable"] = 1
                     row["failed_checks"] = "matrix_unreadable"
                     row["note"] = "; ".join(read_problems)
                     rows.append(row)
@@ -1125,9 +1133,13 @@ def validate_problem(problem_dir: Path, instance_root: Path, out_dir: Path, syst
                 row["first_violation"] = " | ".join(ev.examples)
 
                 hard = [c for c in HARD_CHECKS if ev.hard[c]]
-                if read_problems:
+                if any(p.startswith("granularity_mismatch") for p in read_problems):
+                    hard = ["granularity_mismatch"] + hard
+                    row["v_granularity_mismatch"] = 1
+                if any(not p.startswith("granularity_mismatch") for p in read_problems):
                     hard = ["matrix_unreadable"] + hard
-                    notes += read_problems
+                    row["v_matrix_unreadable"] = 1
+                notes += read_problems
                 if not check_connectivity:
                     notes.append("connectivity not checked")
                 inconsistent = [f"{c}" for c in CONSISTENCY_CHECKS if ev.consistency[c]]

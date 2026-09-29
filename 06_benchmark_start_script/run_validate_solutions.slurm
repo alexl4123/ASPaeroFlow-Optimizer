@@ -3,7 +3,7 @@
 #SBATCH -t 01:30:00
 #SBATCH -N 1 -n 1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=12G
+#SBATCH --mem=8G
 #SBATCH -J v2valid
 #SBATCH -o logs/%x-%A_%a.out
 #
@@ -24,6 +24,12 @@
 #
 # The task count is the number of problem folders divided by CHUNK:
 #     ls -d <OUTPUT_ROOT>/<FOLDER>/output_*/ | wc -l
+#
+# SIZE, measured on the laptop and scaled to the V2 campaign's 40,455 finished runs: the largest
+# single run (31,622 flights, 19,537 vertices, 3,000 timesteps) takes 17 s and 2.3 GB; a problem
+# folder takes 2.6 min at the median and about 21 min at worst (21 instances x 7 matrix sets at
+# T_gran = 60). -t 01:30:00 and --mem=8G leave a factor of four for a slower node and wider
+# matrices. The MIP campaign holds 87 matrices in all: CHUNK=25 and -t 00:30:00 are plenty.
 #
 # RESUMABLE. --resume is always passed: rows already written are kept, so a task that hit its
 # walltime is simply resubmitted with the same array index and continues where it stopped.
