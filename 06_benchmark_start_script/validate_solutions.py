@@ -745,11 +745,13 @@ def evaluate_solution(inst: Instance, nav: np.ndarray, sec: Optional[np.ndarray]
         capvec[members == 0] = 0
         capvecs[g] = capvec
         if capm is not None:
-            block = capm[:, start:start + glen]
-            mism = int(np.count_nonzero(block != capvec[:, None]))
+            block = capm[:, start:start + glen] != capvec[:, None]
+            mism = int(np.count_nonzero(block))
             if mism:
+                s_bad, t_bad = np.nonzero(block)
                 ev.inconsistent("capacity_matrix", mism,
-                                f"t={int(start)}: saved capacity differs from max-composition")
+                                f"sector {int(s_bad[0])} t={int(start + t_bad[0])}: saved capacity "
+                                f"{int(capm[s_bad[0], start + t_bad[0]])}, max-composition {int(capvec[s_bad[0]])}")
 
     # ---- SECTOR-NUMBER, SECTOR-DIFF, RECONFIG (and the paper's windows) -------------------
     t_window = np.arange(W)
@@ -1156,8 +1158,11 @@ def validate_problem(problem_dir: Path, instance_root: Path, out_dir: Path, syst
                         row["failed_checks"] = f"matrix_overwritten_by:{owner}"
                     row["note"] = "; ".join(notes + [f"solver_outputs/{folders.folder(system)}/{instance} "
                                                      f"holds {owner}'s solution"])
-                    for m in METRICS:          # the recomputed values belong to the other system
-                        row[f"recomputed_{m}"] = ""
+                    # every recomputed value and count belongs to the other system's solution
+                    for key in ([f"recomputed_{m}" for m in METRICS] + [f"v_{c}" for c in HARD_CHECKS]
+                                + [f"c_{c}" for c in CONSISTENCY_CHECKS] + list(INFO_FIELDS)
+                                + ["first_violation"]):
+                        row[key] = ""
                     rows.append(row)
                     continue
 
