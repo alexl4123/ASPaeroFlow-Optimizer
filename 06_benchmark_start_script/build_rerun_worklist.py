@@ -17,7 +17,7 @@ Two modes:
 
     # R-DC: regenerate the matrices 03_DELAY and 03A_CASA lost to their shared results folder
     ./build_rerun_worklist.py --source-folder 20260918_V2 --folder 20260930_V2_RERUN_DC \\
-        --systems 03_DELAY,03A_CASA --only-finished
+        --systems 03_DELAY,03A_CASA --only-finished [--source-root $OPT/06_benchmark_start_script/output]
     # R-SEQ: 0_Sequential on every instance of the campaign
     ./build_rerun_worklist.py --source-folder 20260918_V2 --folder 20260930_V2_SEQ \\
         --as-system 0_Sequential
@@ -101,8 +101,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--source-folder", required=True, help="the finished campaign, e.g. 20260918_V2")
+    ap.add_argument("--source-root", type=Path, default=None,
+                    help="where the source campaign's folder is (default: --output-root), e.g. the "
+                         "campaign checkout's output/ when the rerun runs from another clone")
     ap.add_argument("--source-worklist", type=Path, default=None,
-                    help="default: <output-root>/<source-folder>/units/worklist.tsv")
+                    help="default: <source-root>/<source-folder>/units/worklist.tsv")
     ap.add_argument("--folder", required=True, help="the rerun's own folder, e.g. 20260930_V2_SEQ")
     ap.add_argument("--output-root", type=Path, default=Path("output"))
     mode = ap.add_mutually_exclusive_group(required=True)
@@ -118,7 +121,8 @@ def main() -> int:
     ap.add_argument("--max-array-size", type=int, default=None)
     a = ap.parse_args()
 
-    source = a.source_worklist or (a.output_root / a.source_folder / "units" / "worklist.tsv")
+    source_root = a.source_root or a.output_root
+    source = a.source_worklist or (source_root / a.source_folder / "units" / "worklist.tsv")
     if not source.is_file():
         print(f"[ERROR] {source} not found", file=sys.stderr)
         return 1
@@ -151,7 +155,7 @@ def main() -> int:
         else:
             cache: Dict[str, Dict[Tuple[str, str], str]] = {}
             for row in candidates:
-                problem_dir = a.output_root / a.source_folder / f"output_{row['problem_dir']}"
+                problem_dir = source_root / a.source_folder / f"output_{row['problem_dir']}"
                 if a.outcome_from == "progress":
                     if row["problem_dir"] not in cache:
                         cache[row["problem_dir"]] = finished_from_progress(problem_dir, wanted)
@@ -208,6 +212,10 @@ def main() -> int:
     if dropped:
         print("dropped:   " + ", ".join(f"{n:,} {o}" for o, n in sorted(dropped.items()))
               + " (not finished in the source campaign)")
+    if dropped.get("missing"):
+        print(f"[WARN] {dropped['missing']:,} unit(s) have no record in the source campaign (no merged "
+              f"problem folder, or no progress row): check --source-root before submitting",
+              file=sys.stderr)
 
     max_array = a.max_array_size or detect_max_array_size() or DEFAULT_MAX_ARRAY_SIZE
     walltime = a.time_limit + PER_UNIT_OVERHEAD_S + PER_TASK_OVERHEAD_S
