@@ -9,6 +9,10 @@ validate with validate_solutions.py as they are. These tests pin
   * the split -- contiguous, every run once, no archive over the limit, the fewest archives;
   * a plan -> pack -> check round trip on a synthetic campaign, and that a changed source file,
     a result line that is not the validated one, or a corrupted member is caught;
+  * which run files the plan requires (what the validator needs to call a run VALID) and that it
+    counts the optional ones a run lacks;
+  * that pack skips an archive already in the out folder only if it is the plan's, repacks it
+    otherwise, and that check refuses archives of an earlier plan left in the folder;
   * validate_solutions.py on the archive layout, with the instance found in the published
     <region>/PCAP<c>/ layout.
 
@@ -56,6 +60,14 @@ def row(system, folder="20260918_V2", problem=SMALL, instance="0000010_SEED1", s
 def quiet(fn, *args):
     with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
         return fn(*args)
+
+
+def captured(fn, *args):
+    """(return value, stdout + stderr)."""
+    buf = io.StringIO()
+    with redirect_stdout(buf), redirect_stderr(buf):
+        code = fn(*args)
+    return code, buf.getvalue()
 
 
 class Classify(unittest.TestCase):
@@ -229,7 +241,8 @@ class RoundTrip(unittest.TestCase):
             payload = bytes(random.Random(seed + len(folder)).getrandbits(8) for _ in range(3000))
             for name in vs.MATRIX_NAMES:
                 (run_dir / f"{name}.csv.gz").write_bytes(payload)
-            (run_dir / "manifest.json").write_text(json.dumps({"folder": folder}))
+            (run_dir / "manifest.json").write_text(json.dumps(
+                {"folder": folder, "source": {"timestep_granularity": 1}}))
             (run_dir / "stray.tmp").write_text("left out")
             line = {"OVERLOAD": 0, "ARRIVAL-DELAY": 10 * seed, "SECTOR-NUMBER": 5, "SECTOR-DIFF": 1,
                     "REROUTE": seed, "RECONFIG": 2, "COMPUTATION-FINISHED": True, "ERROR": ""}
@@ -286,11 +299,17 @@ class RoundTrip(unittest.TestCase):
                     if len(parts) == 5:
                         packed.setdefault(tuple(parts[1:4]), set()).add(name)
                     if parts[-1] == "manifest.json" and parts[2] == "03_DELAY":
-                        self.assertEqual(json.loads(zf.read(member)), {"folder": "20260930_V2_RERUN_DC"})
+                        self.assertEqual(json.loads(zf.read(member))["folder"], "20260930_V2_RERUN_DC")
                     if parts[-1] == pack.RESULT_LINE_FILE and parts[2] == "03_DELAY":
                         self.assertEqual(json.loads(zf.read(member))["ARRIVAL-DELAY"], 60)
         self.assertEqual(len(packed), 6)                               # the campaign's 03_DELAY is not packed
         self.assertTrue(all(len(v) == 1 for v in packed.values()))
+        # plan and check count the same members: the zip's files, README.md and MANIFEST.csv included
+        for meta in plan["archives"]:
+            with zipfile.ZipFile(self.zips / f"{meta['name']}.zip") as zf:
+                self.assertEqual(len(zf.namelist()), meta["members"])
+            with (self.zips / f"{meta['name']}.MANIFEST.csv").open() as fh:
+                self.assertEqual(len(list(csv.DictReader(fh))) + 2, meta["members"])
         # packing the same plan again gives the same bytes
         first = {n: (self.zips / f"{n}.zip.sha256").read_text() for n in names}
         codes, _ = self.pack_all("--force")
@@ -333,6 +352,153 @@ class RoundTrip(unittest.TestCase):
         broken.write_bytes(bytes(data))
         with self.assertRaises(pack.PackError):
             pack.verify_archive(broken, name, rows)
+
+    # ---- files a run lacks ----------------------------------------------------------------------
+
+    def small_run(self, instance="0000010_SEED1"):
+        return self.out / "20260918_V2" / f"output_{SMALL}" / "solver_outputs" / "01_ASPaeroFlow" / instance
+
+    def test_an_optional_file_missing_is_counted(self):
+        (self.small_run() / "capacity_time_matrix.csv.gz").unlink()
+        code, text = captured(pack.main, self.plan_args(20))
+        self.assertEqual(code, 0, text)
+        plan = json.loads((self.plan / "plan.json").read_text())
+        lacking = plan["runs_without_file"]
+        self.assertEqual(lacking["capacity_time_matrix"], {"required": False, "runs": 1,
+                                                           "by_system": {"01_ASPaeroFlow": 1}})
+        self.assertEqual(lacking["converted_navpoint_matrix"]["runs"], 0)
+        self.assertRegex(text, r"capacity_time_matrix\s+optional\s+1\s+\(01_ASPaeroFlow 1\)")
+        self.assertIn("[NOTE] 1 optional files missing", text)
+        codes, plan = self.pack_all()
+        self.assertEqual(codes, [0] * len(codes))
+        self.assertEqual(quiet(pack.main, ["check", "--plan-dir", str(self.plan), "--out-dir", str(self.zips)]), 0)
+
+    def assert_plan_refused(self, what):
+        (self.plan / "plan.json").parent.mkdir(parents=True, exist_ok=True)
+        (self.plan / "plan.json").write_text("{}")                   # an earlier plan is not left behind
+        code, text = captured(pack.main, self.plan_args(20))
+        self.assertEqual(code, 2, text)
+        self.assertFalse((self.plan / "plan.json").exists())
+        self.assertIn(what, (self.plan / "plan_errors.txt").read_text())
+        return text
+
+    def test_a_required_matrix_missing_is_an_error(self):
+        (self.small_run() / "navaid_sector_time_assignment.csv.gz").unlink()
+        text = self.assert_plan_refused("no navaid_sector_time_assignment")
+        self.assertRegex(text, r"navaid_sector_time_assignment\s+required\s+1")
+
+    def test_a_missing_result_line_is_an_error(self):
+        (self.out / "20260918_V2" / f"output_{SMALL}" / "individual_outputs" /
+         "0000010_SEED2_01_ASPaeroFlow.json").unlink()
+        text = self.assert_plan_refused("no result_line.json source")
+        self.assertRegex(text, r"result_line.json source\s+required\s+1")
+
+    def test_a_missing_run_folder_is_an_error(self):
+        for f in self.small_run().iterdir():
+            f.unlink()
+        self.small_run().rmdir()
+        self.assert_plan_refused("run folder missing")
+
+    def test_a_problem_without_tg_needs_a_manifest_that_names_it(self):
+        for instance in ("0000010_SEED1", "0000010_SEED2"):
+            (self.small_run(instance) / "manifest.json").write_text("{}")
+        self.assert_plan_refused(f"{SMALL}: no -TG<g> in the name")
+        # a large problem carries it in its name: no manifest.json needed there
+        for run_dir in (self.out / "20260918_V2" / f"output_{LARGE_CC}" / "solver_outputs").glob("*/*"):
+            (run_dir / "manifest.json").unlink()
+        (self.small_run() / "manifest.json").write_text(json.dumps({"source": {"timestep_granularity": 1}}))
+        code, text = captured(pack.main, self.plan_args(20))
+        self.assertEqual(code, 0, text)
+        self.assertEqual(json.loads((self.plan / "plan.json").read_text())["runs_without_file"]
+                         ["manifest.json"]["runs"], 1)
+
+    # ---- an archive already in the out folder ---------------------------------------------------
+
+    def pack_verbose(self):
+        plan = json.loads((self.plan / "plan.json").read_text())
+        out = {}
+        for meta in plan["archives"]:
+            code, text = captured(pack.main, ["pack", "--plan-dir", str(self.plan), "--index",
+                                              str(meta["index"]), "--out-dir", str(self.zips)])
+            self.assertEqual(code, 0, text)
+            out[meta["name"]] = text
+        return out
+
+    def test_an_archive_of_the_same_plan_is_skipped(self):
+        self.assertEqual(quiet(pack.main, self.plan_args(0.000116)), 0)
+        self.pack_verbose()
+        before = {p.name: p.stat().st_mtime_ns for p in self.zips.iterdir()}
+        self.assertEqual(quiet(pack.main, self.plan_args(0.000116)), 0)       # the same plan again
+        for name, text in self.pack_verbose().items():
+            self.assertIn(f"[SKIP] {name}: already packed", text)
+        self.assertEqual({p.name: p.stat().st_mtime_ns for p in self.zips.iterdir()}, before)
+
+    def test_an_archive_of_another_plan_is_repacked(self):
+        self.assertEqual(quiet(pack.main, self.plan_args(0.000116)), 0)
+        first = self.pack_verbose()
+        self.assertTrue(all("[OK]" in t for t in first.values()))
+        # the selection changes: one small run is no longer VALID
+        path = self.val / "validation_all.csv"
+        with path.open(newline="") as fh:
+            rows = list(csv.DictReader(fh))
+        for r in rows:
+            if r["problem"] == SMALL and r["instance"] == "0000010_SEED2":
+                r["status"] = "INVALID"
+        with path.open("w", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=pack.ROW_COLUMNS)
+            writer.writeheader()
+            writer.writerows(rows)
+        self.assertEqual(quiet(pack.main, self.plan_args(0.000116)), 0)
+        second = self.pack_verbose()
+        small = "solution_matrices_small_CC-BY-4.0_01"
+        self.assertIn(f"[REPACK] {small}", second[small])
+        self.assertIn("1 of its runs are not in the plan", second[small])
+        self.assertIn("[OK]", second[small])
+        self.assertTrue(all("[SKIP]" in t for n, t in second.items() if n != small))
+        with zipfile.ZipFile(self.zips / f"{small}.zip") as zf:
+            self.assertFalse(any("0000010_SEED2" in m for m in zf.namelist()))
+        self.assertEqual(quiet(pack.main, ["check", "--plan-dir", str(self.plan), "--out-dir", str(self.zips),
+                                           "--rehash"]), 0)
+
+    def test_same_runs_other_readme_is_repacked(self):
+        self.assertEqual(quiet(pack.main, self.plan_args(20)), 0)
+        self.pack_verbose()
+        plan = json.loads((self.plan / "plan.json").read_text())
+        plan["optimizer_commit"] = "0123abc"                   # the README names the commit
+        (self.plan / "plan.json").write_text(json.dumps(plan))
+        for name, text in self.pack_verbose().items():
+            self.assertIn(f"[REPACK] {name}", text)
+            self.assertIn("README.md differs", text)
+            with zipfile.ZipFile(self.zips / f"{name}.zip") as zf:
+                self.assertIn("0123abc", zf.read(f"{name}/README.md").decode())
+
+    def test_a_changed_file_size_is_repacked(self):
+        self.assertEqual(quiet(pack.main, self.plan_args(20)), 0)
+        self.pack_verbose()
+        with (self.small_run() / "manifest.json").open("a") as fh:
+            fh.write(" ")
+        self.assertEqual(quiet(pack.main, self.plan_args(20)), 0)
+        texts = self.pack_verbose()
+        small = "solution_matrices_small_CC-BY-4.0_01"
+        self.assertIn("1 files differ in name or size", texts[small])
+        self.assertTrue(all("[SKIP]" in t for n, t in texts.items() if n != small))
+
+    def test_check_refuses_an_archive_of_an_earlier_plan(self):
+        self.assertEqual(quiet(pack.main, self.plan_args(0.000116)), 0)       # GPL split in two
+        self.pack_verbose()
+        self.assertEqual(quiet(pack.main, ["check", "--plan-dir", str(self.plan), "--out-dir", str(self.zips)]), 0)
+        self.assertTrue((self.zips / "SHA256SUMS").exists())
+        self.assertEqual(quiet(pack.main, self.plan_args(20)), 0)             # one GPL archive
+        self.pack_verbose()
+        self.assertFalse((self.zips / "SHA256SUMS").exists())                 # a repack makes it stale
+        code, text = captured(pack.main, ["check", "--plan-dir", str(self.plan), "--out-dir", str(self.zips)])
+        self.assertEqual(code, 1)
+        self.assertIn("belong to no archive of this plan", text)
+        self.assertIn("solution_matrices_large_GPL-2.0-or-later_02.zip", text)
+        self.assertFalse((self.zips / "SHA256SUMS").exists())
+        for stale in self.zips.glob("solution_matrices_large_GPL-2.0-or-later_02.*"):
+            stale.unlink()
+        self.assertEqual(quiet(pack.main, ["check", "--plan-dir", str(self.plan), "--out-dir", str(self.zips)]), 0)
 
     def test_selection_only_needs_no_matrices(self):
         args = ["plan", "--plan-dir", str(self.plan), "--validation", str(self.val), "--selection-only"]

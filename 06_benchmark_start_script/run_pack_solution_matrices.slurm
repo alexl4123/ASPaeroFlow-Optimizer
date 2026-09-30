@@ -22,16 +22,18 @@
 #     ./pack_solution_matrices.py plan --plan-dir <PLAN_DIR> --validation ... --results-folder ...
 # then
 #     sbatch --export=ALL,PLAN_DIR=<PLAN_DIR>,OUT=<OUT> --array=1-N%10 run_pack_solution_matrices.slurm
-# and, when the array has drained (seconds):
-#     ./pack_solution_matrices.py check --plan-dir <PLAN_DIR> --out-dir <OUT>
+# and, when the array has drained (minutes; --rehash reads every zip once):
+#     ./pack_solution_matrices.py check --plan-dir <PLAN_DIR> --out-dir <OUT> --rehash
 #
 # SIZE: a task reads its runs' files once, writes the archive once and reads it back three times
 # (testzip, member hashes, the archive's own sha256); at 20 GB per archive that is about 80 GB of
 # I/O, well within -t 03:00:00 at 50 MB/s. Memory stays small: files are streamed in 1 MB blocks.
 # %10 keeps the load on the shared file system moderate.
 #
-# RESUMABLE: an archive whose three files exist is skipped, so a failed or timed-out task is
-# simply resubmitted with the same index. A failed task leaves <ARCHIVE>.zip.partial for a look.
+# RESUMABLE: an archive whose three files exist and whose MANIFEST.csv and README.md match the
+# plan is skipped, so a failed or timed-out task is simply resubmitted with the same index. An
+# archive of an earlier plan with other runs or files is deleted and packed again ([REPACK]).
+# A failed task leaves <ARCHIVE>.zip.partial for a look.
 #
 # EXIT CODE: 0 packed and verified (or already there), 1 archive larger than the limit, 2 the
 # archive could not be written or did not verify (the message says which file).
