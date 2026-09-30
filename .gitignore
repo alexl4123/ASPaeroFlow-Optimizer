@@ -208,3 +208,9 @@ __marimo__/
 experiment_output/
 06_benchmark_start_script/output/
 06_benchmark_start_script/logs/
+
+# Cluster-side outputs of the validation, its rehearsals and the matrix packing. Untracked, they
+# would make run_benchmark_units.slurm record optimizer_dirty=yes for every run started after them.
+06_benchmark_start_script/validation_*/
+06_benchmark_start_script/corrupt_rehearsal/
+06_benchmark_start_script/matrix_pack/
