@@ -11,18 +11,25 @@ Three steps, so that the slow part runs as many small SLURM jobs:
          <plan-dir>/archives/<ARCHIVE>.runs.json, selected_runs.csv, unpublished_finished_runs.csv,
          and prints the plan, with the number of selected runs that lack each file of a run (a
          file the validator needs is an error, see WHICH FILES). --selection-only stops before the
-         stat (no matrices needed).
+         stat (no matrices needed). The first thing plan does is delete these files and
+         plan_errors.txt of an earlier call (also when its options are wrong), so a plan that
+         fails leaves no plan behind.
   pack   one SLURM array task per archive (--index = the task id). Writes <out-dir>/<ARCHIVE>.zip
          and verifies it: zipfile.testzip() (CRC-32 of every member), then the sha256 and size of
          every member against MANIFEST.csv. Only then are <ARCHIVE>.zip, <ARCHIVE>.MANIFEST.csv and
          <ARCHIVE>.zip.sha256 put in place; a failed task leaves <ARCHIVE>.zip.partial. An archive
-         already in <out-dir> is skipped only if its MANIFEST.csv (runs, files, sizes) and its
-         README.md are those of the current plan; otherwise it is deleted and packed again.
+         already in <out-dir> is skipped only if it is the plan's (differs_from_plan: the runs,
+         file names and sizes of its MANIFEST.csv, and its README.md, which names the optimizer
+         commit); otherwise it is deleted and packed again.
   check  after the array. Every selected run is in exactly one archive and no other run is in
-         any; every archive is present, has the planned number of members and is within the size
-         limit; <out-dir> holds no archive of another plan. --rehash also recomputes the sha256 of
-         every zip (minutes per 10 GB). Writes <out-dir>/SHA256SUMS only if all of this holds (an
-         older one is deleted first, and by every pack task that writes an archive).
+         any; every archive is present, is the plan's (the comparison pack makes), has the planned
+         number of members and is within the size limit; <out-dir> holds no archive of another
+         plan. --rehash also recomputes the sha256 of every zip (minutes per 10 GB). Only if all of
+         this holds, writes <out-dir>/SHA256SUMS.archives: one line '<sha256>  ./<ARCHIVE>.zip' per
+         archive, the format of the SHA256SUMS of the other V2 records. The record's own
+         SHA256SUMS is made at upload time from these lines and the checksums of its other files.
+         An older SHA256SUMS.archives is deleted first, and by every pack task that writes an
+         archive.
 
 WHICH RUNS (from the validation CSVs, nothing is guessed)
 
@@ -47,14 +54,18 @@ WHICH FILES OF A RUN (exactly what validate_solutions.py reads)
   and it must equal the claimed_* values of the validation row. Anything else in a run folder is
   left out and counted in plan.json.
 
-  validate_solutions.py calls a run VALID only with converted_navpoint_matrix (the trajectories),
-  navaid_sector_time_assignment (without it OVERLOAD, SECTOR-NUMBER, SECTOR-DIFF and RECONFIG stay
-  UNVERIFIED) and the result line (the claims), for every method; a selected run without one of
-  them is an error of the plan. converted_instance_matrix, capacity_time_matrix (02_ASP, behind
-  05_ASP_*, writes none) and manifest.json only add checks; a run without them is counted. In an
-  unzipped archive the validator takes the time granularity of a problem whose name carries no
-  -TG<g> (the small-scaling problems) from the first manifest.json that names it, so every such
-  problem needs one.
+  A file is REQUIRED for a run if validate_solutions.py cannot call the run VALID without it:
+    - for every run, converted_navpoint_matrix (the trajectories), navaid_sector_time_assignment
+      (without it OVERLOAD, SECTOR-NUMBER, SECTOR-DIFF and RECONFIG stay UNVERIFIED) and the
+      result line (the claims);
+    - every matrix the run's manifest.json lists under "saved": the validator reports a listed
+      matrix that is missing as "listed in manifest.json but missing" (matrix_unreadable, INVALID).
+  A selected run without a required file is an error of the plan. Every other file is optional:
+  converted_instance_matrix and capacity_time_matrix where manifest.json does not list them
+  (02_ASP, behind 05_ASP_*, writes no capacity matrix), and manifest.json itself; they only add
+  checks, and a run without them is counted. In an unzipped archive the validator takes the time
+  granularity of a problem whose name carries no -TG<g> (the small-scaling problems) from the
+  first manifest.json that names it, so every such problem needs one.
 
 ARCHIVE LAYOUT
 
@@ -137,13 +148,26 @@ MANIFEST_FILE = "manifest.json"
 RESULT_LINE_FILE = vs.RESULT_LINE_FILE
 RESULT_LINE_SOURCE = "result_line.json source"
 
-#: Each file of a run and whether validate_solutions.py needs it to call the run VALID (the same
-#: for every method; WHICH FILES OF A RUN above). The result line comes from the results folder.
-RUN_FILE_NEEDS: Dict[str, bool] = {
-    "converted_navpoint_matrix": True, "navaid_sector_time_assignment": True,
-    RESULT_LINE_SOURCE: True, "converted_instance_matrix": False, "capacity_time_matrix": False,
-    MANIFEST_FILE: False,
+#: The files every run needs for validate_solutions.py to call it VALID (WHICH FILES OF A RUN
+#: above); a matrix the run's manifest.json lists is required as well. The result line comes from
+#: the results folder.
+ALWAYS_REQUIRED: Tuple[str, ...] = ("converted_navpoint_matrix", "navaid_sector_time_assignment",
+                                    RESULT_LINE_SOURCE)
+
+#: Every file of a run, in the order of the plan's file table, and for whom it is required.
+RUN_FILES: Dict[str, str] = {
+    **{name: "every run" for name in ALWAYS_REQUIRED},
+    **{name: "if manifest.json lists it" for name in vs.MATRIX_NAMES if name not in ALWAYS_REQUIRED},
+    MANIFEST_FILE: "no run (see below)",
 }
+
+#: What plan writes into --plan-dir (and archives/<ARCHIVE>.runs.json); all of it is deleted when
+#: plan starts, so that a plan that fails leaves none of an earlier call's files behind.
+PLAN_OUTPUTS = ("plan.json", "plan_errors.txt", "selected_runs.csv", "unpublished_finished_runs.csv")
+
+#: check writes this when every check passes: '<sha256>  ./<ARCHIVE>.zip' per archive, the
+#: format of the record-wide SHA256SUMS, into which these lines are merged at upload time.
+SUMS_FILE = "SHA256SUMS.archives"
 
 #: The time granularity in a problem name, as validate_solutions.problem_granularity finds it.
 TG_IN_NAME = re.compile(r"-TG(\d+)(?:-|$)")
@@ -332,10 +356,45 @@ def run_files(run_dir: Path) -> Tuple[List[Tuple[str, int]], List[str]]:
 
 
 def lacking_files(names: Iterable[str]) -> List[str]:
-    """The files of RUN_FILE_NEEDS (other than the result line) that are not among these names."""
+    """The files of RUN_FILES (other than the result line) that are not among these names."""
     names = set(names)
     out = [name for name, candidates in MATRIX_CANDIDATES.items() if not names & set(candidates)]
     return out + ([] if MANIFEST_FILE in names else [MANIFEST_FILE])
+
+
+def read_manifest(path: Path) -> dict:
+    """A run's manifest.json as validate_solutions.py reads it: {} if it is not valid JSON or not
+    an object. A file that cannot be read at all raises OSError or UnicodeDecodeError."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def listed_matrices(manifest: dict) -> List[str]:
+    """The matrices manifest.json lists under "saved"; the validator reports each of them that is
+    missing as unreadable, so the run is INVALID without it."""
+    saved = manifest.get("saved", {})
+    try:
+        return [name for name in vs.MATRIX_NAMES if name in saved]
+    except TypeError:                        # "saved" neither a mapping nor a list
+        return []
+
+
+def required_files(manifest: dict) -> set:
+    """The files of RUN_FILES a run with this manifest.json needs to be VALID."""
+    return set(ALWAYS_REQUIRED) | set(listed_matrices(manifest))
+
+
+def manifest_granularity(manifest: dict) -> Optional[int]:
+    """source.timestep_granularity of a run's manifest.json, as the validator reads it."""
+    source = manifest.get("source", {})
+    value = source.get("timestep_granularity") if isinstance(source, dict) else None
+    try:
+        return None if value is None else int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class ClaimIndex:
@@ -364,16 +423,6 @@ class ClaimIndex:
         if source is None:
             source = self.sources[problem_dir] = vs.ClaimSource(problem_dir, problem)
         return source.lines(instance, system)[1]
-
-
-def granularity_in(manifest: Path) -> Optional[int]:
-    """source.timestep_granularity of a run's manifest.json, as the validator reads it."""
-    try:
-        value = json.loads(manifest.read_text(encoding="utf-8")).get("source", {}).get(
-            "timestep_granularity")
-        return None if value is None else int(value)
-    except (OSError, json.JSONDecodeError, AttributeError, TypeError, ValueError):
-        return None
 
 
 def member_overhead(path: str) -> int:
@@ -514,9 +563,30 @@ def print_selection(selected: List[dict], excluded: Counter, unpublished: list) 
         print(f"  {system:<28} {n:>7,}   e.g. {example[:90]}")
 
 
+def clear_plan_outputs(plan_dir: Path) -> List[str]:
+    """Delete every file an earlier plan call wrote into plan_dir (PLAN_OUTPUTS, their .tmp files,
+    archives/*.runs.json); return their names. Nothing else in the folder is touched."""
+    removed = []
+    if not plan_dir.is_dir():
+        return removed
+    paths = [plan_dir / f"{name}{tmp}" for name in PLAN_OUTPUTS for tmp in ("", ".tmp")]
+    if (plan_dir / "archives").is_dir():
+        paths += sorted((plan_dir / "archives").glob("*.runs.json")) + sorted(
+            (plan_dir / "archives").glob("*.runs.json.tmp"))
+    for path in paths:
+        if path.is_file() or path.is_symlink():
+            path.unlink()
+            removed.append(str(path.relative_to(plan_dir)))
+    return removed
+
+
 def cmd_plan(a: argparse.Namespace) -> int:
     plan_dir: Path = a.plan_dir
     plan_dir.mkdir(parents=True, exist_ok=True)
+    # before anything can fail: a plan that stops early leaves no plan of an earlier call behind
+    removed = clear_plan_outputs(plan_dir)
+    if removed:
+        print(f"[plan] deleted the {len(removed)} files of the previous plan in {plan_dir}")
     rules = parse_take(a.take or DEFAULT_TAKE)
     systems = [s.strip() for s in a.systems.split(",")] if a.systems else list(vs.PUBLISHED_SYSTEMS)
     folders = {k: Path(v).resolve() for k, v in parse_pairs(a.results_folder, "--results-folder").items()}
@@ -569,14 +639,13 @@ def cmd_plan(a: argparse.Namespace) -> int:
             else:
                 licence_notes[f"instance_info.json agrees ({expected})"] += 1
 
-    # stat every selected run; a plan of an earlier call is not left behind as if it were this one
-    for stale in (plan_dir / "plan.json", plan_dir / "plan_errors.txt"):
-        if stale.exists():
-            stale.unlink()
+    # stat every selected run (the files of an earlier plan were deleted at the start)
     t1 = time.time()
     errors: List[str] = []
     left_out: Counter = Counter()
-    lacking: Dict[str, Counter] = {name: Counter() for name in RUN_FILE_NEEDS}
+    lacking: Dict[str, Counter] = {name: Counter() for name in RUN_FILES}          # every run
+    lacking_required: Dict[str, Counter] = {name: Counter() for name in RUN_FILES}  # where required
+    granularity_from: Dict[str, str] = {}
     claim_index = ClaimIndex()
     runs_by_group: Dict[Tuple[str, str], List[dict]] = {}
     for gkey in sorted(groups):
@@ -584,21 +653,38 @@ def cmd_plan(a: argparse.Namespace) -> int:
         for row in groups[gkey]:
             src = folders[row["folder"]] / f"output_{row['problem']}" / row["matrix_dir"]
             claims_folder = claims_from[row["folder"]] if is_rerun_row(row) else row["folder"]
+            where = f"({row['folder']} {row['problem']} {row['instance']} {row['system']})"
             found = bool(row["matrix_dir"]) and src.is_dir()
             files, extra = run_files(src) if found else ([], [])
             lacks = lacking_files(n for n, _ in files)
             if not claim_index.where(folders[claims_folder] / f"output_{row['problem']}",
                                      row["problem"], row["instance"], row["system"]):
                 lacks.append(RESULT_LINE_SOURCE)
+            manifest: dict = {}
+            if MANIFEST_FILE not in lacks:
+                try:
+                    manifest = read_manifest(src / MANIFEST_FILE)
+                except (OSError, UnicodeDecodeError) as exc:
+                    errors.append(f"{src}/{MANIFEST_FILE}: unreadable ({exc}) {where}")
+                    continue
+            required = required_files(manifest)
             for name in lacks:
                 lacking[name][row["system"]] += 1
-            needed = [name for name in lacks if RUN_FILE_NEEDS[name]]
+                if name in required:
+                    lacking_required[name][row["system"]] += 1
+            needed = [name for name in lacks if name in required]
             if needed:
                 errors.append(f"{src}: {'run folder missing' if not found else 'no ' + ', '.join(needed)} "
-                              f"({row['folder']} {row['problem']} {row['instance']} {row['system']})")
+                              + ("(listed in its manifest.json) " if set(needed) - set(ALWAYS_REQUIRED) else "")
+                              + where)
                 continue
             for name in extra:
                 left_out[name] += 1
+            # a problem without -TG<g> in its name: the validator of an unzipped archive takes the
+            # granularity from a manifest.json
+            if (not TG_IN_NAME.search(row["problem"]) and row["problem"] not in granularity_from
+                    and manifest_granularity(manifest) is not None):
+                granularity_from[row["problem"]] = f"{row['system']}/{row['instance']}"
             prefix = f"{row['problem']}/{row['system']}/{row['instance']}"
             entries.append({
                 "problem": row["problem"], "instance": row["instance"], "system": row["system"],
@@ -610,16 +696,6 @@ def cmd_plan(a: argparse.Namespace) -> int:
             })
         runs_by_group[gkey] = entries
 
-    # a problem without -TG<g> in its name: the validator of an unzipped archive needs a
-    # manifest.json that names the granularity
-    granularity_from: Dict[str, str] = {}
-    for entries in runs_by_group.values():
-        for e in entries:
-            if TG_IN_NAME.search(e["problem"]) or e["problem"] in granularity_from:
-                continue
-            if any(n == MANIFEST_FILE for n, _ in e["files"]) and granularity_in(
-                    folders[e["folder"]] / f"output_{e['problem']}" / e["src"] / MANIFEST_FILE) is not None:
-                granularity_from[e["problem"]] = f"{e['system']}/{e['instance']}"
     for problem in sorted({e["problem"] for v in runs_by_group.values() for e in v}):
         if not TG_IN_NAME.search(problem) and problem not in granularity_from:
             errors.append(f"{problem}: no -TG<g> in the name and no selected run has a manifest.json that "
@@ -629,14 +705,17 @@ def cmd_plan(a: argparse.Namespace) -> int:
     print(f"\n[plan] stat of {n_stat:,} run folders: {time.time() - t1:.1f} s")
     print(f"\nFILES OF THE {n_stat:,} SELECTED RUNS (required: validate_solutions.py cannot call a run "
           "VALID without it)")
-    print(f"  {'file':<32} {'needed':<9} {'runs without it':>15}")
-    for name, required in RUN_FILE_NEEDS.items():
-        n = sum(lacking[name].values())
+    print(f"  {'file':<30} {'required for':<26} {'missing, required':>19} {'missing, optional':>19}")
+    for name, required_for in RUN_FILES.items():
+        n_req = sum(lacking_required[name].values())
+        n_opt = sum(lacking[name].values()) - n_req
         by = ", ".join(f"{s} {k:,}" for s, k in sorted(lacking[name].items()))
-        print(f"  {name:<32} {'required' if required else 'optional':<9} {n:>15,}" + (f"   ({by})" if n else ""))
+        req = f"{n_req:,}" if name != MANIFEST_FILE else "-"
+        opt = f"{n_opt:,}" if name not in ALWAYS_REQUIRED else "-"
+        print(f"  {name:<30} {required_for:<26} {req:>19} {opt:>19}" + (f"   ({by})" if n_req + n_opt else ""))
     print(f"  ({RESULT_LINE_SOURCE}: the run's line in individual_outputs/, its unit shard or "
-          "hotstart_state.json)")
-    optional = sum(sum(c.values()) for name, c in lacking.items() if not RUN_FILE_NEEDS[name])
+          f"hotstart_state.json; {MANIFEST_FILE}: one run per problem without -TG<g> needs it)")
+    optional = sum(sum(lacking[name].values()) - sum(lacking_required[name].values()) for name in RUN_FILES)
     if optional:
         print(f"[NOTE] {optional:,} optional files missing (table above): their archives lack them, and "
               "the validator skips the checks they serve")
@@ -649,8 +728,6 @@ def cmd_plan(a: argparse.Namespace) -> int:
     # archives
     archive_dir = plan_dir / "archives"
     archive_dir.mkdir(exist_ok=True)
-    for old in archive_dir.glob("*.runs.json"):
-        old.unlink()
     capacity = max_bytes - ARCHIVE_FIXED_ESTIMATE
     archives = []
     selected_rows = []
@@ -699,7 +776,8 @@ def cmd_plan(a: argparse.Namespace) -> int:
                      for (s, f, r), n in sorted(excluded.items())],
         "unpublished_finished_runs": len(unpublished),
         "left_out_files": dict(sorted(left_out.items())),
-        "runs_without_file": {name: {"required": RUN_FILE_NEEDS[name], "runs": sum(c.values()),
+        # a written plan has no run without a file it requires: these are the optional ones
+        "runs_without_file": {name: {"required_for": RUN_FILES[name], "runs": sum(c.values()),
                                      "by_system": dict(sorted(c.items()))} for name, c in lacking.items()},
         "granularity_from_manifest": dict(sorted(granularity_from.items())),
         "licence_check": dict(licence_notes),
@@ -932,17 +1010,29 @@ def planned_files(runs: Sequence[dict]) -> Dict[Tuple[str, str, str, str], Optio
 def differs_from_plan(zip_path: Path, man_path: Path, name: str, plan: dict, meta: dict,
                       runs: List[dict]) -> List[str]:
     """Why the archive already in the out folder is not the one the plan asks for; [] if it is.
-    Compared: the runs, file names and sizes in its MANIFEST.csv, and its README.md (archive
-    numbering, methods, optimizer commit). The file contents were verified when it was packed;
-    check --rehash verifies the zip against its .sha256."""
+    pack skips an archive only if this is [], and check accepts one only then. Compared: the
+    MANIFEST.csv inside the zip, which <ARCHIVE>.MANIFEST.csv next to it must equal byte for byte,
+    with the plan's runs, file names and sizes; and the zip's README.md with the one the plan gives
+    (archive numbering, methods, optimizer commit). The file contents were verified when the
+    archive was packed; check --rehash verifies the zip against its .sha256."""
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            readme = zf.read(f"{name}/README.md").decode("utf-8")
+            inner = zf.read(f"{name}/MANIFEST.csv")
+    except Exception as exc:                  # whatever keeps the zip from being read: not the plan's
+        return [f"{zip_path.name} unreadable ({type(exc).__name__}: {exc})"]
+    reasons = []
+    try:
+        if man_path.read_bytes() != inner:
+            reasons.append(f"{man_path.name} is not the MANIFEST.csv inside the zip")
+    except OSError as exc:
+        reasons.append(f"{man_path.name} unreadable ({exc})")
     want = planned_files(runs)
     try:
-        with man_path.open(newline="", encoding="utf-8") as fh:
-            listed = list(csv.DictReader(fh))
+        listed = list(csv.DictReader(io.StringIO(inner.decode("utf-8"), newline="")))
         have = {(r["problem"], r["instance"], r["system"], r["file"]): int(r["bytes"]) for r in listed}
-    except (OSError, KeyError, TypeError, ValueError, csv.Error) as exc:
-        return [f"{man_path.name} unreadable ({exc})"]
-    reasons = []
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, csv.Error) as exc:
+        return reasons + [f"its MANIFEST.csv is unreadable ({exc})"]
     runs_have, runs_want = {k[:3] for k in have}, {k[:3] for k in want}
     if runs_have != runs_want:
         reasons.append(f"{len(runs_have - runs_want):,} of its runs are not in the plan, "
@@ -953,12 +1043,7 @@ def differs_from_plan(zip_path: Path, man_path: Path, name: str, plan: dict, met
         if differ:
             reasons.append(f"{len(differ):,} files differ in name or size, e.g. {'/'.join(differ[0])}")
     if len(listed) != len(have):
-        reasons.append(f"{man_path.name} lists a file twice")
-    try:
-        with zipfile.ZipFile(zip_path) as zf:
-            readme = zf.read(f"{name}/README.md").decode("utf-8")
-    except (OSError, KeyError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
-        return reasons + [f"README.md unreadable ({exc})"]
+        reasons.append("its MANIFEST.csv lists a file twice")
     if readme != readme_text(plan, meta, runs):
         reasons.append("README.md differs (archive numbering, methods or optimizer commit)")
     return reasons
@@ -989,9 +1074,9 @@ def cmd_pack(a: argparse.Namespace) -> int:
     for stale in (zip_path, sha_path, man_path, partial):
         if stale.exists():
             stale.unlink()
-    # SHA256SUMS lists the archives check saw; an archive written now makes it stale. Other array
-    # tasks may remove it at the same moment.
-    (out / "SHA256SUMS").unlink(missing_ok=True)
+    # SHA256SUMS.archives lists the archives check saw; an archive written now makes it stale.
+    # Other array tasks may remove it at the same moment.
+    (out / SUMS_FILE).unlink(missing_ok=True)
 
     folders = {k: Path(v) for k, v in plan["folders"].items()}
     when = zip_date(plan)
@@ -1062,13 +1147,14 @@ def stray_files(out: Path, names: Iterable[str]) -> List[str]:
 def cmd_check(a: argparse.Namespace) -> int:
     plan = load_plan(a.plan_dir)
     out: Path = a.out_dir
-    (out / "SHA256SUMS").unlink(missing_ok=True)   # written again only if every check passes
+    (out / SUMS_FILE).unlink(missing_ok=True)   # written again only if every check passes
     problems: List[str] = []
     where: Dict[Tuple[str, str, str], str] = {}
     sums: List[str] = []
     total = 0
-    print(f"({MEMBERS_LEGEND}, read from each zip's central directory; planned = the number in plan.json)")
-    print(f"  {'#':>3} {'archive':<46} {'runs':>7} {'members':>8} {'planned':>8} {'size':>14}")
+    print(f"({MEMBERS_LEGEND}, read from each zip's central directory; planned = the number in plan.json; "
+          "plan = the archive is the plan's: runs, file names and sizes of its MANIFEST.csv, README.md)")
+    print(f"  {'#':>3} {'archive':<46} {'runs':>7} {'members':>8} {'planned':>8} {'plan':>5} {'size':>14}")
     for meta in plan["archives"]:
         name = meta["name"]
         zip_path, sha_path, man_path = out / f"{name}.zip", out / f"{name}.zip.sha256", out / f"{name}.MANIFEST.csv"
@@ -1076,14 +1162,18 @@ def cmd_check(a: argparse.Namespace) -> int:
         if absent:
             problems.append(f"{name}: missing {', '.join(absent)}")
             continue
-        with man_path.open(newline="", encoding="utf-8") as fh:
-            listed = list(csv.DictReader(fh))
-        keys = {(r["problem"], r["instance"], r["system"]) for r in listed}
         runs = json.loads((a.plan_dir / "archives" / f"{name}.runs.json").read_text(encoding="utf-8"))
-        planned = {(r["problem"], r["instance"], r["system"]) for r in runs}
-        if keys != planned:
-            problems.append(f"{name}: {len(keys - planned)} runs not in its plan, "
-                            f"{len(planned - keys)} planned runs missing")
+        # the comparison pack makes before it skips an archive
+        differs = differs_from_plan(zip_path, man_path, name, plan, meta, runs)
+        if differs:
+            problems.append(f"{name}: not the plan's archive ({'; '.join(differs)}); the pack step "
+                            "packs it again")
+        try:
+            with man_path.open(newline="", encoding="utf-8") as fh:
+                listed = list(csv.DictReader(fh))
+            keys = {(r["problem"], r["instance"], r["system"]) for r in listed}
+        except (OSError, KeyError, UnicodeDecodeError, csv.Error):
+            listed, keys = [], set()           # reported by differs_from_plan
         for key in keys:
             if key in where:
                 problems.append(f"{key} is in {where[key]} and {name}")
@@ -1098,15 +1188,20 @@ def cmd_check(a: argparse.Namespace) -> int:
         if members != want or len(listed) + ARCHIVE_EXTRA_MEMBERS != want:
             problems.append(f"{name}.zip: {members:,} members, {len(listed):,} MANIFEST.csv rows; "
                             f"the plan has {want:,} members")
-        line = sha_path.read_text(encoding="utf-8").strip()
-        if a.rehash and line.split()[0] != sha256_file(zip_path):
+        fields = sha_path.read_text(encoding="utf-8").split()
+        sha = fields[0] if len(fields) == 2 and fields[1] == zip_path.name and re.fullmatch(
+            r"[0-9a-f]{64}", fields[0]) else ""
+        if not sha:
+            problems.append(f"{sha_path.name}: not a line '<sha256>  {zip_path.name}'")
+        elif a.rehash and sha != sha256_file(zip_path):
             problems.append(f"{name}.zip: sha256 differs from {sha_path.name}")
         size = zip_path.stat().st_size
         total += size
         if size > plan["parameters"]["max_archive_gb"] * GB and not meta["over_limit"]:
             problems.append(f"{name}.zip: {human(size)}, over the limit")
-        sums.append(line)
-        print(f"  {meta['index']:>3} {name:<46} {len(keys):>7,} {members:>8,} {want:>8,} {human(size):>14}")
+        sums.append(f"{sha}  ./{zip_path.name}")
+        print(f"  {meta['index']:>3} {name:<46} {len(keys):>7,} {members:>8,} {want:>8,} "
+              f"{'NO' if differs else 'yes':>5} {human(size):>14}")
     stray = stray_files(out, (m["name"] for m in plan["archives"]))
     if stray:
         problems.append(f"{len(stray)} files in {out} belong to no archive of this plan (an earlier plan's?): "
@@ -1130,15 +1225,25 @@ def cmd_check(a: argparse.Namespace) -> int:
         for p in problems:
             print(f"[ERROR] {p}", file=sys.stderr)
         return 1
-    (out / "SHA256SUMS").write_text("\n".join(sorted(sums, key=lambda s: s.split()[-1])) + "\n",
-                                    encoding="utf-8")
-    print(f"[OK] every selected run is in exactly one archive; {out}/SHA256SUMS written")
+    (out / SUMS_FILE).write_text("\n".join(sorted(sums, key=lambda s: s.split()[-1])) + "\n", encoding="utf-8")
+    print(f"[OK] every selected run is in exactly one archive, every archive is the plan's; "
+          f"{out}/{SUMS_FILE} written (merge its lines into the record's SHA256SUMS at upload)")
     return 0
 
 
 # ---------------------------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------------------------
+
+def plan_dir_option(argv: Sequence[str]) -> Optional[Path]:
+    """The value of --plan-dir in a command line argparse refused, if it is there."""
+    for i, arg in enumerate(argv):
+        if arg == "--plan-dir" and i + 1 < len(argv):
+            return Path(argv[i + 1])
+        if arg.startswith("--plan-dir="):
+            return Path(arg.split("=", 1)[1])
+    return None
+
 
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0],
@@ -1177,12 +1282,23 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--force", action="store_true",
                    help="repack an archive that is already there, even if it matches the plan")
 
-    p = sub.add_parser("check", help="after packing: coverage, sizes, SHA256SUMS")
+    p = sub.add_parser("check", help=f"after packing: coverage, the plan's archives, sizes, {SUMS_FILE}")
     p.add_argument("--plan-dir", type=Path, required=True)
     p.add_argument("--out-dir", type=Path, required=True)
     p.add_argument("--rehash", action="store_true", help="recompute the sha256 of every archive")
 
-    a = ap.parse_args(argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    try:
+        a = ap.parse_args(argv)
+    except SystemExit as exc:
+        # a plan call with wrong options fails too: it leaves no plan of an earlier call behind
+        plan_dir = plan_dir_option(argv) if exc.code and argv[:1] == ["plan"] else None
+        if plan_dir is not None:
+            removed = clear_plan_outputs(plan_dir)
+            if removed:
+                print(f"[plan] deleted the {len(removed)} files of the previous plan in {plan_dir}",
+                      file=sys.stderr)
+        raise
     try:
         return {"plan": cmd_plan, "pack": cmd_pack, "check": cmd_check}[a.cmd](a)
     except (PlanError, PackError) as exc:

@@ -9,10 +9,12 @@ validate with validate_solutions.py as they are. These tests pin
   * the split -- contiguous, every run once, no archive over the limit, the fewest archives;
   * a plan -> pack -> check round trip on a synthetic campaign, and that a changed source file,
     a result line that is not the validated one, or a corrupted member is caught;
-  * which run files the plan requires (what the validator needs to call a run VALID) and that it
-    counts the optional ones a run lacks;
+  * which run files the plan requires (what the validator needs to call a run VALID, including
+    every matrix a run's manifest.json lists) and that it counts the optional ones a run lacks;
+  * that plan first deletes the plan of an earlier call, so a plan that fails leaves none behind;
   * that pack skips an archive already in the out folder only if it is the plan's, repacks it
-    otherwise, and that check refuses archives of an earlier plan left in the folder;
+    otherwise, and that check refuses an archive that is not the plan's or belongs to an earlier
+    plan, and writes SHA256SUMS.archives ('<sha256>  ./<zip>') only when everything holds;
   * validate_solutions.py on the archive layout, with the instance found in the published
     <region>/PCAP<c>/ layout.
 
@@ -289,6 +291,14 @@ class RoundTrip(unittest.TestCase):
         self.assertEqual(plan["left_out_files"], {"stray.tmp": 6})
         self.assertEqual(quiet(pack.main, ["check", "--plan-dir", str(self.plan), "--out-dir", str(self.zips),
                                            "--rehash"]), 0)
+        # one line '<sha256>  ./<zip>' per archive, in name order, as in the other records' SHA256SUMS
+        lines = (self.zips / pack.SUMS_FILE).read_text().splitlines()
+        self.assertEqual([line.split("  ./")[1] for line in lines], [f"{n}.zip" for n in sorted(names)])
+        for line in lines:
+            self.assertRegex(line, r"^[0-9a-f]{64}  \./solution_matrices_[^/ ]+\.zip$")
+            digest, path = line.split("  ", 1)
+            self.assertEqual(pack.sha256_file(self.zips / path), digest)
+        self.assertFalse((self.zips / "SHA256SUMS").exists())           # the record's own is merged at upload
         packed = {}
         for name in names:
             with zipfile.ZipFile(self.zips / f"{name}.zip") as zf:
@@ -364,10 +374,10 @@ class RoundTrip(unittest.TestCase):
         self.assertEqual(code, 0, text)
         plan = json.loads((self.plan / "plan.json").read_text())
         lacking = plan["runs_without_file"]
-        self.assertEqual(lacking["capacity_time_matrix"], {"required": False, "runs": 1,
-                                                           "by_system": {"01_ASPaeroFlow": 1}})
+        self.assertEqual(lacking["capacity_time_matrix"], {"required_for": "if manifest.json lists it",
+                                                           "runs": 1, "by_system": {"01_ASPaeroFlow": 1}})
         self.assertEqual(lacking["converted_navpoint_matrix"]["runs"], 0)
-        self.assertRegex(text, r"capacity_time_matrix\s+optional\s+1\s+\(01_ASPaeroFlow 1\)")
+        self.assertRegex(text, r"capacity_time_matrix\s+if manifest.json lists it\s+0\s+1\s+\(01_ASPaeroFlow 1\)")
         self.assertIn("[NOTE] 1 optional files missing", text)
         codes, plan = self.pack_all()
         self.assertEqual(codes, [0] * len(codes))
@@ -385,13 +395,65 @@ class RoundTrip(unittest.TestCase):
     def test_a_required_matrix_missing_is_an_error(self):
         (self.small_run() / "navaid_sector_time_assignment.csv.gz").unlink()
         text = self.assert_plan_refused("no navaid_sector_time_assignment")
-        self.assertRegex(text, r"navaid_sector_time_assignment\s+required\s+1")
+        self.assertRegex(text, r"navaid_sector_time_assignment\s+every run\s+1\s+-")
+
+    def test_a_matrix_the_manifest_lists_is_required(self):
+        # SEED1 lists all four matrices and lacks the capacity matrix: the validator would call it
+        # INVALID ("listed in manifest.json but missing"). SEED2 does not list it (as 05_ASP_*):
+        # optional there.
+        for instance, names in (("0000010_SEED1", vs.MATRIX_NAMES),
+                                ("0000010_SEED2", [n for n in vs.MATRIX_NAMES if n != "capacity_time_matrix"])):
+            (self.small_run(instance) / "manifest.json").write_text(json.dumps(
+                {"saved": {n: {"shape": [1, 1]} for n in names}, "source": {"timestep_granularity": 1}}))
+            (self.small_run(instance) / "capacity_time_matrix.csv.gz").unlink()
+        text = self.assert_plan_refused("no capacity_time_matrix (listed in its manifest.json)")
+        self.assertRegex(text, r"capacity_time_matrix\s+if manifest.json lists it\s+1\s+1\s+\(01_ASPaeroFlow 2\)")
+        self.assertEqual(len((self.plan / "plan_errors.txt").read_text().splitlines()), 1)
+        self.assertIn("0000010_SEED1", (self.plan / "plan_errors.txt").read_text())
+        # without the listing in SEED1 the plan goes through; both runs are counted as lacking it
+        (self.small_run() / "manifest.json").write_text(json.dumps({"source": {"timestep_granularity": 1}}))
+        code, text = captured(pack.main, self.plan_args(20))
+        self.assertEqual(code, 0, text)
+        self.assertEqual(json.loads((self.plan / "plan.json").read_text())["runs_without_file"]
+                         ["capacity_time_matrix"]["runs"], 2)
+        self.assertFalse((self.plan / "plan_errors.txt").exists())
 
     def test_a_missing_result_line_is_an_error(self):
         (self.out / "20260918_V2" / f"output_{SMALL}" / "individual_outputs" /
          "0000010_SEED2_01_ASPaeroFlow.json").unlink()
         text = self.assert_plan_refused("no result_line.json source")
-        self.assertRegex(text, r"result_line.json source\s+required\s+1")
+        self.assertRegex(text, r"result_line.json source\s+every run\s+1\s+-")
+
+    # ---- a plan that fails leaves no earlier plan behind ------------------------------------------
+
+    def plan_files(self):
+        return sorted(str(p.relative_to(self.plan)) for p in self.plan.rglob("*") if p.is_file())
+
+    def test_plan_deletes_the_previous_plan_first(self):
+        self.assertEqual(quiet(pack.main, self.plan_args(0.000116)), 0)
+        full = self.plan_files()
+        self.assertEqual(len(full), 3 + 4)       # plan.json, the two CSVs, archives/<4>.runs.json
+        (self.plan / "notes.txt").write_text("mine")                   # not the plan's: kept
+        # a check that fails before anything is read (--take), and one on the input (no CSV)
+        for bad in (["--take", "nonsense"], ["--validation", str(self.val / "none.csv")]):
+            code, text = captured(pack.main, self.plan_args(0.000116) + bad)
+            self.assertEqual(code, 2, text)
+            self.assertEqual(self.plan_files(), ["notes.txt"])
+            self.assertEqual(quiet(pack.main, self.plan_args(0.000116)), 0)
+        # an option argparse refuses
+        with self.assertRaises(SystemExit) as ctx:
+            quiet(pack.main, self.plan_args(0.000116) + ["--max-archive-gb", "abc"])
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertEqual(self.plan_files(), ["notes.txt"])
+        # --help deletes nothing
+        self.assertEqual(quiet(pack.main, self.plan_args(0.000116)), 0)
+        with self.assertRaises(SystemExit) as ctx:
+            quiet(pack.main, self.plan_args(0.000116) + ["--help"])
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertEqual(len(self.plan_files()), 8)
+        # --selection-only: no plan.json, no archive lists of the earlier plan
+        self.assertEqual(quiet(pack.main, self.plan_args(0.000116) + ["--selection-only"]), 0)
+        self.assertEqual(self.plan_files(), ["notes.txt", "selected_runs.csv", "unpublished_finished_runs.csv"])
 
     def test_a_missing_run_folder_is_an_error(self):
         for f in self.small_run().iterdir():
@@ -487,18 +549,53 @@ class RoundTrip(unittest.TestCase):
         self.assertEqual(quiet(pack.main, self.plan_args(0.000116)), 0)       # GPL split in two
         self.pack_verbose()
         self.assertEqual(quiet(pack.main, ["check", "--plan-dir", str(self.plan), "--out-dir", str(self.zips)]), 0)
-        self.assertTrue((self.zips / "SHA256SUMS").exists())
+        self.assertTrue((self.zips / pack.SUMS_FILE).exists())
         self.assertEqual(quiet(pack.main, self.plan_args(20)), 0)             # one GPL archive
         self.pack_verbose()
-        self.assertFalse((self.zips / "SHA256SUMS").exists())                 # a repack makes it stale
+        self.assertFalse((self.zips / pack.SUMS_FILE).exists())                 # a repack makes it stale
         code, text = captured(pack.main, ["check", "--plan-dir", str(self.plan), "--out-dir", str(self.zips)])
         self.assertEqual(code, 1)
         self.assertIn("belong to no archive of this plan", text)
         self.assertIn("solution_matrices_large_GPL-2.0-or-later_02.zip", text)
-        self.assertFalse((self.zips / "SHA256SUMS").exists())
+        self.assertFalse((self.zips / pack.SUMS_FILE).exists())
         for stale in self.zips.glob("solution_matrices_large_GPL-2.0-or-later_02.*"):
             stale.unlink()
         self.assertEqual(quiet(pack.main, ["check", "--plan-dir", str(self.plan), "--out-dir", str(self.zips)]), 0)
+
+    def test_check_refuses_an_archive_that_is_not_the_plans(self):
+        self.assertEqual(quiet(pack.main, self.plan_args(20)), 0)
+        self.pack_verbose()
+        check = ["check", "--plan-dir", str(self.plan), "--out-dir", str(self.zips)]
+        self.assertEqual(quiet(pack.main, check), 0)
+        # the same runs and files, but the plan now names another optimizer commit: the README of
+        # every archive is not the plan's (members and runs alone would pass)
+        plan = json.loads((self.plan / "plan.json").read_text())
+        plan["optimizer_commit"] = "0123abc"
+        (self.plan / "plan.json").write_text(json.dumps(plan))
+        code, text = captured(pack.main, check)
+        self.assertEqual(code, 1, text)
+        self.assertEqual(text.count("not the plan's archive (README.md differs"), len(plan["archives"]))
+        self.assertFalse((self.zips / pack.SUMS_FILE).exists())
+        texts = self.pack_verbose()                                       # pack repacks them
+        self.assertTrue(all("[REPACK]" in t and "README.md differs" in t for t in texts.values()))
+        self.assertEqual(quiet(pack.main, check), 0)
+        # a MANIFEST.csv next to the zip that is not the one inside it
+        small = "solution_matrices_small_CC-BY-4.0_01"
+        side = self.zips / f"{small}.MANIFEST.csv"
+        side.write_bytes(side.read_bytes() + b"x\n")
+        code, text = captured(pack.main, check)
+        self.assertEqual(code, 1, text)
+        self.assertIn(f"{small}.MANIFEST.csv is not the MANIFEST.csv inside the zip", text)
+        # a zip that cannot be read
+        side.write_bytes(side.read_bytes()[:-2])
+        self.assertEqual(quiet(pack.main, check), 0)
+        (self.zips / f"{small}.zip").write_bytes(b"not a zip")
+        code, text = captured(pack.main, check)
+        self.assertEqual(code, 1, text)
+        self.assertIn(f"{small}.zip unreadable", text)
+        texts = self.pack_verbose()
+        self.assertIn(f"[REPACK] {small}", texts[small])
+        self.assertEqual(quiet(pack.main, check + ["--rehash"]), 0)
 
     def test_selection_only_needs_no_matrices(self):
         args = ["plan", "--plan-dir", str(self.plan), "--validation", str(self.val), "--selection-only"]
@@ -575,6 +672,20 @@ class ValidatorArchiveLayout(unittest.TestCase):
         (self.run_dir / vs.RESULT_LINE_FILE).write_text(json.dumps(self.line))
         self.assertEqual(quiet(vs.main, self.args), 1)
         self.assertEqual(self.rows()[0]["failed_checks"], "claim:ARRIVAL-DELAY")
+
+    def test_a_matrix_the_manifest_lists_must_be_there(self):
+        # what the plan's rule rests on: a missing matrix that manifest.json lists makes the run
+        # INVALID; the same matrix missing without the listing only skips a check
+        (self.run_dir / "capacity_time_matrix.csv.gz").unlink()
+        self.assertEqual(quiet(vs.main, self.args), 0)
+        self.assertEqual(self.rows()[0]["status"], "VALID")
+        manifest = json.loads((self.run_dir / "manifest.json").read_text())
+        manifest["saved"] = {"capacity_time_matrix": {"shape": [3, 1]}}
+        (self.run_dir / "manifest.json").write_text(json.dumps(manifest))
+        self.assertEqual(quiet(vs.main, self.args), 2)
+        (r,) = self.rows()
+        self.assertEqual((r["status"], r["failed_checks"]), ("INVALID", "matrix_unreadable"))
+        self.assertIn("capacity_time_matrix listed in manifest.json but missing", r["note"])
 
     def test_instance_dir_prefers_the_campaign_layout(self):
         direct = self.instances / self.problem / "0000001_SEED1"
