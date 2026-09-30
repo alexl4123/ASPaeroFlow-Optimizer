@@ -91,6 +91,15 @@ RERUN MODE (--campaign-folder output/<CAMPAIGN>)
     is also checked against its matrix (rerun_claim:<METRIC>). A run that finished in the
     campaign but not in the rerun is NO_MATRIX / rerun_not_finished (exit 1).
 
+ARCHIVE LAYOUT (the published solution-matrix archives, pack_solution_matrices.py)
+
+    <ARCHIVE>/<PROBLEM>/<SYSTEM>/<INSTANCE>/   the run's matrices, manifest.json, and
+                                               result_line.json (the result line checked)
+    Pass --problem-dir <ARCHIVE>/<PROBLEM>; a problem folder without solver_outputs/ and
+    individual_outputs/ is read this way. --instance-root may be the extracted instance archive
+    of the dataset records: a problem <REGION>-PCAP<c> is also looked up as
+    <instance-root>/<REGION>/PCAP<c>/<INSTANCE>/, the layout of the large-scaling record.
+
 STATUSES AND EXIT CODES
 
     VALID       every check passed, every claimed objective reproduced          exit 0
@@ -118,6 +127,8 @@ USAGE
     ./validate_solutions.py --problem-dir output/20260930_V2_RERUN_DC/output_<PROBLEM> \\
         --campaign-folder output/20260918_V2 --instance-root ../05_instances --out-dir ...
     ./validate_solutions.py --summarize --out-dir output/VALIDATION_20260918
+    ./validate_solutions.py --problem-dir <ARCHIVE>/<PROBLEM> \\
+        --instance-root experiment_data_V2_large_scaling_TG60 --out-dir check
 """
 from __future__ import annotations
 
@@ -213,6 +224,12 @@ CSV_COLUMNS: List[str] = (
 
 MATRIX_NAMES = ("converted_navpoint_matrix", "converted_instance_matrix",
                 "navaid_sector_time_assignment", "capacity_time_matrix")
+
+#: The file extensions a matrix may have, in the order find_matrix_file() tries them.
+MATRIX_EXTENSIONS = (".csv.gz", ".csv", ".npz")
+
+#: A run's result line in the archive layout (the published solution-matrix archives).
+RESULT_LINE_FILE = "result_line.json"
 
 
 class ValidatorError(Exception):
@@ -485,7 +502,7 @@ class Instance:
 # ---------------------------------------------------------------------------------------------
 
 def find_matrix_file(run_dir: Path, name: str) -> Optional[Path]:
-    for ext in (".csv.gz", ".csv", ".npz"):
+    for ext in MATRIX_EXTENSIONS:
         candidate = run_dir / f"{name}{ext}"
         if candidate.is_file():
             return candidate
@@ -947,21 +964,32 @@ class Folders:
     """Where a system's matrices are, in the layout of the problem folder at hand."""
 
     def __init__(self):
-        self.mapping = results_dirs()
+        self._mapping: Optional[Dict[str, str]] = None
+
+    @property
+    def mapping(self) -> Dict[str, str]:
+        """system -> results folder; read from the caller only when a campaign layout needs it."""
+        if self._mapping is None:
+            self._mapping = results_dirs()
+        return self._mapping
+
+    def base(self, problem_dir: Path) -> Path:
+        """The folder holding the results folders."""
+        return problem_dir / "solver_outputs"
 
     def own(self, system: str) -> str:
         return self.mapping.get(system, system)
 
     def candidates(self, problem_dir: Path, system: str) -> List[str]:
         own = self.own(system)
-        if (problem_dir / "solver_outputs" / own).is_dir():
+        if (self.base(problem_dir) / own).is_dir():
             return [own]
         return [own] + [f for f in LEGACY_FOLDERS.get(system, ()) if f != own]
 
     def locate(self, problem_dir: Path, system: str, instance: str) -> str:
         """The folder holding this run's matrices: its own, else (old layout) a legacy one."""
         for folder in self.candidates(problem_dir, system):
-            run_dir = problem_dir / "solver_outputs" / folder / instance
+            run_dir = self.base(problem_dir) / folder / instance
             if run_dir.is_dir() and any(run_dir.iterdir()):
                 return folder
         return self.own(system)
@@ -970,6 +998,42 @@ class Folders:
         """Every system that may have written into `folder` in this problem folder's layout."""
         systems = set(self.mapping) | set(LEGACY_FOLDERS)
         return sorted(s for s in systems if folder in self.candidates(problem_dir, s))
+
+
+class ArchiveFolders(Folders):
+    """The archive layout <problem>/<system>/<instance>/: one folder per system, named after it."""
+
+    def base(self, problem_dir: Path) -> Path:
+        return problem_dir
+
+    def own(self, system: str) -> str:
+        return system
+
+    def candidates(self, problem_dir: Path, system: str) -> List[str]:
+        return [system]
+
+    def writers(self, problem_dir: Path, folder: str) -> List[str]:
+        return [folder]
+
+
+def is_archive_layout(problem_dir: Path) -> bool:
+    """A problem folder of a published matrix archive: no solver_outputs/ or individual_outputs/,
+    and <system>/<instance>/result_line.json below it."""
+    if (problem_dir / "solver_outputs").is_dir() or (problem_dir / "individual_outputs").is_dir():
+        return False
+    return any(True for _ in problem_dir.glob(f"*/*/{RESULT_LINE_FILE}"))
+
+
+def instance_dir(instance_root: Path, problem: str, instance: str) -> Path:
+    """<instance-root>/<problem>/<instance>, or, where that does not exist and the problem ends in
+    -PCAP<c>, <instance-root>/<region>/PCAP<c>/<instance> (the large-scaling record's layout)."""
+    direct = instance_root / problem / instance
+    match = re.fullmatch(r"(.+)-(PCAP[A-Z0-9]+)", problem)
+    if not direct.is_dir() and match:
+        nested = instance_root / match.group(1) / match.group(2) / instance
+        if nested.is_dir():
+            return nested
+    return direct
 
 
 def _last_line(lines) -> Tuple[str, dict]:
@@ -1029,11 +1093,31 @@ class ClaimSource:
         return (outcome if where else "missing"), last, where
 
 
+class ArchiveClaimSource(ClaimSource):
+    """The result line of a run in the archive layout: <system>/<instance>/result_line.json."""
+
+    def __init__(self, problem_dir: Path, problem: str):
+        super().__init__(problem_dir, problem)
+
+    def lines(self, instance: str, system: str):
+        data = _json(self.problem_dir / system / instance / RESULT_LINE_FILE)
+        if isinstance(data, dict) and data:
+            return [data], RESULT_LINE_FILE
+        return None, ""
+
+
 def discover_runs(problem_dir: Path, problem: str, systems: Optional[List[str]],
                   folders: Folders) -> List[Tuple[str, str]]:
     """(instance, system) pairs of this problem folder: individual_outputs/ plus, where the
     campaign's worklist is next to it, every unit of this problem (a unit the merge left without
-    an individual_outputs file is still validated, not silently skipped)."""
+    an individual_outputs file is still validated, not silently skipped). In the archive layout:
+    every <system>/<instance>/ folder."""
+    if isinstance(folders, ArchiveFolders):
+        found = {(run.name, run.parent.name) for run in problem_dir.glob("*/*")
+                 if run.is_dir() and (systems is None or run.parent.name in systems)}
+        order = {s: i for i, s in enumerate(systems if systems is not None
+                                            else sorted({s for _, s in found}))}
+        return sorted(found, key=lambda r: (r[0], order[r[1]]))
     known = systems
     if known is None:                              # --systems all: every system the caller knows
         known = sorted(set(folders.mapping) | set(PUBLISHED_SYSTEMS), key=len, reverse=True)
@@ -1062,7 +1146,7 @@ def discover_runs(problem_dir: Path, problem: str, systems: Optional[List[str]],
 
 
 def problem_granularity(problem: str, problem_dir: Path, instance_root: Path,
-                        override: Optional[int]) -> int:
+                        override: Optional[int], results_base: Optional[Path] = None) -> int:
     if override:
         return int(override)
     manifest = instance_root / "problems.tsv"
@@ -1082,7 +1166,8 @@ def problem_granularity(problem: str, problem_dir: Path, instance_root: Path,
     if match:
         return int(match.group(1))
     # last resort: what the runs themselves were given (manifest.json of any saved run)
-    for manifest in sorted((problem_dir / "solver_outputs").glob("*/*/manifest.json")):
+    base = results_base if results_base is not None else problem_dir / "solver_outputs"
+    for manifest in sorted(base.glob("*/*/manifest.json")):
         try:
             value = json.loads(manifest.read_text(encoding="utf-8")).get("source", {}).get(
                 "timestep_granularity")
@@ -1162,6 +1247,11 @@ def validate_problem(problem_dir: Path, instance_root: Path, out_dir: Path, syst
     target_dir.mkdir(parents=True, exist_ok=True)
     csv_path = target_dir / f"validation_{problem}.csv"
     rerun = campaign_root is not None
+    archive = is_archive_layout(problem_dir)
+    if archive:
+        if rerun:
+            raise ValidatorError("--campaign-folder does not apply to a problem folder of an archive")
+        folders = ArchiveFolders()
 
     runs = discover_runs(problem_dir, problem, systems, folders)
     done = set()
@@ -1178,8 +1268,9 @@ def validate_problem(problem_dir: Path, instance_root: Path, out_dir: Path, syst
         with csv_path.open("w", newline="", encoding="utf-8") as fh:
             csv.DictWriter(fh, fieldnames=CSV_COLUMNS).writeheader()
 
-    tg = problem_granularity(problem, problem_dir, instance_root, tg_override)
-    own_source = ClaimSource(problem_dir, problem)
+    tg = problem_granularity(problem, problem_dir, instance_root, tg_override,
+                             folders.base(problem_dir))
+    own_source = (ArchiveClaimSource if archive else ClaimSource)(problem_dir, problem)
     campaign_source = None
     if rerun:
         campaign_dir = Path(campaign_root) / f"output_{problem}"
@@ -1199,7 +1290,7 @@ def validate_problem(problem_dir: Path, instance_root: Path, out_dir: Path, syst
         inst = None
         inst_error = ""
         try:
-            inst = Instance(instance_root / problem / instance, tg)
+            inst = Instance(instance_dir(instance_root, problem, instance), tg)
             problems = inst.self_check()
             if problems:
                 inst_error = "instance self-check failed: " + "; ".join(problems)
@@ -1223,7 +1314,7 @@ def validate_problem(problem_dir: Path, instance_root: Path, out_dir: Path, syst
             outcome, own_line, own_where = own[system]
             ref_outcome, claim, ref_where = reference[system]
             folder = located[system]
-            run_dir = problem_dir / "solver_outputs" / folder / instance
+            run_dir = folders.base(problem_dir) / folder / instance
             row = {c: "" for c in CSV_COLUMNS}
             row.update(folder=campaign, problem=problem, instance=instance, system=system,
                        outcome=outcome, matrix_dir=str(run_dir.relative_to(problem_dir)),
@@ -1233,7 +1324,7 @@ def validate_problem(problem_dir: Path, instance_root: Path, out_dir: Path, syst
                 row[f"claimed_{m}"] = claim.get(m, "")
             failed: List[str] = []
             notes: List[str] = []
-            if own_where and own_where != "individual_outputs":
+            if own_where and own_where not in ("individual_outputs", RESULT_LINE_FILE):
                 notes.append(f"result line read from {own_where}")
             deviations: List[str] = []
             if rerun:
