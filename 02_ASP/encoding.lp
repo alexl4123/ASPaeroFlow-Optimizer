@@ -5,7 +5,8 @@
 %   navpoint_sector_scheduled(<NAVPOINT-ID>) for each navpoint that changes sector, and for every TIME>0
 %     navpoint_sector(<NAVPOINT-ID>,<SECTOR-ID>,<TIME>) without dynamic sector allocation,
 %     navpoint_sector_given(<NAVPOINT-ID>,<SECTOR-ID>,<TIME>) with it
-%   full dynamic: navpoint_sector_time_varying, navpoint_sector_candidate(<SECTOR-ID>)
+%   full dynamic: navpoint_sector_time_varying, navpoint_sector_candidate(<SECTOR-ID>) (read only by
+%     initial full sectorization, see below)
 %   restricted dynamic: restricted_epoch_at(<FROM>,<TIME>) and, instead of the 4-ary options,
 %     navpoint_sector_restricted_sector_allocation_from(<SECTOR-ID>,<DEC>,<NAVPOINT-ID>,<SECTOR-ID>,<FROM>)
 % navpoint_edge(<X0>,<X1>,<PLANE-SPEED>,<UNIT-DIST>)
@@ -18,8 +19,16 @@ navpoint(NAV) :- navpoint_sector(NAV,_,_).
 
 % Dynamic Sector Allocation:
 navpoint_sector(SEC,SEC,T) :- navpoint(SEC), time(T), airport(SEC).
-1{navpoint_sector(NAV,SEC,T):navpoint_sector(_,SEC,0)}1:- navpoint(NAV), time(T), not airport(NAV), regulation_dynamic_sector_allocation, not navpoint_sector_time_varying.
-1{navpoint_sector(NAV,SEC,T):navpoint_sector_candidate(SEC)}1:- navpoint(NAV), time(T), not airport(NAV), regulation_dynamic_sector_allocation, navpoint_sector_time_varying.
+% Full dynamic sector allocation: every non-airport navpoint may name a sector (the formal model's
+% sectors are the navpoints; the instance's t=0 partition is only where it starts), so full
+% allocation contains every partition the restricted options can form. Airports stay singletons.
+sector_root(SEC) :- navpoint(SEC), not airport(SEC), not regulation_initial_sector_domain.
+% Initial full allocation (--regulation-dynamic-sectorization=3), the full allocation before
+% 2026-10-05: only the sectors that hold a navpoint at t=0, or with a time-varying schedule every
+% sector the schedule uses. It cannot open any other sector.
+sector_root(SEC) :- navpoint_sector(_,SEC,0), not airport(SEC), regulation_initial_sector_domain, not navpoint_sector_time_varying.
+sector_root(SEC) :- navpoint_sector_candidate(SEC), not airport(SEC), regulation_initial_sector_domain, navpoint_sector_time_varying.
+1{navpoint_sector(NAV,SEC,T):sector_root(SEC)}1:- navpoint(NAV), time(T), not airport(NAV), regulation_dynamic_sector_allocation.
 initial_sector(SEC) :- navpoint_sector(_,SEC,0), regulation_restricted_dynamic_sector_allocation.
 1{navpoint_sector_decision(SEC,0..3,T)}1 :- initial_sector(SEC), time(T), not airport(SEC), regulation_restricted_dynamic_sector_allocation.
 navpoint_sector(NAV1,SEC1,T) :- navpoint_sector_decision(SEC,DEC,T), navpoint_sector_restricted_sector_allocation(SEC,DEC,NAV1,SEC1), regulation_restricted_dynamic_sector_allocation.
@@ -122,6 +131,13 @@ navpoint_seq(ID,T,TT) :- pot_navpoint_seq(ID,T,TT), not not_navpoint_seq(ID,T,TT
 
 % NEVER TWICE AT SAME LOCATION:
 :- navpoint_flight(ID,X,T), navpoint_flight(ID,X,T'), T != T', not airport(X).
+
+% EVERY POSITION INSIDE THE TIME DOMAIN (0..max_time, or the last planned timestep):
+% the planned route and the precomputed paths are shifted by the ground delay, and nothing else
+% bounds them. Past the time domain there is no sector and no capacity, so a flight there would
+% leave its load uncounted. Full rerouting already keeps to time(T); the re-solve loop in main.py
+% raises max_time when overload persists.
+:- navpoint_flight(_,_,T), not time(T).
 
 % FLIGHT MUST OCCUR:
 flightOccurs(ID) :- navpoint_flight(ID,_,_).

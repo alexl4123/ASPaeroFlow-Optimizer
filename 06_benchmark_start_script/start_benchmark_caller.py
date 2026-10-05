@@ -537,6 +537,34 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                     
                     asp_index += 1
 
+    # getattr: build_ablation_manifest.py --verify-system-keys passes a hand-built namespace
+    if getattr(args, "experiment_initial_full_sectorization", 0) != 0:
+        # Initial full sectorization (--regulation-dynamic-sectorization=3): the full sectorization
+        # before 2026-10-05, over the sectors open at t=0 only. Label "si"; the indices continue
+        # after the 27 keys above (5..31), so both sets can run in one campaign.
+        si_index = 32
+        for ground_delay_regulation, ground_delay_flag in ((0, "nd"), (1, "dp"), (2, "d")):
+            for rerouting_regulation, rerouting_flag in ((0, "nr"), (1, "rp"), (2, "r")):
+                experiment_key = f"{si_index}_ASP_{rerouting_flag}_{ground_delay_flag}_si"
+                system_config.append({
+                    "key": experiment_key,
+                    "script": base_dir / "../02_ASP/main.py",
+                    "encoding": base_dir / "../02_ASP/encoding.lp",
+                    "verbosity": None,
+                    "cmd": [
+                        f"--results-format={args.results_format}",
+                        f"--results-root={output_path}/solver_outputs/" + experiment_key,
+                        f"--wandb-enabled={args.wandb_enabled}",
+                        "--wandb-experiment-name-suffix=_" + experiment_key,
+                        f"--wandb-experiment-name-prefix={experiment_name}_",
+                        "--wandb-entity=thinklex",
+                        "--regulation-ground-delay-active=" + str(ground_delay_regulation),
+                        "--regulation-rerouting-active=" + str(rerouting_regulation),
+                        "--regulation-dynamic-sectorization=3",
+                    ]
+                })
+                si_index += 1
+
 
     if args.experiment_asp_rp_dp_sp != 0:
 
@@ -972,6 +1000,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--experiment-mip", type=int, default=1, help="true (val!=0), false (val=0)")
 
     parser.add_argument("--experiment-all-asp-variants", type=int, default=1, help="true (val!=0), false (val=0)")
+    parser.add_argument("--experiment-initial-full-sectorization", type=int, default=0,
+                        help="the 9 exact-ASP variants with initial full sectorization (label si, "
+                             "--regulation-dynamic-sectorization=3): true (val!=0), false (val=0)")
     parser.add_argument("--experiment-asp-rp-dp-sp", type=int, default=1, help="true (val!=0), false (val=0)")
     parser.add_argument("--experiment-asp-rp-d-sp", type=int, default=1, help="true (val!=0), false (val=0)")
 

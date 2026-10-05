@@ -195,7 +195,10 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
     parser.add_argument("--regulation-rerouting-active", type=int, default=str(C("regulation-rerouting-active", 2)),
                         help="0=no rerouting, 1=restricted rerouting, 2=full dynamic rerouting")
     parser.add_argument("--regulation-dynamic-sectorization", type=int, default=str(C("regulation-dynamic-sectorization", 2)),
-                        help="0=no dynamic sectorization, 1=restricted dynamic sectorization, 2=full dynamic sectorization.")
+                        choices=[0, 1, 2, 3],
+                        help="0=no dynamic sectorization, 1=restricted dynamic sectorization, 2=full dynamic "
+                             "sectorization (every non-airport navpoint may name a sector), 3=initial full dynamic "
+                             "sectorization (only the sectors open at t=0; the full sectorization before 2026-10-05).")
     add_arrival_delay_metric_argument(parser, default=C("arrival-delay-metric", None))
 
     parser.add_argument("--allow-overloads", type=str, default=str(C("allow-overloads", "false")),
