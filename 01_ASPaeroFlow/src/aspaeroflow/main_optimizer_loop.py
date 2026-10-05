@@ -48,6 +48,7 @@ from .main_loop_components.after_optimization import AfterOptimization
 from .main_loop_components.iteration_step import IterationStep
 from .main_loop_components.evaluate_solution import EvaluateSolution
 from .xai.trace import IterationTrace
+from .navpoint_sector_allocation_bootstrap import to_window as to_evaluation_window
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +253,7 @@ class Main:
         self.optimization_dto = optimization_dto
 
         if self._xai_trace is not None:
+            self._xai_trace.write_encoding(self.encoding)
             self._xai_trace.write_run(self.xai_run_info(optimization_dto))
         return optimization_dto
 
@@ -343,6 +345,19 @@ class Main:
             "solver_options": self._solver_options,
             "initial_overload": int(optimization_dto["number_of_conflicts"]),
             "number_flights": int(optimization_dto["converted_instance_matrix"].shape[0]),
+            "initial_objectives": {
+                "ITERATION": 0,
+                "OVERLOAD": int(optimization_dto["number_of_conflicts"]),
+                "ARRIVAL-DELAY": 0,
+                "SECTOR-NUMBER": int(compute_total_number_sectors(to_evaluation_window(
+                    optimization_dto["navaid_sector_time_assignment"], self._evaluation_window))),
+                "SECTOR-DIFF": 0, "REROUTE": 0, "RECONFIG": 0,
+            },
+            # overload of every sector summed over time, for colouring the initial map
+            "initial_sector_overload": {
+                int(sector): int(-row[row < 0].sum())
+                for sector, row in enumerate(optimization_dto["capacity_demand_diff_matrix"]) if (row < 0).any()
+            },
         }
 
     def get_total_atfm_delay(self):

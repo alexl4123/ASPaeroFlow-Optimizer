@@ -504,15 +504,15 @@ class EvaluateSolution:
         rerouted_mask = np.any(converted_navpoint_matrix[:, :original_max_time_converted] != original_converted_navpoint_matrix, axis=1)     # True if flight differs anywhere
         number_reroutes = int(np.count_nonzero(rerouted_mask))
 
-        if self._controller_enabled is True:
+        if self._controller_enabled is True or xai_trace is not None:
             relevant_vertices = np.array(controller_sector_diff_dict["prev_sector_config"][int(sector_index)]["vertices"])
             time_index = controller_sector_diff_dict["time_index"]
             unique_sectors = np.unique(navaid_sector_time_assignment[relevant_vertices, time_index])
             controller_sector_diff_dict["post_sector_config"] = {}
-            for sector_index in unique_sectors:
-                controller_sector_diff_dict["post_sector_config"][int(sector_index)] = {}
-                controller_sector_diff_dict["post_sector_config"][int(sector_index)]["vertices"] = [int(i) for i in np.where(navaid_sector_time_assignment[:, time_index] == sector_index)[0]]
-                controller_sector_diff_dict["post_sector_config"][int(sector_index)]["overload"] = int(-capacity_demand_diff_matrix[sector_index,time_index])
+            for post_sector in unique_sectors:
+                controller_sector_diff_dict["post_sector_config"][int(post_sector)] = {}
+                controller_sector_diff_dict["post_sector_config"][int(post_sector)]["vertices"] = [int(i) for i in np.where(navaid_sector_time_assignment[:, time_index] == post_sector)[0]]
+                controller_sector_diff_dict["post_sector_config"][int(post_sector)]["overload"] = int(-capacity_demand_diff_matrix[post_sector,time_index])
 
         if self._wandb_log is not None:
             if time_bucket_updated >= navaid_sector_time_assignment.shape[1]:

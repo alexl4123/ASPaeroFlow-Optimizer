@@ -64,6 +64,15 @@ def instance_graph(data_dir: Path) -> Dict[str, Any]:
     sectors = {int(r["Navaid_ID"]): int(r["Sector_ID"]) for r in rows("navaid_sector_assignment.csv")}
     capacity = {int(r["Sector_ID"]): int(float(r["Capacity"])) for r in rows("sectors.csv")}
     edges = [(int(float(r["source"])), int(float(r["target"]))) for r in rows("graph_edges.csv")]
+    # flights per edge of the filed trajectories (either direction), for line widths
+    edge_flights: Dict[tuple, int] = {}
+    previous = None
+    for r in rows("flights.csv"):
+        current = (r["Flight_ID"], int(float(r["Position"])))
+        if previous is not None and previous[0] == current[0] and previous[1] != current[1]:
+            key = tuple(sorted((previous[1], current[1])))
+            edge_flights[key] = edge_flights.get(key, 0) + 1
+        previous = current
 
     ids = sorted(set(names) | set(sectors) | {v for e in edges for v in e})
     vertices = []
@@ -76,7 +85,9 @@ def instance_graph(data_dir: Path) -> Dict[str, Any]:
                 lat, lon = -float(m.group(1)), float(m.group(2))
         vertices.append({"id": v, "name": name, "lat": lat, "lon": lon, "airport": v in airports,
                          "sector": sectors.get(v), "capacity": capacity.get(v)})
-    return {"vertices": vertices, "edges": edges, "coordinates": "geographic" if coords else "grid"}
+    return {"vertices": vertices,
+            "edges": [{"source": a, "target": b, "flights": edge_flights.get(tuple(sorted((a, b))), 0)} for a, b in edges],
+            "coordinates": "geographic" if coords else "grid"}
 
 
 class _ExplainingSession:
@@ -108,6 +119,11 @@ class _ExplainingSession:
             while len(self._explainers) > 16:
                 self._explainers.popitem(last=False)
             return ex
+
+    def _run_extras(self) -> Dict[str, Any]:
+        run = self.trace().run
+        return {"sector_overload": run.get("initial_sector_overload", {}),
+                "initial_objectives": run.get("initial_objectives", {})}
 
     def iteration(self, iteration: int) -> Dict[str, Any]:
         trace = self.trace()
@@ -161,7 +177,7 @@ class OptimizerSession(_ExplainingSession):
         with self._step_lock:
             dto = self.app.begin()
             self.status = "ready" if self.app.has_overload() else "finished"
-            self.initial = {"OVERLOAD": int(dto["number_of_conflicts"]), "ITERATION": 0}
+            self.initial = self.trace().run.get("initial_objectives") or {"OVERLOAD": int(dto["number_of_conflicts"]), "ITERATION": 0}
             return {"status": self.status, "objectives": self.initial}
 
     def step(self) -> Optional[Dict[str, Any]]:
@@ -185,7 +201,7 @@ class OptimizerSession(_ExplainingSession):
                       "accepted": sum(1 for r in self.records if r["accepted"])}
 
     def graph(self) -> Dict[str, Any]:
-        return instance_graph(self.data_dir)
+        return instance_graph(self.data_dir) | self._run_extras()
 
 
 class ReplaySession(_ExplainingSession):
@@ -198,7 +214,7 @@ class ReplaySession(_ExplainingSession):
         self.status = "ready" if self.records else "finished"
         run = self.trace().run
         self.data_dir = Path(run["data_dir"]) if run.get("data_dir") else None
-        self.initial = {"OVERLOAD": run.get("initial_overload"), "ITERATION": 0}
+        self.initial = run.get("initial_objectives") or {"OVERLOAD": run.get("initial_overload"), "ITERATION": 0}
         self.final: Optional[Dict[str, Any]] = None
 
     def begin(self) -> Dict[str, Any]:
@@ -216,7 +232,8 @@ class ReplaySession(_ExplainingSession):
         return record_summary(record)
 
     def graph(self) -> Dict[str, Any]:
-        return instance_graph(self.data_dir) if self.data_dir else {"vertices": [], "edges": []}
+        base = instance_graph(self.data_dir) if self.data_dir else {"vertices": [], "edges": []}
+        return base | self._run_extras()
 
 
 def precompute(folder: Path, out: Path) -> None:
