@@ -1,0 +1,18 @@
+{
+  "source_experiment": "/home/guests/abeiser/00_ATFCM_PROJECT/ASPaeroFlow_DataGenerator/ASPaeroFlow-DataGenerator/unparsed_experiment_data_V2_small_scaling/30-0-EAST-ASIA-3x3-V2",
+  "source_data_dir": "/home/guests/abeiser/00_ATFCM_PROJECT/ASPaeroFlow_DataGenerator/ASPaeroFlow-DataGenerator/unparsed_experiment_data_V2_small_scaling/30-0-EAST-ASIA-3x3-V2/DATA_S10_150699",
+  "navgraph_dir": "/home/guests/abeiser/00_ATFCM_PROJECT/ASPaeroFlow_DataGenerator/ASPaeroFlow-DataGenerator/unparsed_experiment_data_V2_small_scaling/30-0-EAST-ASIA-3x3-V2/navgraph",
+  "output_dir": "/home/guests/abeiser/00_ATFCM_PROJECT/ASPaeroFlow_DataGenerator/ASPaeroFlow-DataGenerator/experiment_data_V2_small_scaling/30-0-EAST-ASIA-3x3-V2/0000010_SEED150699",
+  "n_flights": 10,
+  "seed": "150699",
+  "files": [
+    "airplane_flight_assignment.csv",
+    "airplanes.csv",
+    "airports.csv",
+    "flights.csv",
+    "graph_edges.csv",
+    "navaid_sector_assignment.csv",
+    "navaid_sector_schedule.csv",
+    "sectors.csv"
+  ]
+}

@@ -47,6 +47,7 @@ from .main_loop_components.setup_before_optimization import SetupBeforeOptimizat
 from .main_loop_components.after_optimization import AfterOptimization
 from .main_loop_components.iteration_step import IterationStep
 from .main_loop_components.evaluate_solution import EvaluateSolution
+from .xai.trace import IterationTrace
 
 
 # ---------------------------------------------------------------------------
@@ -121,8 +122,12 @@ class Main:
         sequential_execution = False,
         injected_data = False,
         arrival_delay_metric = DEFAULT_ARRIVAL_DELAY_METRIC,
-        solver_options = None
+        solver_options = None,
+        xai_trace_dir = None
         ) -> None:
+
+        # XAI trace: one record per iteration (see xai/trace.py); None = off.
+        self._xai_trace = IterationTrace(Path(xai_trace_dir)) if xai_trace_dir is not None else None
 
         self._graph_path: Optional[Path] = graph_path
         self._sectors_path: Optional[Path] = sectors_path
@@ -222,6 +227,9 @@ class Main:
             convert_dto_to_global_vars(self, global_dto)
         else:
             optimization_dto = self.optimization_dto
+
+        if self._xai_trace is not None:
+            self._xai_trace.write_run(self.xai_run_info(optimization_dto))
                
         while np.any(optimization_dto["capacity_overload_mask"], where=True):
 
@@ -279,7 +287,28 @@ class Main:
         global_dto = convert_global_vars_to_dto(self)
         r0,r1,global_dto = AfterOptimization(global_dto).post_processing(optimization_dto)
         convert_dto_to_global_vars(self, global_dto)
+        if self._xai_trace is not None:
+            self._xai_trace.close()
         return r0,r1
+
+    def xai_run_info(self, optimization_dto):
+        """What the trace's run.json records about the run (inputs, parameters, starting point)."""
+        return {
+            "data_dir": str(self._data_dir) if self._data_dir is not None else None,
+            "seed": self._seed,
+            "timestep_granularity": self._timestep_granularity,
+            "max_explored_vertices": self._max_explored_vertices,
+            "max_delay_per_iteration": self._max_delay_per_iteration,
+            "max_considered_aircraft": self.max_considered_aircraft,
+            "number_capacity_management_configs": self.number_capacity_management_configs,
+            "capacity_management_enabled": self.capacity_management_enabled,
+            "composite_sector_function": self.composite_sector_function,
+            "sector_capacity_factor": self.sector_capacity_factor,
+            "arrival_delay_metric": self._arrival_delay_metric,
+            "solver_options": self._solver_options,
+            "initial_overload": int(optimization_dto["number_of_conflicts"]),
+            "number_flights": int(optimization_dto["converted_instance_matrix"].shape[0]),
+        }
 
     def get_total_atfm_delay(self):
         return self.total_atfm_delay

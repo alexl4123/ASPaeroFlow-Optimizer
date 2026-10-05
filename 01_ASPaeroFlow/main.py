@@ -178,6 +178,9 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
 
     parser.add_argument("--sequential-execution", type=str, default=str(C("sequential-execution", "false")))
 
+    parser.add_argument("--xai-trace-dir", type=Path, default=C("xai-trace-dir", None),
+                        help="Write the XAI iteration trace (per-iteration ASP instance, choice, hotspot) to this folder.")
+
     # DYNAMIC SECTORIZATION:
     parser.add_argument("--number-capacity-management-configs", type=int, default=int(C("number-capacity-management-configs", 7)), help="How many compositions/partitions to consider (only works when cap-mgmt. is enabled.")
     parser.add_argument("--capacity-management-enabled",
@@ -737,7 +740,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                     explainability_context,
                     args.sequential_execution,
                     arrival_delay_metric=args.arrival_delay_metric,
-                    solver_options=solver_options_from_args(args)
+                    solver_options=solver_options_from_args(args),
+                    xai_trace_dir=args.xai_trace_dir
                     )
             key, value = app.run()
         else:

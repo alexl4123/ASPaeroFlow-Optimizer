@@ -1,0 +1,89 @@
+"""End to end: run ASPaeroFlow with the XAI trace on a 10-flight V2 instance, then explain it.
+
+    python -m unittest discover -s 01_ASPaeroFlow/xai_tests      (from the repository root)
+
+Checks that the trace does not change the run, that the recorded choice of every iteration is
+reproduced and optimal for its sub-problem, that no foil beats the recorded choice, and that
+contradictory locks come back as a minimal core.
+"""
+import json
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+OPT = HERE.parent
+REPO = OPT.parent
+sys.path.insert(0, str(OPT))
+
+from src.aspaeroflow.xai.contrastive import IterationExplainer, Lock  # noqa: E402
+from src.aspaeroflow.xai.subproblem import compare  # noqa: E402
+from src.aspaeroflow.xai.trace import TraceReader  # noqa: E402
+
+INSTANCE = HERE / "fixtures" / "EAST-ASIA-3x3-V2_0000010_SEED150699"
+
+
+def run(extra):
+    cmd = [sys.executable, str(OPT / "main.py"), f"--data-dir={INSTANCE}",
+           f"--encoding-path={OPT / 'encoding.lp'}", "--save-results=false", *extra]
+    out = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True, timeout=600, check=True).stdout
+    return [json.loads(line) for line in out.splitlines() if line.startswith("{")]
+
+
+class TraceAndExplanations(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.trace_dir = Path(cls.tmp.name) / "trace"
+        cls.plain = run([])
+        cls.traced = run([f"--xai-trace-dir={cls.trace_dir}"])
+        cls.trace = TraceReader(cls.trace_dir)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_trace_does_not_change_the_run(self):
+        strip = lambda rows: [{k: v for k, v in r.items() if k != "TOTAL-TIME-TO-THIS-POINT"} for r in rows]
+        self.assertEqual(strip(self.plain), strip(self.traced))
+
+    def test_one_record_per_iteration(self):
+        iterations = [r["ITERATION"] for r in self.traced if not r["COMPUTATION-FINISHED"] and "ITERATION" in r]
+        self.assertGreater(len(self.trace.iterations), 0)
+        self.assertEqual(sorted(self.trace.iterations), sorted(set(iterations)))
+
+    def test_recorded_choice_is_reproduced_and_optimal(self):
+        for n in self.trace.iterations:
+            ex = IterationExplainer(self.trace, n)
+            recorded = ex.sub_record["clingo_cost"]
+            if len(recorded) == 5:
+                self.assertEqual(list(ex.factual.vector()), recorded, f"iteration {n}")
+            free, _ = ex.solver.solve()
+            self.assertIsNone(compare(ex.factual, free), f"iteration {n}: a better answer than the recorded one")
+
+    def test_no_foil_beats_the_recorded_choice(self):
+        for n in self.trace.accepted():
+            ex = IterationExplainer(self.trace, n)
+            answers = [ex.why_flight(f) for f in ex.sub.decision_flights] + [ex.why_sectors()]
+            for answer in answers:
+                for c in answer["contrasts"]:
+                    if c["feasible"] and c["deciding_level"]:
+                        level = c["deciding_level"]
+                        self.assertGreater(c["costs"][level], answer["factual"]["costs"][level], c["text"])
+
+    def test_contradictory_locks_give_a_minimal_core(self):
+        n = self.trace.accepted()[0]
+        ex = IterationExplainer(self.trace, n)
+        f = ex.sub.decision_flights[0]
+        first_path = sorted(ex.sub.paths[f])[0]
+        other = [p for p in sorted(ex.sub.paths[f]) if p != first_path][0]
+        result = ex.what_if([Lock("path", (f, first_path)), Lock("path", (f, other)), Lock("keep_sectors")])
+        self.assertFalse(result["feasible"])
+        self.assertEqual(sorted(result["core"]), sorted([f"path {f} {first_path}", f"path {f} {other}"]))
+
+
+if __name__ == "__main__":
+    unittest.main()

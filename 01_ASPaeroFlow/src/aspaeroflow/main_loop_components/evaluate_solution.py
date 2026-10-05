@@ -36,6 +36,7 @@ from ..auxiliaries.communication_helpers import decode_ndarray, encode_ndarray
 from ..navpoint_sector_allocation_bootstrap import to_window as to_evaluation_window
 
 from ..optimize_flights import OptimizeFlights
+from ..xai import hooks as xai_hooks
 
 class EvaluateSolution:
 
@@ -141,9 +142,15 @@ class EvaluateSolution:
 
         flight_ids = np.array(list(flight_ids.keys()), dtype=int)
 
+        # XAI trace (--xai-trace-dir): the iteration's state before its answer is applied.
+        xai_trace = getattr(self, "_xai_trace", None)
+        if xai_trace is not None:
+            xai_before = xai_hooks.capture_before(self, solutions, flight_ids, converted_navpoint_matrix,
+                                                  capacity_time_matrix, system_loads, number_of_conflicts,
+                                                  controller_sector_diff_dict, optimization_dto)
 
         all_flights_diff_dict = {}
-        if self._controller_enabled is True or self._explainability_context is not None: 
+        if self._controller_enabled is True or self._explainability_context is not None or xai_trace is not None:
 
             for flight_id in flight_ids:
                 navpoint_flight = converted_navpoint_matrix[flight_id,:]
@@ -546,6 +553,10 @@ current_time -> {int(time_bucket_updated)}
 
         if self._explainability_context is None:
             print(output_string, flush=True)
+
+        if xai_trace is not None:
+            xai_hooks.record_iteration(self, xai_before, iteration, controller_sector_diff_dict.get("accepted_solution"),
+                                       output_dict, all_flights_diff_dict, controller_sector_diff_dict)
 
         if self._controller_enabled is True or self._explainability_context is not None:
 

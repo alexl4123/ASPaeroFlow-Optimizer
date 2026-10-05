@@ -16,7 +16,8 @@ SECTOR_FLIGHT: Final[str] = "sector_flight"
 NAVPOINT_FLIGHT: Final[str] = "navpoint_flight"
 REROUTED: Final[str] = "reroute"
 SECTOR_CONFIG: Final[str] = "chosen_config"
-SIGNATURES: Final[set[str]] = {ARRIVAL_DELAY, SECTOR_FLIGHT, NAVPOINT_FLIGHT, REROUTED, SECTOR_CONFIG}
+CHOSEN_PATH: Final[str] = "chosen_path"
+SIGNATURES: Final[set[str]] = {ARRIVAL_DELAY, SECTOR_FLIGHT, NAVPOINT_FLIGHT, REROUTED, SECTOR_CONFIG, CHOSEN_PATH}
 
 #: The seed this file used to hard-code. It is kept as the fallback so that a caller which does
 #: not pass a seed produces exactly the runs it always did. It is also the default of
@@ -95,7 +96,11 @@ class Solver:
             raise Exception("Found multiple sector-config atoms in ASP output - must never happen!")
         
         sector_config = sector_configs[0]
-        self.final_model = Model(sector_flights, navpoint_flights, reroutes, arrival_delays, sector_config)
+        # Kept for the XAI trace: which candidate path the sub-problem picked per flight, and the
+        # cost vector clingo reports (highest priority first).
+        chosen_paths = [symbol for symbol in parsed if symbol.name == CHOSEN_PATH]
+        self.final_model = Model(sector_flights, navpoint_flights, reroutes, arrival_delays, sector_config,
+                                 chosen_paths=chosen_paths, cost=list(model.cost))
 
 
 class PickleAbleSymbol:
@@ -118,7 +123,8 @@ class PickleAbleSymbol:
 
 class Model:
 
-    def __init__(self, sector_flights, navpoint_flights, reroutes, atfm_delays, sector_config):
+    def __init__(self, sector_flights, navpoint_flights, reroutes, atfm_delays, sector_config,
+                 chosen_paths=(), cost=()):
 
         self.sector_flights = [PickleAbleSymbol(sector_flight) for sector_flight in sector_flights]
         self.navpoint_flights = [PickleAbleSymbol(navpoint_flight) for navpoint_flight in navpoint_flights]
@@ -126,6 +132,8 @@ class Model:
         self.reroutes = [PickleAbleSymbol(reroute) for reroute in reroutes]
         self.atfm_delays = [PickleAbleSymbol(atfm_delay) for atfm_delay in atfm_delays]
         self.sector_config = PickleAbleSymbol(sector_config)
+        self.chosen_paths = [PickleAbleSymbol(chosen_path) for chosen_path in chosen_paths]
+        self.cost = [int(c) for c in cost]
 
         self.computation_time = -1
 
@@ -155,4 +163,8 @@ class Model:
     
     def get_sector_config(self):
         return self.sector_config
+
+    def get_chosen_paths(self):
+        """{flight id: chosen candidate path index} of this sub-problem."""
+        return {int(symbol.arguments[0]): int(symbol.arguments[1]) for symbol in self.chosen_paths}
 
