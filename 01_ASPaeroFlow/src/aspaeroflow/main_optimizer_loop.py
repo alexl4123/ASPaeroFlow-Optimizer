@@ -301,6 +301,11 @@ class Main:
         elif "SEQUENTIAL END" in command:
             return "sequential-end"
 
+        # XAI fork experiments (xai/fork.py) may replace the step's answer before it is applied.
+        fork = getattr(self, "_xai_fork", None)
+        if fork is not None:
+            optimization_dto["solutions"] = fork(self, optimization_dto)
+
         global_dto = convert_global_vars_to_dto(self)
         optimization_dto, global_dto = EvaluateSolution(global_dto).evaluate_solution(optimization_dto)
         convert_dto_to_global_vars(self, global_dto)
