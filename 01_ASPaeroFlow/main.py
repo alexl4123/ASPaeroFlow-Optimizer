@@ -632,6 +632,35 @@ def initialize_controller(args):
     return control_context, control_ctrl_socket, control_pub_socket, control_poller
 
 
+def make_app(args: argparse.Namespace, control=(None, None, None, None), explainability_context=None,
+             wandb_log=None, xai_trace_dir=None) -> Main:
+    """The optimizer for parsed arguments (the non-sequential case); the XAI session builds it the same way."""
+    return Main(args.graph_path, args.sectors_path, args.flights_path,
+            args.airports_path, args.airplanes_path,
+            args.airplane_flight_path, args.navaid_sector_path,
+            args.encoding_path,
+            args.seed, args.number_threads, args.timestep_granularity,
+            args.max_explored_vertices, args.max_delay_per_iteration,
+            args.max_time, args.verbosity,
+            args.sector_capacity_factor,
+            args.number_capacity_management_configs,
+            args.capacity_management_enabled,
+            args.composite_sector_function.lower(),
+            _derive_output_name(args),
+            wandb_log,
+            args.optimizer, args.max_number_navpoints_per_sector, args.max_number_sectors, args.minimize_number_sectors,
+            args.convex_sectors,
+            *control,
+            args.controller_enabled, args.data_dir,
+            args.max_considered_aircraft,
+            explainability_context,
+            args.sequential_execution,
+            arrival_delay_metric=args.arrival_delay_metric,
+            solver_options=solver_options_from_args(args),
+            xai_trace_dir=xai_trace_dir
+            )
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     """Script entry-point compatible with both `python -m` and `poetry run`."""
     args = parse_cli(argv)
@@ -719,30 +748,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     while True:
 
         if args.sequential_execution is False:
-            app = Main(args.graph_path, args.sectors_path, args.flights_path,
-                    args.airports_path, args.airplanes_path,
-                    args.airplane_flight_path, args.navaid_sector_path,
-                    args.encoding_path,
-                    args.seed, args.number_threads, args.timestep_granularity,
-                    args.max_explored_vertices, args.max_delay_per_iteration,
-                    args.max_time, args.verbosity,
-                    args.sector_capacity_factor,
-                    args.number_capacity_management_configs,
-                    args.capacity_management_enabled,
-                    composite_sector_function,
-                    experiment_name,
-                    wandb_log,
-                    args.optimizer, args.max_number_navpoints_per_sector, args.max_number_sectors, args.minimize_number_sectors,
-                    args.convex_sectors,
-                    control_context, control_ctrl_socket, control_pub_socket, control_poller, 
-                    args.controller_enabled, args.data_dir,
-                    args.max_considered_aircraft,
-                    explainability_context,
-                    args.sequential_execution,
-                    arrival_delay_metric=args.arrival_delay_metric,
-                    solver_options=solver_options_from_args(args),
-                    xai_trace_dir=args.xai_trace_dir
-                    )
+            app = make_app(args, (control_context, control_ctrl_socket, control_pub_socket, control_poller),
+                           explainability_context, wandb_log, args.xai_trace_dir)
             key, value = app.run()
         else:
 

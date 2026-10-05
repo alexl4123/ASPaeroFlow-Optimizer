@@ -219,7 +219,29 @@ class Main:
 
     def run(self) -> None:  
         """Run the application"""
-        
+
+        self.begin()
+
+        while self.has_overload():
+
+            outcome = self.step()
+
+            if outcome == "continue":
+                continue
+            elif isinstance(outcome, tuple) and len(outcome) == 2 and outcome[0].startswith("<LOAD>"):
+                return outcome
+            elif outcome == "sequential-end":
+                return convert_global_vars_to_dto(self), self.optimization_dto
+            elif outcome == "terminate":
+                break
+
+        return self.finish()
+
+    # The loop of run(), one piece at a time, so that a caller (the XAI session) can drive it
+    # iteration by iteration. run() is exactly begin(); step() while has_overload(); finish().
+
+    def begin(self):
+        """Load the instance and set up the first plan (or take the injected one)."""
         global_dto = convert_global_vars_to_dto(self)
 
         if self.injected_data is False:
@@ -227,65 +249,78 @@ class Main:
             convert_dto_to_global_vars(self, global_dto)
         else:
             optimization_dto = self.optimization_dto
+        self.optimization_dto = optimization_dto
 
         if self._xai_trace is not None:
             self._xai_trace.write_run(self.xai_run_info(optimization_dto))
-               
-        while np.any(optimization_dto["capacity_overload_mask"], where=True):
+        return optimization_dto
 
-            """
-            iteration = optimization_dto["iteration"]
-            # Format '%f' retains float precision. Use '%d' if the matrices contain strictly integers.
-            np.savetxt(f"20260524_converted_navpoint_matrix_{iteration}.csv", 
-                    optimization_dto["converted_navpoint_matrix"], 
-                    delimiter=",", 
-                    fmt="%i")
+    def has_overload(self) -> bool:
+        return bool(np.any(self.optimization_dto["capacity_overload_mask"], where=True))
 
-            np.savetxt(f"20260524_converted_instance_matrix_{iteration}.csv", 
-                    optimization_dto["converted_instance_matrix"], 
-                    delimiter=",", 
-                    fmt="%i")
+    def step(self):
+        """One iteration. Returns "evaluated", "continue" (paused by the controller), "terminate"
+        (no further progress possible), "sequential-end", or the ("<LOAD>", folder) command."""
+        optimization_dto = self.optimization_dto
 
-            np.savetxt(f"20260524_navaid_sector_time_assignment_{iteration}.csv", 
-                    optimization_dto["navaid_sector_time_assignment"], 
-                    delimiter=",", 
-            fmt="%f")
-            """
+        """
+        iteration = optimization_dto["iteration"]
+        # Format '%f' retains float precision. Use '%d' if the matrices contain strictly integers.
+        np.savetxt(f"20260524_converted_navpoint_matrix_{iteration}.csv", 
+                optimization_dto["converted_navpoint_matrix"], 
+                delimiter=",", 
+                fmt="%i")
 
-            global_dto = convert_global_vars_to_dto(self)
-            optimization_dto, global_dto, command  = IterationStep(global_dto).optimization_step(optimization_dto)
-            convert_dto_to_global_vars(self, global_dto)
+        np.savetxt(f"20260524_converted_instance_matrix_{iteration}.csv", 
+                optimization_dto["converted_instance_matrix"], 
+                delimiter=",", 
+                fmt="%i")
 
-            """
-            iteration = optimization_dto["iteration"]
-            serialize_asp_model(optimization_dto, f"20260524_asp_canonical_model_{iteration}.lp")
-            """
-
-            if command == "continue":
-                continue
-            elif len(command) == 2 and command[0].startswith("<LOAD>"):
-                return command
-            elif "SEQUENTIAL END" in command:
-                return global_dto, optimization_dto
-
-            global_dto = convert_global_vars_to_dto(self)
-            optimization_dto, global_dto = EvaluateSolution(global_dto).evaluate_solution(optimization_dto)
-            convert_dto_to_global_vars(self, global_dto)
-
-            # Termination assurance:
-            additional_time_increase = optimization_dto["additional_time_increase"]
-            converted_instance_matrix = optimization_dto["converted_instance_matrix"]
-            # Locate column indices of all valid flight positions
-            _, col_indices = np.where(converted_instance_matrix != -1)
-            # Extract the absolute last time position
-            last_flight = col_indices.max()
-            max_number_airplanes_considered_in_ASP = optimization_dto["max_number_airplanes_considered_in_ASP"]
-            if (additional_time_increase-1) * self._max_delay_per_iteration > last_flight and max_number_airplanes_considered_in_ASP == 1:
-                # Terminate if not solvable:
-                break
+        np.savetxt(f"20260524_navaid_sector_time_assignment_{iteration}.csv", 
+                optimization_dto["navaid_sector_time_assignment"], 
+                delimiter=",", 
+        fmt="%f")
+        """
 
         global_dto = convert_global_vars_to_dto(self)
-        r0,r1,global_dto = AfterOptimization(global_dto).post_processing(optimization_dto)
+        optimization_dto, global_dto, command  = IterationStep(global_dto).optimization_step(optimization_dto)
+        convert_dto_to_global_vars(self, global_dto)
+        self.optimization_dto = optimization_dto
+
+        """
+        iteration = optimization_dto["iteration"]
+        serialize_asp_model(optimization_dto, f"20260524_asp_canonical_model_{iteration}.lp")
+        """
+
+        if command == "continue":
+            return "continue"
+        elif len(command) == 2 and command[0].startswith("<LOAD>"):
+            return command
+        elif "SEQUENTIAL END" in command:
+            return "sequential-end"
+
+        global_dto = convert_global_vars_to_dto(self)
+        optimization_dto, global_dto = EvaluateSolution(global_dto).evaluate_solution(optimization_dto)
+        convert_dto_to_global_vars(self, global_dto)
+        self.optimization_dto = optimization_dto
+
+        # Termination assurance:
+        additional_time_increase = optimization_dto["additional_time_increase"]
+        converted_instance_matrix = optimization_dto["converted_instance_matrix"]
+        # Locate column indices of all valid flight positions
+        _, col_indices = np.where(converted_instance_matrix != -1)
+        # Extract the absolute last time position
+        last_flight = col_indices.max()
+        max_number_airplanes_considered_in_ASP = optimization_dto["max_number_airplanes_considered_in_ASP"]
+        if (additional_time_increase-1) * self._max_delay_per_iteration > last_flight and max_number_airplanes_considered_in_ASP == 1:
+            # Terminate if not solvable:
+            return "terminate"
+        return "evaluated"
+
+    def finish(self):
+        """Post-processing of the final plan; returns what run() returns."""
+        global_dto = convert_global_vars_to_dto(self)
+        r0,r1,global_dto = AfterOptimization(global_dto).post_processing(self.optimization_dto)
         convert_dto_to_global_vars(self, global_dto)
         if self._xai_trace is not None:
             self._xai_trace.close()

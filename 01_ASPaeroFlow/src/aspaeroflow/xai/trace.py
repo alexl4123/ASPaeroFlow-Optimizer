@@ -47,6 +47,7 @@ class IterationTrace:
         (self.folder / "lp").mkdir(parents=True, exist_ok=True)
         self._lines = open(self.folder / "trace.jsonl", "w", encoding="utf-8")
         self._encoding_written = False
+        self.last: Optional[Dict[str, Any]] = None
 
     def write_run(self, info: Dict[str, Any]) -> None:
         with open(self.folder / "run.json", "w", encoding="utf-8") as fh:
@@ -81,6 +82,7 @@ class IterationTrace:
         }
         self._lines.write(json.dumps(_plain(line)) + "\n")
         self._lines.flush()
+        self.last = _plain(line)
 
     def close(self) -> None:
         self._lines.close()
@@ -95,8 +97,14 @@ class TraceReader:
         run = self.folder / "run.json"
         self.run = json.loads(run.read_text(encoding="utf-8")) if run.exists() else {}
         self.iterations: Dict[int, Dict[str, Any]] = {}
+        self.refresh()
+
+    def refresh(self) -> None:
+        """Read records added since (a live run appends to the file; a half-written last line is skipped)."""
         with open(self.folder / "trace.jsonl", encoding="utf-8") as fh:
             for line in fh:
+                if not line.endswith("\n"):
+                    break
                 if line.strip():
                     record = json.loads(line)
                     self.iterations[int(record["iteration"])] = record
