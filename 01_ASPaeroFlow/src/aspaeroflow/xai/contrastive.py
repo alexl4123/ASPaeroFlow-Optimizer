@@ -30,6 +30,11 @@ SCOPE = ("Scope: this compares answers of one ASPaeroFlow step only - the candid
 
 # ---------------------------------------------------------------------------- user locks
 
+def _periods(n: int) -> str:
+    """A duration in the interface's words ("step N" is the optimizer step, a duration is "N time periods")."""
+    return "1 time period" if n == 1 else f"{n} time periods"
+
+
 @dataclass
 class Lock:
     """A requirement a user puts on one step. `kind` is one of:
@@ -135,16 +140,16 @@ class IterationExplainer:
         parts = []
         shift = d.get("departure_shift", 0)
         if shift > 0:
-            parts.append(f"departs {shift} step{'s' if shift != 1 else ''} later")
+            parts.append(f"departs {_periods(shift)} later")
         elif shift < 0:
-            parts.append(f"departs {-shift} step{'s' if shift != -1 else ''} earlier")
+            parts.append(f"departs {_periods(-shift)} earlier")
         if d.get("rerouted"):
             parts.append("flies " + "-".join(map(str, d["route"])) + " instead of " + "-".join(map(str, d["current_route"])))
         elif shift != 0:
             parts.append("on its current route")
         arr = d.get("arrival_shift", 0)
         if arr != shift and arr != 0:
-            parts.append(f"arrives {abs(arr)} step{'s' if abs(arr) != 1 else ''} {'later' if arr > 0 else 'earlier'}")
+            parts.append(f"arrives {_periods(abs(arr))} {'later' if arr > 0 else 'earlier'}")
         return f"flight {flight} " + ", ".join(parts) if parts else f"flight {flight} keeps its trajectory"
 
     def config_text(self, config: int) -> str:

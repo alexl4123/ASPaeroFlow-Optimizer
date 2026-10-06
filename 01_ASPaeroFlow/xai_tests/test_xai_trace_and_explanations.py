@@ -70,5 +70,24 @@ class TraceAndExplanations(unittest.TestCase):
         self.assertEqual(sorted(result["core"]), sorted([f"path {f} {first_path}", f"path {f} {other}"]))
 
 
+class PathTextWords(unittest.TestCase):
+    """Durations in the contrastive texts are time periods ("step N" is the optimizer step)."""
+
+    def text(self, description):
+        explainer = IterationExplainer.__new__(IterationExplainer)
+        explainer.describe_path = lambda flight, index: description
+        return explainer.path_text(18, 0)
+
+    def test_time_periods(self):
+        self.assertEqual(self.text({"departure_shift": 1, "arrival_shift": 1, "rerouted": False}),
+                         "flight 18 departs 1 time period later, on its current route")
+        self.assertEqual(self.text({"departure_shift": 3, "arrival_shift": 5, "rerouted": False}),
+                         "flight 18 departs 3 time periods later, on its current route, arrives 5 time periods later")
+        self.assertEqual(self.text({"departure_shift": -2, "arrival_shift": -2, "rerouted": False}),
+                         "flight 18 departs 2 time periods earlier, on its current route")
+        self.assertNotIn("step", self.text({"departure_shift": 0, "arrival_shift": -1, "rerouted": True,
+                                            "route": [1, 2], "current_route": [1, 3]}))
+
+
 if __name__ == "__main__":
     unittest.main()
