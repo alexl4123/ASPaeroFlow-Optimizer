@@ -6,45 +6,30 @@ Checks that the trace does not change the run, that the recorded choice of every
 reproduced and optimal for its sub-problem, that no foil beats the recorded choice, and that
 contradictory locks come back as a minimal core.
 """
-import json
-import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 OPT = HERE.parent
-REPO = OPT.parent
 sys.path.insert(0, str(OPT))
+sys.path.insert(0, str(HERE))
 
+import shared_run  # noqa: E402
 from src.aspaeroflow.xai.contrastive import IterationExplainer, Lock  # noqa: E402
 from src.aspaeroflow.xai.subproblem import compare  # noqa: E402
 from src.aspaeroflow.xai.trace import TraceReader  # noqa: E402
 
-INSTANCE = HERE / "fixtures" / "EAST-ASIA-3x3-V2_0000010_SEED150699"
-
-
-def run(extra):
-    cmd = [sys.executable, str(OPT / "main.py"), f"--data-dir={INSTANCE}",
-           f"--encoding-path={OPT / 'encoding.lp'}", "--save-results=false", *extra]
-    out = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True, timeout=600, check=True).stdout
-    return [json.loads(line) for line in out.splitlines() if line.startswith("{")]
+INSTANCE = shared_run.INSTANCE
 
 
 class TraceAndExplanations(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.tmp = tempfile.TemporaryDirectory()
-        cls.trace_dir = Path(cls.tmp.name) / "trace"
-        cls.plain = run([])
-        cls.traced = run([f"--xai-trace-dir={cls.trace_dir}"])
+        # the two runs are shared with test_trace_fields.py (xai_tests/shared_run.py removes them at exit)
+        cls.plain, cls.traced, cls.trace_dir = shared_run.get()
         cls.trace = TraceReader(cls.trace_dir)
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.tmp.cleanup()
 
     def test_trace_does_not_change_the_run(self):
         strip = lambda rows: [{k: v for k, v in r.items() if k != "TOTAL-TIME-TO-THIS-POINT"} for r in rows]

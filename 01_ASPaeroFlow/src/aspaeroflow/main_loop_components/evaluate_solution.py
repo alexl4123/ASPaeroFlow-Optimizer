@@ -513,6 +513,8 @@ class EvaluateSolution:
                 controller_sector_diff_dict["post_sector_config"][int(post_sector)] = {}
                 controller_sector_diff_dict["post_sector_config"][int(post_sector)]["vertices"] = [int(i) for i in np.where(navaid_sector_time_assignment[:, time_index] == post_sector)[0]]
                 controller_sector_diff_dict["post_sector_config"][int(post_sector)]["overload"] = int(-capacity_demand_diff_matrix[post_sector,time_index])
+                controller_sector_diff_dict["post_sector_config"][int(post_sector)]["demand"] = int(system_loads[post_sector, time_index])
+                controller_sector_diff_dict["post_sector_config"][int(post_sector)]["capacity"] = int(capacity_time_matrix[post_sector, time_index])
 
         if self._wandb_log is not None:
             if time_bucket_updated >= navaid_sector_time_assignment.shape[1]:

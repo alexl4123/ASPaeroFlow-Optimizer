@@ -348,6 +348,11 @@ class Main:
             "sector_capacity_factor": self.sector_capacity_factor,
             "arrival_delay_metric": self._arrival_delay_metric,
             "solver_options": self._solver_options,
+            "sequential_execution": self._sequential_execution,
+            "minimize_number_sectors": self.minimize_number_sectors,
+            "max_number_sectors": self.max_number_sectors,
+            "convex_sectors": self._convex_sectors,
+            "evaluation_window": self._evaluation_window,
             "initial_overload": int(optimization_dto["number_of_conflicts"]),
             "number_flights": int(optimization_dto["converted_instance_matrix"].shape[0]),
             "initial_objectives": {
@@ -356,7 +361,10 @@ class Main:
                 "ARRIVAL-DELAY": 0,
                 "SECTOR-NUMBER": int(compute_total_number_sectors(to_evaluation_window(
                     optimization_dto["navaid_sector_time_assignment"], self._evaluation_window))),
-                "SECTOR-DIFF": 0, "REROUTE": 0, "RECONFIG": 0,
+                # same formula as evaluate_solution.py (navpoints whose sector differs from the time before)
+                "SECTOR-DIFF": int(np.count_nonzero(optimization_dto["navaid_sector_time_assignment"][:, 1:]
+                                                    != optimization_dto["navaid_sector_time_assignment"][:, :-1])),
+                "REROUTE": 0, "RECONFIG": 0,
             },
             # overload of every sector summed over time, for colouring the initial map
             "initial_sector_overload": {

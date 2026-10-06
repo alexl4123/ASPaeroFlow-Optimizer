@@ -20,6 +20,18 @@ def capture_before(evaluator, solutions, flight_ids, converted_navpoint_matrix, 
     prev = controller_sector_diff_dict.get("prev_sector_config", {}).get(sector_index, {})
     hotspot["vertices"] = list(prev.get("vertices", []))
     hotspot["overload"] = prev.get("overload")
+    # The flights in the hotspot cell with the stored durations the candidate sort used
+    # (iteration_step.py build_job: stable sort by duration, so ties fall to the lower flight number),
+    # and how many of them were passed to the solver. Both matrices still hold the plan before the answer.
+    instance_matrix = optimization_dto.get("converted_instance_matrix")
+    durations = optimization_dto.get("flight_durations")
+    if (instance_matrix is not None and durations is not None and 0 <= sector_index
+            and 0 <= time_index < instance_matrix.shape[1]):
+        cell = np.flatnonzero(instance_matrix[:, time_index] == sector_index)
+        flights = [{"id": int(f), "duration": int(durations[f])} for f in cell]
+        hotspot["flights"] = sorted(flights, key=lambda x: (x["duration"], x["id"]))
+    if optimization_dto.get("xai_taken") is not None:
+        hotspot["taken"] = len(optimization_dto["xai_taken"])
 
     subproblems = []
     for model, _restore, instance in solutions:

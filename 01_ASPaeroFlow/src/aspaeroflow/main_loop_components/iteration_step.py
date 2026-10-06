@@ -58,6 +58,8 @@ class IterationStep:
         convert_dto_to_global_vars(self, global_var_dto)
 
     def optimization_step(self, optimization_dto):
+        # XAI trace: the flights this iteration passes to the solver (set below; empty on every other path).
+        optimization_dto["xai_taken"] = []
 
         navaid_sector_time_assignment = optimization_dto["navaid_sector_time_assignment"]
         converted_instance_matrix = optimization_dto["converted_instance_matrix"]
@@ -258,6 +260,7 @@ class IterationStep:
                                 iteration, self.sector_capacity_factor, self.flights,
                                 self._sequential_execution
                                 )
+                optimization_dto["xai_taken"] = [int(f) for f in candidates]
 
                 controller_sector_diff_dict["time_index"] = int(time_index)
                 controller_sector_diff_dict["sector_index"] = int(sector_index)
@@ -265,6 +268,8 @@ class IterationStep:
                 controller_sector_diff_dict["prev_sector_config"][int(sector_index)] = {}
                 controller_sector_diff_dict["prev_sector_config"][int(sector_index)]["vertices"] = [int(i) for i in np.where(navaid_sector_time_assignment[:, time_index] == sector_index)[0]]
                 controller_sector_diff_dict["prev_sector_config"][int(sector_index)]["overload"] = int(-capacity_demand_diff_matrix[sector_index,time_index])
+                controller_sector_diff_dict["prev_sector_config"][int(sector_index)]["demand"] = int(system_loads[sector_index, time_index])
+                controller_sector_diff_dict["prev_sector_config"][int(sector_index)]["capacity"] = int(capacity_time_matrix[sector_index, time_index])
                 
                 all_new = True
                 for candidate in candidates:
