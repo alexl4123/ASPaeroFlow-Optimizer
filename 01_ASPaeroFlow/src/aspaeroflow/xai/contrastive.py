@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
+from .reasons import explain_step, step_context
 from .subproblem import LEVELS, LEVEL_TEXT, amount, CandidatePath, Solution, Subproblem, SubproblemSolver, compare
 from .trace import TraceReader
 
@@ -234,20 +235,26 @@ class IterationExplainer:
 
     # ------------------------------------------------------------------ questions
 
+    #: Step header lines (xai/reasons.py) that answer "why this hotspot and these flights".
+    HOTSPOT_KINDS = ("hotspot", "retry", "rule", "capacity", "subproblem", "legs", "delays", "changed", "unchanged")
+
     def why_hotspot(self) -> Dict[str, Any]:
+        """The step header's own sentences (one source for both): spot, rule, flights, delays, result."""
         h = self.record["hotspot"]
-        p = self.record.get("parameters", {})
         flights = self.sub.decision_flights
-        later = sorted(self.sub.parent)
-        text = (f"Sector {h['sector']} at time step {h['time']} had {h.get('demand', '?')} flights for a capacity of "
-                f"{h.get('capacity', '?')}. ASPaeroFlow always works on the earliest overloaded time step (and there on "
-                f"the overloaded sector with the lowest number). Of the flights in that sector it takes the "
-                f"{p.get('max_aircraft', len(flights))} with the shortest flight time: "
-                f"{', '.join(map(str, flights))}" + (f", together with the later legs of the same aircraft "
-                f"({', '.join(map(str, later))})" if later else "") + ". This is a fixed rule, not an optimisation.")
-        if p.get("failed_attempts_before"):
-            text += (f" Before this step, {p['failed_attempts_before']} attempt(s) at this hotspot had failed, so "
-                     f"the delay window was widened {p.get('additional_time_increase', 0)} time(s).")
+        try:
+            previous, rejected = step_context(self.trace.iterations, self.iteration)
+            step = explain_step(self.record, previous=previous, run=self.trace.run, trace_folder=self.trace.folder,
+                                rejected_before=rejected)
+            lines = step["lines"]
+            if step["errors"]:                   # record_error or render_error: its one line says why
+                text = " ".join(line["text"] for line in lines)
+            else:
+                text = " ".join(line["text"] for line in lines
+                                if line["kind"] in self.HOTSPOT_KINDS or line["kind"].startswith(
+                                    ("hotspot_", "retry_", "capacity_", "subproblem_", "delays_", "changed_", "legs_")))
+        except Exception as exc:  # the explanation endpoint must answer
+            text = f"The explanation text of this step could not be produced ({type(exc).__name__})."
         return {"iteration": self.iteration, "question": "Why this hotspot and these flights?", "answer": text,
                 "hotspot": h, "decision_flights": flights, "later_legs": self.sub.parent}
 

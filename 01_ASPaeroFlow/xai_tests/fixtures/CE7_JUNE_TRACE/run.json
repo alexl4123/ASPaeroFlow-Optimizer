@@ -1,0 +1,32 @@
+{
+  "data_dir": "../../analysis/xai_study/03_study_server/ASPaeroFlow/ASPaeroFlow-Optimizer/01_ASPaeroFlow/controller_folder/CENTRAL-EUROPE-7x7",
+  "seed": 11904657,
+  "timestep_granularity": 1,
+  "max_explored_vertices": 6,
+  "max_delay_per_iteration": 20,
+  "max_considered_aircraft": 2,
+  "number_capacity_management_configs": 7,
+  "capacity_management_enabled": true,
+  "composite_sector_function": "max",
+  "sector_capacity_factor": 6,
+  "arrival_delay_metric": "signed",
+  "solver_options": [],
+  "initial_overload": 110,
+  "number_flights": 60,
+  "initial_objectives": {
+    "ITERATION": 0,
+    "OVERLOAD": 110,
+    "ARRIVAL-DELAY": 0,
+    "SECTOR-NUMBER": 350,
+    "SECTOR-DIFF": 0,
+    "REROUTE": 0,
+    "RECONFIG": 0
+  },
+  "initial_sector_overload": {
+    "0": 29,
+    "6": 44,
+    "12": 4,
+    "21": 14,
+    "24": 19
+  }
+}

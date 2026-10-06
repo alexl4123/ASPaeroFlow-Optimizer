@@ -13,6 +13,7 @@ from __future__ import annotations
 import csv
 import importlib.util
 import json
+import logging
 import re
 import threading
 from collections import OrderedDict
@@ -20,9 +21,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .contrastive import IterationExplainer, Lock
+from .reasons import explain_start, explain_step, step_context
 from .trace import TraceReader
 
 OPTIMIZER_DIR = Path(__file__).resolve().parents[3]          # 01_ASPaeroFlow/
+log = logging.getLogger(__name__)
 
 
 def _load_cli():
@@ -45,6 +48,17 @@ def record_summary(record: Dict[str, Any]) -> Dict[str, Any]:
         "sector_changes": record.get("sector_changes", {}),
         "parameters": record.get("parameters", {}),
     }
+
+
+def aircraft_of_flights(data_dir: Optional[Path]) -> Optional[Dict[int, int]]:
+    """flight -> aircraft from the instance's airplane_flight_assignment.csv; None without the file."""
+    if data_dir is None:
+        return None
+    path = Path(data_dir) / "airplane_flight_assignment.csv"
+    if not path.exists():
+        return None
+    with open(path, newline="", encoding="utf-8") as fh:
+        return {int(float(r["Flight_ID"])): int(float(r["Airplane_ID"])) for r in csv.DictReader(fh)}
 
 
 def instance_graph(data_dir: Path) -> Dict[str, Any]:
@@ -98,6 +112,9 @@ class _ExplainingSession:
         self._trace: Optional[TraceReader] = None
         self._explainers: "OrderedDict[int, IterationExplainer]" = OrderedDict()
         self._explain_lock = threading.Lock()
+        self._steps: Dict[int, Dict[str, Any]] = {}       # step header per iteration (xai/reasons.py)
+        self._aircraft: Optional[Dict[int, int]] = None
+        self._aircraft_read = False
 
     def trace(self) -> TraceReader:
         if self._trace is None:
@@ -119,6 +136,62 @@ class _ExplainingSession:
             while len(self._explainers) > 16:
                 self._explainers.popitem(last=False)
             return ex
+
+    def _step_of(self, record: Dict[str, Any], records: List[Dict[str, Any]],
+                 run_length: Optional[int] = None, run_kept: Optional[int] = None) -> Dict[str, Any]:
+        """The step header of a record, computed once per iteration; never raises."""
+        n = int(record["iteration"])
+        if n in self._steps:
+            return self._steps[n]
+        try:
+            previous, rejected = step_context({int(r["iteration"]): r for r in records}, n)
+            step = explain_step(record, previous=previous, run=self.trace().run, trace_folder=self.folder,
+                                rejected_before=rejected, run_length=run_length, run_kept=run_kept)
+        except Exception as exc:  # an explanation must never stop a step
+            log.exception("step %s: explanation failed", n)
+            step = {"iteration": n, "kept": bool(record.get("accepted")), "run_length": run_length,
+                    "run_kept": run_kept, "lines": [], "deltas": [],
+                    "errors": [{"code": "render_error", "text": f"the explanation text of this step could not be produced ({type(exc).__name__})"}]}
+        if step.get("errors"):
+            log.warning("step %s: explanation errors %s", n, ", ".join(e["code"] for e in step["errors"]))
+        self._steps[n] = step
+        return step
+
+    def _start_step(self, run_length: Optional[int] = None, run_kept: Optional[int] = None) -> Dict[str, Any]:
+        try:
+            step = explain_start(self.trace().run, run_length=run_length, run_kept=run_kept)
+        except Exception as exc:
+            log.exception("filed plan: explanation failed")
+            step = {"iteration": 0, "kept": None, "run_length": run_length, "run_kept": run_kept, "lines": [],
+                    "deltas": [], "errors": [{"code": "render_error", "text": f"the explanation text of the filed plan could not be produced ({type(exc).__name__})"}]}
+        if step.get("errors"):
+            log.warning("filed plan: explanation errors %s", ", ".join(e["code"] for e in step["errors"]))
+        return step
+
+    def _aircraft_map(self, summary: Dict[str, Any], record: Dict[str, Any]) -> Optional[Dict[str, int]]:
+        """Aircraft of every flight the step names: changed, in the hotspot cell, in the sub-problem."""
+        if not self._aircraft_read:
+            self._aircraft_read = True
+            try:
+                self._aircraft = aircraft_of_flights(getattr(self, "data_dir", None))
+            except (OSError, KeyError, ValueError):
+                log.exception("airplane_flight_assignment.csv not readable")
+                self._aircraft = None
+        if self._aircraft is None:
+            return None
+        flights = {int(f) for f in (record.get("flight_changes") or {})}
+        flights |= {int(f["id"]) for f in (record.get("hotspot") or {}).get("flights") or []}
+        flights |= set(summary.get("decision_flights") or [])
+        return {str(f): self._aircraft[f] for f in sorted(flights) if f in self._aircraft}
+
+    def _summary(self, record: Dict[str, Any], records: List[Dict[str, Any]],
+                 run_length: Optional[int] = None, run_kept: Optional[int] = None) -> Dict[str, Any]:
+        summary = record_summary(record)
+        summary["step"] = self._step_of(record, records, run_length, run_kept)
+        aircraft = self._aircraft_map(summary, record)
+        if aircraft is not None:
+            summary["aircraft"] = aircraft
+        return summary
 
     def _run_extras(self) -> Dict[str, Any]:
         run = self.trace().run
@@ -178,7 +251,7 @@ class OptimizerSession(_ExplainingSession):
             dto = self.app.begin()
             self.status = "ready" if self.app.has_overload() else "finished"
             self.initial = self.trace().run.get("initial_objectives") or {"OVERLOAD": int(dto["number_of_conflicts"]), "ITERATION": 0}
-            return {"status": self.status, "objectives": self.initial}
+            return {"status": self.status, "objectives": self.initial, "step": self._start_step()}
 
     def step(self) -> Optional[Dict[str, Any]]:
         """One iteration; None once the plan has no overload left (or no progress is possible)."""
@@ -191,7 +264,7 @@ class OptimizerSession(_ExplainingSession):
                 self.records.append(record)
             if outcome == "terminate" or not self.app.has_overload():
                 self._finish()
-            return record_summary(record) if record is not None else None
+            return self._summary(record, self.records) if record is not None else None
 
     def _finish(self) -> None:
         self.app.finish()
@@ -222,8 +295,11 @@ class ReplaySession(_ExplainingSession):
         self.initial = run.get("initial_objectives") or {"OVERLOAD": run.get("initial_overload"), "ITERATION": 0}
         self.final: Optional[Dict[str, Any]] = None
 
+    def _run_counts(self):
+        return len(self.records), sum(1 for r in self.records if r["accepted"])
+
     def begin(self) -> Dict[str, Any]:
-        return {"status": self.status, "objectives": self.initial}
+        return {"status": self.status, "objectives": self.initial, "step": self._start_step(*self._run_counts())}
 
     def step(self) -> Optional[Dict[str, Any]]:
         if self.cursor >= len(self.records):
@@ -234,7 +310,7 @@ class ReplaySession(_ExplainingSession):
             self.status = "finished"
             self.final = {"objectives": record["objectives"], "iterations": len(self.records),
                           "accepted": sum(1 for r in self.records if r["accepted"])}
-        return record_summary(record)
+        return self._summary(record, self.records, *self._run_counts())
 
     def graph(self) -> Dict[str, Any]:
         base = instance_graph(self.data_dir) if self.data_dir else {"vertices": [], "edges": []}
