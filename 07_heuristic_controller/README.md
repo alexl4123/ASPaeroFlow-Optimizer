@@ -11,13 +11,23 @@ Two ways to connect the optimizer (`01_ASPaeroFlow`) to the clinguin interface (
 | explanations | the iteration re-run with one forced fact, six global metrics | the iteration's ASP sub-problem solved again in-process: answer, cost ladder per priority level, ties, scope; what-if with user locks |
 | clinguin backend | `ATFCMBackend` | `ATFCMSessionBackend` |
 
+## Running the interface
+
+One command starts the session service, the clinguin backend and the Angular dev server (Ctrl-C stops all
+three): `07_heuristic_controller/run_xai_local.sh` (variables in its header). With docker instead:
+`docker-compose.xai.yml` in the repository root (one user; the study stack stays `docker-compose.yml`).
+Both need `../ASPaeroFlow-XAI` on branch `xai` next to this repository. A replay of a finished trace
+(`XAI_REPLAY`, plus `XAI_INSTANCE` for the map) shows every viewer the same run without running the optimizer.
+
 ## Session service
 
     python 07_heuristic_controller/session_service.py --instances-root DIR --sessions-root DIR [--port 8090]
 
 `--instances-root` is a folder of instance folders (each with `flights.csv`, ...). Every live session
 writes an iteration trace into `--sessions-root/<id>/` (see `01_ASPaeroFlow/src/aspaeroflow/xai/trace.py`);
-a trace can be replayed later with `POST /sessions {"replay": "<trace folder>"}`, without an optimizer.
+a trace can be replayed later with `POST /sessions {"replay": "<trace folder>", "instance": "<name>"}`,
+without an optimizer (`instance` only when the trace's recorded instance path does not exist where the
+service runs).
 Endpoints and event format: docstring of `session_service.py`. Quick check with curl:
 
     curl -s localhost:8090/instances

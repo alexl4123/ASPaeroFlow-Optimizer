@@ -207,13 +207,18 @@ class OptimizerSession(_ExplainingSession):
 class ReplaySession(_ExplainingSession):
     """A finished trace served like a live run: step() hands out the next recorded iteration."""
 
-    def __init__(self, folder: Path):
+    def __init__(self, folder: Path, data_dir: Optional[Path] = None):
+        """`data_dir` overrides the instance folder recorded in the trace (needed when the trace was
+        written on another machine or outside the container that replays it)."""
         super().__init__(folder)
         self.records = list(self.trace())
         self.cursor = 0
         self.status = "ready" if self.records else "finished"
         run = self.trace().run
-        self.data_dir = Path(run["data_dir"]) if run.get("data_dir") else None
+        if data_dir is not None:
+            self.data_dir = Path(data_dir)
+        else:
+            self.data_dir = Path(run["data_dir"]) if run.get("data_dir") else None
         self.initial = run.get("initial_objectives") or {"OVERLOAD": run.get("initial_overload"), "ITERATION": 0}
         self.final: Optional[Dict[str, Any]] = None
 

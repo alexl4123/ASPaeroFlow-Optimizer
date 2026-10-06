@@ -1,0 +1,73 @@
+# The XAI interface on the session service (branch xai), for one user on one machine.
+# The June 2026 study stack (ZeroMQ controller, traefik, one stack per participant) is docker-compose.yml.
+#
+#   XAI_INSTANCES=/path/to/folder/of/instances XAI_INSTANCE=CENTRAL-EUROPE-7x7 \
+#       docker compose -f docker-compose.xai.yml up --build
+#   -> http://localhost:8080
+#
+# Replay a finished trace instead of a live run (every viewer sees the same run, no optimizer runs):
+#   XAI_TRACES=/path/to/folder/of/traces XAI_REPLAY=/data/traces/<trace folder> XAI_INSTANCE=<its instance> ...
+#
+# Builds from ../ASPaeroFlow-XAI (branch xai), which must sit next to this repository.
+name: aspaeroflow-xai
+
+services:
+  session-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - PYTHONUNBUFFERED=1
+    command:
+      - "07_heuristic_controller/session_service.py"
+      - "--host=0.0.0.0"
+      - "--port=8090"
+      - "--instances-root=/data/instances"
+      - "--sessions-root=/data/sessions"
+    volumes:
+      - ${XAI_INSTANCES:-./01_ASPaeroFlow/controller_folder}:/data/instances:ro
+      - ${XAI_TRACES:-./xai_traces}:/data/traces:ro
+      - ${XAI_SESSIONS:-./xai_sessions}:/data/sessions
+    expose:
+      - "8090"
+
+  clinguin-backend:
+    build:
+      context: ../ASPaeroFlow-XAI
+      dockerfile: Dockerfile
+    entrypoint: ["micromamba", "run", "-n", "base"]
+    command:
+      - "python"
+      - "start.py"
+      - "server"
+      - "--backend=ATFCMSessionBackend"
+      - "--domain-files"
+      - "atfcm_frontend/encoding.lp"
+      - "atfcm_frontend/instance.lp"
+      - "--ui-files"
+      - "atfcm_frontend/ui.lp"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - ASPAEROFLOW_SERVICE_URL=http://session-service:8090
+      - ASPAEROFLOW_INSTANCE=${XAI_INSTANCE:-}
+      - ASPAEROFLOW_REPLAY=${XAI_REPLAY:-}
+      - ASPAEROFLOW_PACE_MS=${XAI_PACE_MS:-400}
+      - TELEMETRY_DIR=/app/telemetry_data
+    volumes:
+      - ${XAI_TELEMETRY:-./xai_telemetry}:/app/telemetry_data
+    expose:
+      - "8000"
+    depends_on:
+      - session-service
+
+  frontend:
+    build:
+      context: ../ASPaeroFlow-XAI/angular_frontend
+      dockerfile: Dockerfile
+    volumes:
+      # /api -> clinguin-backend, as traefik does in the study deployment
+      - ./07_heuristic_controller/xai_nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "127.0.0.1:${XAI_PORT:-8080}:80"
+    depends_on:
+      - clinguin-backend

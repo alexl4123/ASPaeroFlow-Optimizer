@@ -10,7 +10,7 @@ error with a status code, and the event stream is a numbered log a client can re
 Endpoints (JSON):
     GET  /health
     GET  /instances                                   folders under --instances-root
-    POST /sessions        {"instance": name} | {"data_dir": path} | {"replay": trace folder}, "options": {...}
+    POST /sessions        {"instance": name} | {"data_dir": path} | {"replay": trace folder [, "instance": name]}, "options": {...}
     GET  /sessions/{id}                               status, last objectives, final summary
     GET  /sessions/{id}/graph                         vertices (coordinates), edges, initial sectors
     POST /sessions/{id}/step                          one iteration, returns its summary
@@ -156,7 +156,12 @@ def create_app(instances_root: Optional[Path], sessions_root: Path) -> FastAPI:
             folder = Path(req.replay)
             if not (folder / "trace.jsonl").exists():
                 raise HTTPException(400, f"not a trace folder: {folder}")
-            handle = Handle(ReplaySession(folder), "replay")
+            data_dir = None
+            if req.instance:          # the instance the trace was made from, under --instances-root
+                if instances_root is None:
+                    raise HTTPException(400, "the service was started without --instances-root")
+                data_dir = instances_root / req.instance
+            handle = Handle(ReplaySession(folder, data_dir), "replay")
         else:
             if req.instance:
                 if instances_root is None:
