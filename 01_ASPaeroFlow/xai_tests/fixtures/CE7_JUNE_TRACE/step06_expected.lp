@@ -29,6 +29,7 @@ reason(subproblem(6)).
 reason(unchanged(6)).
 reason_arg(capacity(6),navpoints,0,8).
 reason_arg(capacity(6),sector,0,21).
+reason_arg(capacity(6),time,0,11).
 reason_arg(changed(6),changed,1,18).
 reason_arg(changed(6),changed,2,19).
 reason_arg(changed(6),changed,3,26).
@@ -87,6 +88,7 @@ reason_source(changed(6),changed_flight(6,18)).
 reason_source(changed(6),changed_flight(6,19)).
 reason_source(changed(6),changed_flight(6,26)).
 reason_source(changed(6),flights_recorded(6)).
+reason_source(delays(6),option_assumed(sequential_execution)).
 reason_source(delays(6),param(6,additional_time_increase,0)).
 reason_source(delays(6),param(6,max_delay_per_iteration,20)).
 reason_source(delays(6),subproblem_flight(6,18)).
@@ -116,6 +118,7 @@ reason_source(legs(6),later_leg(6,47,18)).
 reason_source(legs(6),later_leg(6,58,18)).
 reason_source(rule(6),option_assumed(sequential_execution)).
 reason_source(scope(6),kept(6)).
+reason_source(scope(6),option_assumed(sequential_execution)).
 reason_source(subproblem(6),hotspot_load(6,21,11,3,1)).
 reason_source(subproblem(6),hotspot_overload(6,21,11,2)).
 reason_source(subproblem(6),param(6,max_aircraft,2)).

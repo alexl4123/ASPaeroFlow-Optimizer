@@ -149,7 +149,9 @@ class Occupants(Base):
         out, line = self.subproblem(3, {6: 5, 8: 5, 11: 6, 12: 5})
         self.assertEqual(out["errors"], [])
         self.assertEqual(line, "Of the 4 flights in sector 6 at time 9, 2 went to the solver: 6 and 8; 12 has the same "
-                               "stored duration and was left out by its higher flight number.")
+                               "stored duration and was left out by its higher flight number; 11 has a longer one.")
+        refs = [r["ref"] for r in next(x for x in out["lines"] if x["kind"].startswith("subproblem"))["refs"]]
+        self.assertEqual(refs, ["sector:6@3:before", "flight:6", "flight:8", "flight:12", "flight:11"])
 
     def test_shortest_step6(self):
         out, line = self.subproblem(6, {17: 6, 18: 4, 19: 3})
@@ -296,8 +298,8 @@ class Rejected(Base):
                                    "time periods.")
         nxt = explain(self.records, 8, self.run_info)
         self.assertEqual(nxt["errors"], [])
-        self.assertEqual(text_of(nxt, "retry"), "Step 7 at this spot was not kept, so this step offered only "
-                                                "departure delays of 20 to 39 time periods.")
+        self.assertEqual(text_of(nxt, "retry"), "Step 7 at this spot was not kept, so this step offered departure "
+                                                "delays of 20 to 39 time periods (no shorter ones).")
         self.assertIn("20 to 39 time periods later", text_of(nxt, "delays"))
 
     def test_forged_overload_before(self):
@@ -345,7 +347,7 @@ class Start(Base):
         first = out["lines"][0]["text"]
         self.assertIn("total overload of 110", first)
         self.assertIn("6 (44), 0 (29), 24 (19), 21 (14) and 12 (4)", first)
-        self.assertEqual(out["lines"][1]["text"], "Each step works on one overloaded sector at one time and is kept "
+        self.assertEqual(out["lines"][1]["text"], "Each step works on one overloaded sector at a single time and is kept "
                                                   "only if the total overload falls.")
         self.assertEqual([r["ref"] for r in out["lines"][0]["refs"]][:2], ["sector:6@0:initial", "sector:0@0:initial"])
         overload = out["deltas"][0]
@@ -387,13 +389,30 @@ class Branches(Base):
         self.assertEqual(out["errors"], [])
         return [line["text"] for line in out["lines"]]
 
+    # sequential mode: optimize_flights.py writes one path per solver flight, delay k*W with k = 0
+    LP_SEQUENTIAL = ("paths(18,0..0).\npaths(19,0..0).\nactual_flight_operations_start_time(18,9,0).\n"
+                     "actual_flight_operations_start_time(19,8,0).\nconfig(0,14).\n"
+                     "chosen_path(26,0) :- chosen_path(19,0).\n")
+
     def test_sequential(self):
         self.run_info["sequential_execution"] = True
-        lines = self.lines(explain(self.records, 6, self.run_info))
+        folder = self.folder_with_lp(6, self.LP_SEQUENTIAL)
+        out = explain(self.records, 6, self.run_info, folder=folder)
+        lines = self.lines(out)
         self.assertEqual(lines[0], "Sector 21 at time 11 had 3 flights for a capacity of 1.")
-        self.assertNotIn("rule", [line["kind"] for line in explain(self.records, 6, self.run_info)["lines"]])
+        self.assertNotIn("rule", [line["kind"] for line in out["lines"]])
+        self.assertIn("18 and 19 could each take one candidate route only, departing as in the current plan "
+                      "(sequential mode).", lines)
+        self.assertFalse([t for t in lines if "0 to 19" in t or "delay range" in t], lines)
+        self.assertIn("This describes this step only. The spot and the flights follow fixed rules; the new "
+                      "trajectories and the layout are the answer of the solver to the sub-problem of this step.", lines)
+        # one solver flight
+        one = "paths(18,0..0).\nactual_flight_operations_start_time(18,9,0).\nconfig(0,14).\n"
+        self.records[6] = self.one_flight_record()
+        self.assertIn("18 could take one candidate route only, departing as in the current plan (sequential mode).",
+                      self.lines(explain(self.records, 6, self.run_info, folder=self.folder_with_lp(6, one))))
         self.records[7] = rejected_copy(self.records[7], 7, self.records[6])
-        out = explain(self.records, 7, self.run_info)
+        out = explain(self.records, 7, self.run_info, folder=self.tmp)      # (step 7's lp is not sequential)
         self.assertEqual(text_of(out, "not_kept"), "Step 7 was not kept: the total overload did not fall (stays at "
                                                    "22). The plan is unchanged.")
 
@@ -404,6 +423,24 @@ class Branches(Base):
         r = with_occupants(r, {18: 4}, taken=1)
         r["flight_changes"] = {"18": r["flight_changes"]["18"]}
         return r
+
+    def test_sequential_without_start_times(self):
+        # an lp without start times is no evidence of one departure option: no delays line in sequential mode
+        self.run_info["sequential_execution"] = True
+        out = explain(self.records, 6, self.run_info,
+                      folder=self.folder_with_lp(6, "paths(18,0..0).\npaths(19,0..0).\nconfig(0,14).\n"
+                                                    "chosen_path(26,0) :- chosen_path(19,0).\n"))
+        self.assertEqual(out["errors"], [])
+        self.assertFalse([line for line in out["lines"] if line["kind"].startswith("delays")])
+
+    def test_delay_options_mismatch(self):
+        # the June lp (60 paths for 18) does not fit sequential mode; a non-sequential lp with one start does not
+        # fit W = 20
+        self.run_info["sequential_execution"] = True
+        self.assertEqual(codes(explain(self.records, 6, self.run_info)), ["delay_options"])
+        self.run_info["sequential_execution"] = False
+        self.assertEqual(codes(explain(self.records, 6, self.run_info,
+                                       folder=self.folder_with_lp(6, self.LP_SEQUENTIAL))), ["delay_options"])
 
     def test_one_flight_capacity_zero(self):
         self.records[6] = self.one_flight_record()
@@ -430,7 +467,7 @@ class Branches(Base):
 
     def test_one_leg(self):
         lp = "paths(18,0..59).\npaths(19,0..19).\nconfig(0,14).\nchosen_path(26,0) :- chosen_path(19,0).\n"
-        self.assertIn("The later flight of its aircraft went with it: 26 (after 19).",
+        self.assertIn("Later flights of the same aircraft also went to the solver: 26 (after 19).",
                       self.lines(explain(self.records, 6, self.run_info, folder=self.folder_with_lp(6, lp))))
 
     def test_shortest_one(self):
@@ -474,16 +511,16 @@ class Branches(Base):
         out = explain(records, n, self.run_info)
         self.assertEqual(out["errors"], [])
         self.assertEqual(text_of(out, "retry"), "Steps 7, 8, 9, 10 and 11 at this spot were not kept, so this step "
-                                                "offered only departure delays of 100 to 119 time periods and only "
-                                                "the current layout.")
+                                                "offered departure delays of 100 to 119 time periods (no shorter ones) "
+                                                "and only the current layout.")
 
     def test_retry_ten(self):
         records, n = self.retries(10, max_aircraft=1)
         out = explain(records, n, self.run_info)
         self.assertEqual(out["errors"], [])
         self.assertTrue(text_of(out, "retry").endswith(
-            "offered only departure delays of 200 to 219 time periods and only the current layout and at most 1 "
-            "flight."), text_of(out, "retry"))
+            "offered departure delays of 200 to 219 time periods (no shorter ones) and only the current layout and "
+            "at most 1 flight."), text_of(out, "retry"))
 
     def test_run_ends_on_rejection(self):
         records = dict(self.records)
@@ -544,6 +581,43 @@ class Sessions(unittest.TestCase):
                 for f in s["flight_changes"]:
                     self.assertIn(str(f), s["aircraft"])
 
+    def test_live_sequential(self):
+        """A live run in sequential mode: one path per solver flight, so no delay range in any header. On this
+        instance no sequential step is kept and the run ends with "SEQUENTIAL END", which OptimizerSession does
+        not treat as the end (step() then returns the last record again), so the loop stops at a repeat. Its
+        first record, made kept (synthetic: accepted, overload one lower, no flight changes), shows the
+        sequential delays line read from the real lp file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "trace"
+            session = OptimizerSession(TEN, folder, {"sequential_execution": "true"})
+            session.begin()
+            seen = []
+            for _ in range(10):
+                summary = session.step()
+                if summary is None or summary["iteration"] in seen:
+                    break
+                seen.append(summary["iteration"])
+                self.assertEqual(summary["step"]["errors"], [], summary["iteration"])
+                texts = [line["text"] for line in summary["step"]["lines"]]
+                self.assertFalse([t for t in texts if "time periods later" in t or "delay range" in t], texts)
+                if session.status == "finished":
+                    break
+            self.assertGreater(len(seen), 0)
+            session.app._xai_trace.close()
+            run = json.loads((folder / "run.json").read_text())
+            self.assertIs(run["sequential_execution"], True)
+            record = json.loads((folder / "trace.jsonl").read_text().splitlines()[0])
+            self.assertEqual(record["iteration"], 1)
+            lp = (folder / record["subproblems"][0]["instance_file"]).read_text()
+            record = dict(record, accepted=True, flight_changes={},
+                          objectives=dict(record["objectives"], OVERLOAD=run["initial_objectives"]["OVERLOAD"] - 1))
+            out = reasons.explain_step(record, previous=None, run=run, trace_folder=folder)
+            self.assertEqual(out["errors"], [])
+            kinds = [line["kind"] for line in out["lines"]]
+            texts = [line["text"] for line in out["lines"]]
+            self.assertTrue([k for k in kinds if k.startswith("delays_sequential")], (kinds, lp[:300]))
+            self.assertIn("scope_sequential", kinds)
+            self.assertFalse([t for t in texts if "time periods later" in t or "delay range" in t], texts)
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,6 +13,8 @@
 %   param(N,P,V)    P in max_aircraft, additional_time_increase, max_delay_per_iteration,
 %                   number_capacity_management_configs, failed_attempts_before
 %   instance_read(N)  subproblem_flight(N,F)  later_leg(N,Leg,F)  layout_option(N,C)
+%   offered_paths(N,F,P)  offered_starts(N,F,K)   (lp file: candidate paths of solver flight F, and the
+%                   number of distinct start times among them; the latter only when the lp states start times)
 %   flights_recorded(N)  changed_flight(N,F)
 %   sector_record(N)  part_before(N,S,V)  part_after(N,P,V)
 %   objective(N,W,K,V)  recorded_before(N,overload,V)
@@ -37,6 +39,7 @@
 #defined occupants_recorded/1. #defined occupant/4.       #defined taken_count/2.
 #defined param/3.
 #defined instance_read/1.    #defined subproblem_flight/2. #defined later_leg/3.  #defined layout_option/2.
+#defined offered_paths/3.    #defined offered_starts/3.
 #defined flights_recorded/1. #defined changed_flight/2.
 #defined sector_record/1.    #defined part_before/3.      #defined part_after/3.
 #defined objective/4.        #defined recorded_before/3.  #defined rejected_before/2.
@@ -110,6 +113,14 @@ error(candidate_rule(N)) :- check_candidates(N), subproblem_flight(N,F), not sel
 in_subproblem(N,F) :- subproblem_flight(N,F).
 in_subproblem(N,L) :- later_leg(N,L,_).
 error(changed_outside(N,F)) :- instance_read(N), flights_recorded(N), changed_flight(N,F), not in_subproblem(N,F).
+
+% Departure options in the lp file (optimize_flights.py): every candidate route of a solver flight comes with
+% W delays (W = max_delay_per_iteration), so its paths have W distinct start times; in sequential mode the
+% loops stop after the first path, so a solver flight has one path and one start time.
+error(delay_options(N)) :- not sequential, subproblem_flight(N,F), offered_starts(N,F,K),
+                           param(N,max_delay_per_iteration,W), K != W.
+error(delay_options(N)) :- sequential, subproblem_flight(N,F), offered_starts(N,F,K), K != 1.
+error(delay_options(N)) :- sequential, subproblem_flight(N,F), offered_paths(N,F,P), P != 1.
 
 % Sector layout at the hotspot time before and after the step.
 before_navpoint(N,V) :- part_before(N,_,V).
@@ -207,6 +218,7 @@ reason_kind(capacity(N),capacity_one) :- reason(capacity(N)), hotspot(N,S,T), ho
 reason_class(capacity(N),capacity) :- reason(capacity(N)).
 reason_arg(capacity(N),sector,0,S) :- reason(capacity(N)), hotspot(N,S,T).
 reason_arg(capacity(N),navpoints,0,K) :- reason(capacity(N)), hotspot(N,S,T), hotspot_navpoints(N,S,K).
+reason_arg(capacity(N),time,0,T) :- reason(capacity(N)), hotspot(N,S,T).
 reason_source(capacity(N),hotspot_navpoints(N,S,K)) :- reason(capacity(N)), hotspot(N,S,T), hotspot_navpoints(N,S,K).
 reason_source(capacity(N),A) :- reason(capacity(N)), option_source(composite,A).
 show(capacity(N),developer,detail,2) :- reason(capacity(N)).
@@ -225,6 +237,7 @@ reason_kind(subproblem(N),subproblem_all) :- subproblem_all(N), cell_demand(N,D)
 cut(N,K) :- reason(subproblem(N)), with_occupants(N), taken_count(N,K), cell_demand(N,D), K < D.
 tie_at_cut(N) :- cut(N,K), occupant_rank(N,K,_,D), occupant_rank(N,K+1,_,D).
 tied(N,F,R) :- tie_at_cut(N), cut(N,K), occupant_rank(N,K,_,D), occupant_rank(N,R,F,D), R > K.
+longer(N,F,R) :- tie_at_cut(N), cut(N,K), occupant_rank(N,K,_,D), occupant_rank(N,R,F,D2), R > K, D2 > D.
 reason_kind(subproblem(N),subproblem_tie) :- tie_at_cut(N), #count{ F : tied(N,F,_) } = 1.
 reason_kind(subproblem(N),subproblem_tie_many) :- tie_at_cut(N), #count{ F : tied(N,F,_) } > 1.
 reason_kind(subproblem(N),subproblem_shortest) :- cut(N,K), not tie_at_cut(N), K != 1.
@@ -244,6 +257,8 @@ reason_arg(subproblem(N),taken_durations,R,(F,D)) :- cut(N,K), occupant_rank(N,R
 reason_arg(subproblem(N),left_out,R,F) :- cut(N,K), occupant_rank(N,R,F,_), R > K.
 reason_arg(subproblem(N),left_out_durations,R,(F,D)) :- cut(N,K), occupant_rank(N,R,F,D), R > K.
 reason_arg(subproblem(N),tied,R,F) :- tied(N,F,R).
+% the optional {longer} part of the tie lines: left-out flights with a longer stored duration than the tie
+reason_arg(subproblem(N),longer,R,F) :- longer(N,F,R).
 reason_source(subproblem(N),subproblem_flight(N,F)) :- reason(subproblem(N)), subproblem_flight(N,F).
 reason_source(subproblem(N),hotspot_load(N,S,T,D,C)) :- reason(subproblem(N)), hotspot(N,S,T), hotspot_load(N,S,T,D,C).
 reason_source(subproblem(N),occupant(N,F,D,R)) :- reason(subproblem(N)), with_occupants(N), occupant(N,F,D,R).
@@ -256,26 +271,37 @@ show(subproblem(N),developer,detail,3) :- reason(subproblem(N)).
 leg_group(N,P,M) :- later_leg(N,_,P), M = #min{ L : later_leg(N,L,P) }.
 leg_key(N,L,P,M) :- later_leg(N,L,P), leg_group(N,P,M).
 reason(legs(N)) :- kept(N), instance_read(N), later_leg(N,_,_).
-reason_kind(legs(N),legs) :- reason(legs(N)), #count{ L : later_leg(N,L,_) } > 1.
-reason_kind(legs(N),legs_one) :- reason(legs(N)), #count{ L : later_leg(N,L,_) } = 1.
+reason_kind(legs(N),legs) :- reason(legs(N)).
 reason_class(legs(N),rule) :- reason(legs(N)).
 reason_arg(legs(N),legs,I,(L,P)) :- reason(legs(N)), leg_key(N,L,P,M),
                                     I = #count{ M2,L2 : leg_key(N,L2,_,M2), (M2,L2) <= (M,L) }.
 reason_source(legs(N),later_leg(N,L,P)) :- reason(legs(N)), later_leg(N,L,P).
 show(legs(N),developer,detail,4) :- reason(legs(N)).
 
-% delays(N): the departure delays the solver could choose (detail).
-reason(delays(N)) :- kept(N), instance_read(N), delay_range(N,_,_), subproblem_flight(N,_).
-reason_kind(delays(N),delays) :- reason(delays(N)), #count{ F : subproblem_flight(N,F) } > 1.
-reason_kind(delays(N),delays_one) :- reason(delays(N)), #count{ F : subproblem_flight(N,F) } = 1.
+% delays(N): the departure delays the solver could choose (detail). In sequential mode each solver flight
+% gets its first candidate route only, with delay k*W; k is raised only outside sequential mode
+% (evaluate_solution.py), so the line is derived for k = 0 and only when the lp file shows one path and one
+% start time for every solver flight.
+reason(delays(N)) :- kept(N), not sequential, instance_read(N), delay_range(N,_,_), subproblem_flight(N,_).
+one_option(N,F) :- subproblem_flight(N,F), offered_paths(N,F,1), offered_starts(N,F,1).
+more_options(N) :- subproblem_flight(N,F), not one_option(N,F).
+reason(delays(N)) :- kept(N), sequential, instance_read(N), param(N,additional_time_increase,0),
+                     subproblem_flight(N,_), not more_options(N).
+reason_kind(delays(N),delays) :- reason(delays(N)), not sequential, #count{ F : subproblem_flight(N,F) } > 1.
+reason_kind(delays(N),delays_one) :- reason(delays(N)), not sequential, #count{ F : subproblem_flight(N,F) } = 1.
+reason_kind(delays(N),delays_sequential) :- reason(delays(N)), sequential, #count{ F : subproblem_flight(N,F) } > 1.
+reason_kind(delays(N),delays_sequential_one) :- reason(delays(N)), sequential, #count{ F : subproblem_flight(N,F) } = 1.
 reason_class(delays(N),rule) :- reason(delays(N)).
 reason_arg(delays(N),taken,I,F) :- reason(delays(N)), subproblem_flight(N,F),
                                    I = #count{ F2 : subproblem_flight(N,F2), F2 <= F }.
-reason_arg(delays(N),lo,0,Lo) :- reason(delays(N)), delay_range(N,Lo,_).
-reason_arg(delays(N),hi,0,Hi) :- reason(delays(N)), delay_range(N,_,Hi).
+reason_arg(delays(N),lo,0,Lo) :- reason(delays(N)), not sequential, delay_range(N,Lo,_).
+reason_arg(delays(N),hi,0,Hi) :- reason(delays(N)), not sequential, delay_range(N,_,Hi).
 reason_source(delays(N),param(N,P,V)) :- reason(delays(N)), param(N,P,V),
     P = (additional_time_increase;max_delay_per_iteration).
 reason_source(delays(N),subproblem_flight(N,F)) :- reason(delays(N)), subproblem_flight(N,F).
+reason_source(delays(N),offered_paths(N,F,P)) :- reason(delays(N)), sequential, subproblem_flight(N,F), offered_paths(N,F,P).
+reason_source(delays(N),offered_starts(N,F,K)) :- reason(delays(N)), sequential, subproblem_flight(N,F), offered_starts(N,F,K).
+reason_source(delays(N),A) :- reason(delays(N)), option_source(sequential,A).
 show(delays(N),developer,detail,5) :- reason(delays(N)).
 
 % layouts(N): the sector layouts the solver could choose (detail).
@@ -332,9 +358,11 @@ show(layout_result(N),developer,detail,9) :- reason(layout_result(N)).
 
 % scope(N): what the explanation covers (detail).
 reason(scope(N)) :- kept(N).
-reason_kind(scope(N),scope) :- reason(scope(N)).
+reason_kind(scope(N),scope) :- reason(scope(N)), not sequential.
+reason_kind(scope(N),scope_sequential) :- reason(scope(N)), sequential.
 reason_class(scope(N),rule) :- reason(scope(N)).
 reason_source(scope(N),kept(N)) :- reason(scope(N)).
+reason_source(scope(N),A) :- reason(scope(N)), option_source(sequential,A).
 show(scope(N),developer,detail,10) :- reason(scope(N)).
 
 about(hotspot(N),step(N)) :- reason(hotspot(N)).

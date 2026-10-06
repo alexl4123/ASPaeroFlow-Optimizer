@@ -35,9 +35,12 @@ PARAMETERS = ("max_aircraft", "additional_time_increase", "max_delay_per_iterati
               "number_capacity_management_configs", "failed_attempts_before")
 AUDIENCE = "developer"
 #: reason_arg keys whose values are flight numbers (each becomes a ref "flight:F").
-FLIGHT_KEYS = ("taken", "tied", "left_out", "changed", "unchanged")
+FLIGHT_KEYS = ("taken", "tied", "longer", "left_out", "changed", "unchanged")
 
 _CONSTANT = re.compile(r"^[a-z][A-Za-z0-9_]*$")
+#: lp facts written by optimize_flights.py: paths(F,0..P-1) and actual_flight_operations_start_time(F,T,P).
+_PATHS = re.compile(r"\bpaths\((\d+),(\d+)\.\.(-?\d+)\)")
+_STARTS = re.compile(r"\bactual_flight_operations_start_time\((\d+),(\d+),(\d+)\)")
 
 
 def program() -> str:
@@ -155,6 +158,20 @@ def _instance_facts(facts: Facts, n: int, record: Dict[str, Any], trace_folder: 
         facts.add("subproblem_flight", n, int(f))
     for leg, parent in sorted(sub.parent.items()):
         facts.add("later_leg", n, int(leg), int(parent))
+    # departure options of the solver flights: number of candidate paths, distinct start times among them
+    decision = {int(f) for f in sub.decision_flights}
+    path_count: Dict[int, int] = {}
+    for f, lo, hi in _PATHS.findall(sub.instance):
+        if int(f) in decision:
+            path_count[int(f)] = path_count.get(int(f), 0) + max(0, int(hi) - int(lo) + 1)
+    starts: Dict[int, set] = {}
+    for f, t, _ in _STARTS.findall(sub.instance):
+        if int(f) in decision:
+            starts.setdefault(int(f), set()).add(int(t))
+    for f in sorted(path_count):
+        facts.add("offered_paths", n, f, path_count[f])
+    for f in sorted(starts):
+        facts.add("offered_starts", n, f, len(starts[f]))
     for c, config in sorted(sub.configs.items()):
         if config.outside_overload is not None:          # config/2: the layouts the encoding can choose
             facts.add("layout_option", n, int(c))
@@ -284,6 +301,8 @@ def _format(key: str, values: List[Any], templates: Dict[str, str]) -> str:
         return ", ".join(f"{join(str(l) for l in legs)} (after {parent})" for parent, legs in groups)
     if key == "taken_durations":            # "19 (3 time periods) and 18 (4)"
         return join(f"{f} ({periods(d)})" if i == 0 else f"{f} ({d})" for i, (f, d) in enumerate(values))
+    if key == "longer":                     # "; 11 has a longer one" (optional part of the tie lines)
+        return "; " + join(str(f) for f in values) + (" has a longer one" if len(values) == 1 else " have longer ones")
     if key == "left_out_durations":         # "17 has 6 and 20 has 7"
         return join(f"{f} has {d}" for f, d in values)
     if key == "sectors":                    # "6 (44), 0 (29) and 21 (14)"
@@ -329,6 +348,7 @@ def _render(atoms: List[clingo.Symbol], templates: Dict[str, str], n: int) -> Li
         values = {key: [v for _, v in sorted(items, key=lambda x: x[0])] for key, items in args.get(rid, {}).items()}
         fill = {key: _format(key, vs, templates) for key, vs in values.items()}
         fill.setdefault("limits", "")
+        fill.setdefault("longer", "")
         text = template.format(**fill)
         refs: List[Dict[str, str]] = []
         seen = set()

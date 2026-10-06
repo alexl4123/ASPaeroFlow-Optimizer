@@ -174,15 +174,19 @@ class _ExplainingSession:
             self._aircraft_read = True
             try:
                 self._aircraft = aircraft_of_flights(getattr(self, "data_dir", None))
-            except (OSError, KeyError, ValueError):
+            except Exception:                 # a step never fails because of the aircraft map
                 log.exception("airplane_flight_assignment.csv not readable")
                 self._aircraft = None
         if self._aircraft is None:
             return None
-        flights = {int(f) for f in (record.get("flight_changes") or {})}
-        flights |= {int(f["id"]) for f in (record.get("hotspot") or {}).get("flights") or []}
-        flights |= set(summary.get("decision_flights") or [])
-        return {str(f): self._aircraft[f] for f in sorted(flights) if f in self._aircraft}
+        try:
+            flights = {int(f) for f in (record.get("flight_changes") or {})}
+            flights |= {int(f["id"]) for f in (record.get("hotspot") or {}).get("flights") or []}
+            flights |= {int(f) for f in summary.get("decision_flights") or []}
+            return {str(f): self._aircraft[f] for f in sorted(flights) if f in self._aircraft}
+        except Exception:
+            log.exception("aircraft of iteration %s not mapped", record.get("iteration"))
+            return None
 
     def _summary(self, record: Dict[str, Any], records: List[Dict[str, Any]],
                  run_length: Optional[int] = None, run_kept: Optional[int] = None) -> Dict[str, Any]:

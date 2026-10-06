@@ -17,6 +17,8 @@ subproblem_flight(6,19).
 later_leg(6,26,19).
 later_leg(6,47,18).
 later_leg(6,58,18).
+offered_paths(6,18,60).
+offered_paths(6,19,20).
 layout_option(6,0).
 layout_option(6,1).
 layout_option(6,2).
