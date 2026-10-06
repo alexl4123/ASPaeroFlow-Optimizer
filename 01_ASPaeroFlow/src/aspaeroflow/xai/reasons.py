@@ -41,6 +41,8 @@ _CONSTANT = re.compile(r"^[a-z][A-Za-z0-9_]*$")
 #: lp facts written by optimize_flights.py: paths(F,0..P-1) and actual_flight_operations_start_time(F,T,P).
 _PATHS = re.compile(r"\bpaths\((\d+),(\d+)\.\.(-?\d+)\)")
 _STARTS = re.compile(r"\bactual_flight_operations_start_time\((\d+),(\d+),(\d+)\)")
+#: lp facts flightPlan(F,T,Navpoint): the current trajectory of a solver flight; its first time is the current start.
+_PLAN = re.compile(r"\bflightPlan\((\d+),(\d+),(\d+)\)")
 
 
 def program() -> str:
@@ -170,8 +172,14 @@ def _instance_facts(facts: Facts, n: int, record: Dict[str, Any], trace_folder: 
             starts.setdefault(int(f), set()).add(int(t))
     for f in sorted(path_count):
         facts.add("offered_paths", n, f, path_count[f])
+    current_start: Dict[int, int] = {}
+    for f, t, _ in _PLAN.findall(sub.instance):
+        if int(f) in decision:
+            current_start[int(f)] = min(int(t), current_start.get(int(f), int(t)))
     for f in sorted(starts):
         facts.add("offered_starts", n, f, len(starts[f]))
+        if f in current_start:          # the delays offered: start time minus the current start
+            facts.add("offered_delay", n, f, min(starts[f]) - current_start[f], max(starts[f]) - current_start[f])
     for c, config in sorted(sub.configs.items()):
         if config.outside_overload is not None:          # config/2: the layouts the encoding can choose
             facts.add("layout_option", n, int(c))

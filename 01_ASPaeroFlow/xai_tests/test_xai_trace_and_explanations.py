@@ -88,6 +88,11 @@ class PathTextWords(unittest.TestCase):
         self.assertNotIn("step", self.text({"departure_shift": 0, "arrival_shift": -1, "rerouted": True,
                                             "route": [1, 2], "current_route": [1, 3]}))
 
+    def test_contrast_amounts(self):
+        from src.aspaeroflow.xai.subproblem import amount
+        self.assertEqual(amount("delay", 3), "3 more time periods of arrival delay")
+        self.assertEqual(amount("delay", -1), "1 more time period of arrival delay")
+
 
 if __name__ == "__main__":
     unittest.main()

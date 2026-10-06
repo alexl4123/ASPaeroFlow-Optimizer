@@ -37,12 +37,12 @@ LEVELS: Tuple[Tuple[int, str], ...] = (
 )
 
 def amount(level: str, n: int) -> str:
-    """'3 more units of overload', '1 more step of arrival delay', ... for a level and a count."""
+    """'3 more units of overload', '1 more time period of arrival delay', ... for a level and a count."""
     n = abs(int(n))
     s = "" if n == 1 else "s"
     return {
         "overload": f"{n} more unit{s} of overload",
-        "delay": f"{n} more step{s} of arrival delay",
+        "delay": f"{n} more time period{s} of arrival delay",
         "sectors": f"{n} more sector{s}",
         "changed": f"{n} more changed flight{s}",
         "config": "a sector configuration further from the current one",

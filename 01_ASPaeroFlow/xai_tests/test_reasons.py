@@ -293,14 +293,38 @@ class Rejected(Base):
         not_kept = text_of(out, "not_kept")
         self.assertIn("stays at 22", not_kept)
         self.assertIn("20 to 39", not_kept)
-        self.assertEqual(not_kept, "Step 7 was not kept: the total overload did not fall (stays at 22). The plan is "
-                                   "unchanged; a next attempt at this spot would offer departure delays of 20 to 39 "
-                                   "time periods.")
+        # the line names the attempt's own spot (16 at 12), not the spot of step 6 under whose title it is shown
+        self.assertEqual(not_kept, "Step 7 (sector 16 at time 12) was not kept: the total overload did not fall "
+                                   "(stays at 22). The plan is unchanged; a next attempt at this spot would offer "
+                                   "departure delays of 20 to 39 time periods.")
+        self.assertIn("hotspot(7,16,12)", next(l for l in out["lines"] if l["kind"] == "not_kept")["source"])
         nxt = explain(self.records, 8, self.run_info)
         self.assertEqual(nxt["errors"], [])
         self.assertEqual(text_of(nxt, "retry"), "Step 7 at this spot was not kept, so this step offered departure "
                                                 "delays of 20 to 39 time periods (no shorter ones).")
         self.assertIn("20 to 39 time periods later", text_of(nxt, "delays"))
+
+    @staticmethod
+    def lp_with_starts(first, plan_start=10, flights=(18, 19), width=20):
+        """synthetic lp: each of `flights` has `width` paths starting at first..first+width-1, current start plan_start"""
+        text = "config(0,14).\n"
+        for f in flights:
+            text += f"paths({f},0..{width - 1}).\nflightPlan({f},{plan_start},51).\n"
+            text += "".join(f"actual_flight_operations_start_time({f},{first + p},{p}).\n" for p in range(width))
+        return text
+
+    def test_offered_delays_checked_against_the_delay_range(self):
+        # step 6 (k = 0, W = 20): starts 10..29 after a current start at 10 are the delays 0..19
+        # (the reduced lp has no later legs, so other checks may fire; only the delay check is looked at here)
+        out = explain(self.records, 6, self.run_info, folder=self.folder_with_lp(6, self.lp_with_starts(10)))
+        self.assertNotIn("delay_options", codes(out))
+        # step 8 after one rejection (k = 1; its record names the lp file of June step 7): the lp must offer 20..39;
+        # one that offers 0..19 is a record error
+        self.assertEqual(self.records[8]["subproblems"][0]["instance_file"], "lp/iter_00007_0.lp")
+        wrong = explain(self.records, 8, self.run_info, folder=self.folder_with_lp(7, self.lp_with_starts(10)))
+        self.assertIn("delay_options", codes(wrong))
+        right = explain(self.records, 8, self.run_info, folder=self.folder_with_lp(7, self.lp_with_starts(30)))
+        self.assertNotIn("delay_options", codes(right))
 
     def test_forged_overload_before(self):
         self.records[6]["objectives"]["OVERLOAD-BEFORE"] = 27
@@ -413,8 +437,8 @@ class Branches(Base):
                       self.lines(explain(self.records, 6, self.run_info, folder=self.folder_with_lp(6, one))))
         self.records[7] = rejected_copy(self.records[7], 7, self.records[6])
         out = explain(self.records, 7, self.run_info, folder=self.tmp)      # (step 7's lp is not sequential)
-        self.assertEqual(text_of(out, "not_kept"), "Step 7 was not kept: the total overload did not fall (stays at "
-                                                   "22). The plan is unchanged.")
+        self.assertEqual(text_of(out, "not_kept"), "Step 7 (sector 16 at time 12) was not kept: the total overload "
+                                                   "did not fall (stays at 22). The plan is unchanged.")
 
     def one_flight_record(self, n=6):
         """synthetic: step 6 with one flight in the cell (18), capacity 0, only 18 changed, an lp with 18 only"""

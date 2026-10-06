@@ -15,8 +15,8 @@ template(hotspot, developer, "Sector {sector} at time {time} had {demand} flight
 template(hotspot_one, developer, "Sector {sector} at time {time} had 1 flight for a capacity of {capacity}.").
 template(retry, developer, "Steps {steps} at this spot were not kept, so this step offered departure delays of {lo} to {hi} time periods (no shorter ones){limits}.").
 template(retry_one, developer, "Step {steps} at this spot was not kept, so this step offered departure delays of {lo} to {hi} time periods (no shorter ones){limits}.").
-template(not_kept, developer, "Step {iteration} was not kept: the total overload did not fall (stays at {overload}). The plan is unchanged; a next attempt at this spot would offer departure delays of {lo} to {hi} time periods{limits}.").
-template(not_kept_sequential, developer, "Step {iteration} was not kept: the total overload did not fall (stays at {overload}). The plan is unchanged.").
+template(not_kept, developer, "Step {iteration} (sector {sector} at time {time}) was not kept: the total overload did not fall (stays at {overload}). The plan is unchanged; a next attempt at this spot would offer departure delays of {lo} to {hi} time periods{limits}.").
+template(not_kept_sequential, developer, "Step {iteration} (sector {sector} at time {time}) was not kept: the total overload did not fall (stays at {overload}). The plan is unchanged.").
 template(clause_layout, developer, " and only the current layout").
 template(clause_flight, developer, " and at most 1 flight").
 

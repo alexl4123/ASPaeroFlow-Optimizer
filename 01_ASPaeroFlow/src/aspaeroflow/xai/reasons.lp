@@ -15,6 +15,8 @@
 %   instance_read(N)  subproblem_flight(N,F)  later_leg(N,Leg,F)  layout_option(N,C)
 %   offered_paths(N,F,P)  offered_starts(N,F,K)   (lp file: candidate paths of solver flight F, and the
 %                   number of distinct start times among them; the latter only when the lp states start times)
+%   offered_delay(N,F,Min,Max)   (lp file: smallest and largest start time of F minus its current departure,
+%                   only when the lp states start times and the current departure is known)
 %   flights_recorded(N)  changed_flight(N,F)
 %   sector_record(N)  part_before(N,S,V)  part_after(N,P,V)
 %   objective(N,W,K,V)  recorded_before(N,overload,V)
@@ -39,7 +41,7 @@
 #defined occupants_recorded/1. #defined occupant/4.       #defined taken_count/2.
 #defined param/3.
 #defined instance_read/1.    #defined subproblem_flight/2. #defined later_leg/3.  #defined layout_option/2.
-#defined offered_paths/3.    #defined offered_starts/3.
+#defined offered_paths/3.    #defined offered_starts/3.    #defined offered_delay/4.
 #defined flights_recorded/1. #defined changed_flight/2.
 #defined sector_record/1.    #defined part_before/3.      #defined part_after/3.
 #defined objective/4.        #defined recorded_before/3.  #defined rejected_before/2.
@@ -119,6 +121,10 @@ error(changed_outside(N,F)) :- instance_read(N), flights_recorded(N), changed_fl
 % loops stop after the first path, so a solver flight has one path and one start time.
 error(delay_options(N)) :- not sequential, subproblem_flight(N,F), offered_starts(N,F,K),
                            param(N,max_delay_per_iteration,W), K != W.
+% The delays offered (start time minus the current departure, offered_delay(N,F,Min,Max)) are the delay range of the
+% step outside sequential mode, and 0 in sequential mode (k = 0, see delays(N) below).
+error(delay_options(N)) :- not sequential, subproblem_flight(N,F), offered_delay(N,F,Min,Max), delay_range(N,Lo,Hi),
+                           (Min,Max) != (Lo,Hi).
 error(delay_options(N)) :- sequential, subproblem_flight(N,F), offered_starts(N,F,K), K != 1.
 error(delay_options(N)) :- sequential, subproblem_flight(N,F), offered_paths(N,F,P), P != 1.
 
@@ -183,16 +189,20 @@ reason_source(retry(N),param(N,P,V)) :- reason(retry(N)), param(N,P,V),
 show(retry(N),developer,visible,2) :- reason(retry(N)).
 
 % not_kept(N): a rejected attempt (visible).
-reason(not_kept(N)) :- rejected(N), objective(N,after,overload,_), sequential.
-reason(not_kept(N)) :- rejected(N), objective(N,after,overload,_), next_range(N,_,_).
+% The line names the attempt's own spot: it is shown under the title of the kept step before it, whose spot differs.
+reason(not_kept(N)) :- rejected(N), objective(N,after,overload,_), hotspot(N,_,_), sequential.
+reason(not_kept(N)) :- rejected(N), objective(N,after,overload,_), hotspot(N,_,_), next_range(N,_,_).
 reason_kind(not_kept(N),not_kept) :- reason(not_kept(N)), not sequential, next_range(N,_,_).
 reason_kind(not_kept(N),not_kept_sequential) :- reason(not_kept(N)), sequential.
 reason_class(not_kept(N),outcome) :- reason(not_kept(N)).
 reason_arg(not_kept(N),iteration,0,N) :- reason(not_kept(N)).
+reason_arg(not_kept(N),sector,0,S) :- reason(not_kept(N)), hotspot(N,S,T).
+reason_arg(not_kept(N),time,0,T) :- reason(not_kept(N)), hotspot(N,S,T).
 reason_arg(not_kept(N),overload,0,A) :- reason(not_kept(N)), objective(N,after,overload,A).
 reason_arg(not_kept(N),lo,0,Lo) :- reason(not_kept(N)), not sequential, next_range(N,Lo,_).
 reason_arg(not_kept(N),hi,0,Hi) :- reason(not_kept(N)), not sequential, next_range(N,_,Hi).
 reason_source(not_kept(N),rejected(N)) :- reason(not_kept(N)).
+reason_source(not_kept(N),hotspot(N,S,T)) :- reason(not_kept(N)), hotspot(N,S,T).
 reason_source(not_kept(N),objective(N,after,overload,A)) :- reason(not_kept(N)), objective(N,after,overload,A).
 reason_source(not_kept(N),param(N,P,V)) :- reason(not_kept(N)), not sequential, param(N,P,V),
     P = (additional_time_increase;max_delay_per_iteration;failed_attempts_before).
