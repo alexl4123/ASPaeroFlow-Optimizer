@@ -18,6 +18,10 @@ three): `07_heuristic_controller/run_xai_local.sh` (variables in its header). Wi
 `docker-compose.xai.yml` in the repository root (one user; the study stack stays `docker-compose.yml`).
 Both need `../ASPaeroFlow-XAI` on branch `xai` next to this repository. A replay of a finished trace
 (`XAI_REPLAY`, plus `XAI_INSTANCE` for the map) shows every viewer the same run without running the optimizer.
+`XAI_OPTIONS` (JSON, passed to the clinguin backend as `ASPAEROFLOW_OPTIONS`) sets the optimizer options of
+live sessions, so that they match a recorded trace, e.g. for the 15-minute study instance
+`XAI_OPTIONS='{"max_number_sectors": 100000, "timestep_granularity": 4, "max_delay_per_iteration": 9, "seed": 11904657}'`
+(default: the June 2026 study's options); a replay takes its options from the trace.
 
 ## Session service
 

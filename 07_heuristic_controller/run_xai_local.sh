@@ -8,7 +8,10 @@
 #       07_heuristic_controller/run_xai_local.sh
 #
 # Optional: XAI_REPLAY=<trace folder> (replay instead of a live run), NODE=<node binary, >= 20.19>,
-# XAI_REPO=<path of ASPaeroFlow-XAI> (default: next to this repository), XAI_SESSIONS (default /tmp/xai_sessions).
+# XAI_REPO=<path of ASPaeroFlow-XAI> (default: next to this repository), XAI_SESSIONS (default /tmp/xai_sessions),
+# XAI_OPTIONS=<JSON> (optimizer options of live sessions, passed to the clinguin backend as ASPAEROFLOW_OPTIONS;
+# default the June 2026 study's options), e.g.
+#   XAI_OPTIONS='{"max_number_sectors": 100000, "timestep_granularity": 4, "max_delay_per_iteration": 9, "seed": 11904657}'
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -22,6 +25,11 @@ INSTANCE=${XAI_INSTANCE:-}
 REPLAY=${XAI_REPLAY:-}
 SESSIONS=${XAI_SESSIONS:-/tmp/xai_sessions}
 LOGS=${XAI_LOGS:-/tmp/xai_logs}
+OPTIONS=${XAI_OPTIONS:-}
+if [ -n "$OPTIONS" ] && ! "$OPT_PY" -c 'import json, sys; assert isinstance(json.loads(sys.argv[1]), dict)' "$OPTIONS" 2>/dev/null; then
+  echo "XAI_OPTIONS is not a JSON object: $OPTIONS" >&2
+  exit 1
+fi
 mkdir -p "$LOGS" "$SESSIONS"
 
 node_version=$("$NODE" -e 'const [a,b]=process.versions.node.split(".").map(Number); console.log(a*1000+b)')
@@ -51,7 +59,7 @@ wait_for http://127.0.0.1:8090/health "session service" "$LOGS/service.log"
 echo "session service up (instances: $(curl -s http://127.0.0.1:8090/instances))"
 
 (cd "$XAI" && CLINGUIN_HOST=127.0.0.1 ASPAEROFLOW_SERVICE_URL=http://127.0.0.1:8090 \
-    ASPAEROFLOW_INSTANCE="$INSTANCE" ASPAEROFLOW_REPLAY="$REPLAY" TELEMETRY_DIR="$LOGS/telemetry" \
+    ASPAEROFLOW_INSTANCE="$INSTANCE" ASPAEROFLOW_REPLAY="$REPLAY" ASPAEROFLOW_OPTIONS="$OPTIONS" TELEMETRY_DIR="$LOGS/telemetry" \
     exec "$XAI_PY" start.py server --backend=ATFCMSessionBackend --server-port 8000 \
     --domain-files atfcm_frontend/encoding.lp atfcm_frontend/instance.lp --ui-files atfcm_frontend/ui.lp) \
     > "$LOGS/clinguin.log" 2>&1 &
