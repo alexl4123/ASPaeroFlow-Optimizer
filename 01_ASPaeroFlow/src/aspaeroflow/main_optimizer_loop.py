@@ -41,7 +41,7 @@ import networkx as nx
 from .solver import Solver, Model
 from .optimize_flights import OptimizeFlights, MAX, TRIANGULAR, LINEAR
 from .auxiliaries.dto_helpers import convert_dto_to_global_vars, convert_global_vars_to_dto
-from .auxiliaries.computation_helpers import compute_total_number_sectors, last_valid_pos, system_loads_computation
+from .auxiliaries.computation_helpers import FLIGHT_DURATION_RULE, compute_total_number_sectors, last_valid_pos, system_loads_computation
 
 from .main_loop_components.setup_before_optimization import SetupBeforeOptimization
 from .main_loop_components.after_optimization import AfterOptimization
@@ -353,6 +353,8 @@ class Main:
             "max_number_sectors": self.max_number_sectors,
             "convex_sectors": self._convex_sectors,
             "evaluation_window": self._evaluation_window,
+            # how the candidate sort counts a flight's duration (absent in traces made before the rule was fixed)
+            "flight_duration_rule": FLIGHT_DURATION_RULE,
             "initial_overload": int(optimization_dto["number_of_conflicts"]),
             "number_flights": int(optimization_dto["converted_instance_matrix"].shape[0]),
             "initial_objectives": {

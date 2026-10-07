@@ -38,7 +38,7 @@ import warnings
 
 from ..auxiliaries.communication_helpers import decode_ndarray, encode_ndarray
 from ..auxiliaries.dto_helpers import convert_dto_to_global_vars, convert_global_vars_to_dto
-from ..auxiliaries.computation_helpers import compute_total_number_sectors, minimize_number_of_sectors_new
+from ..auxiliaries.computation_helpers import compute_total_number_sectors, flight_spans_contiguous, minimize_number_of_sectors_new
 from ..optimize_flights import OptimizeFlights
 
 def _load_csv(path: Path, *, dtype: Any = int, delimiter: str = ",") -> np.ndarray:
@@ -244,7 +244,7 @@ class SetupBeforeOptimization:
                 
                 default_number_capacity_management_configs = self.number_capacity_management_configs
 
-                _, _, flight_durations = self.flight_spans_contiguous(converted_instance_matrix, fill_value=-1)
+                _, _, flight_durations = flight_spans_contiguous(converted_instance_matrix, fill_value=-1)
 
             # Track to Weights & Biases when enabled
             current_time = time.time() - original_start_time
@@ -612,40 +612,5 @@ class SetupBeforeOptimization:
         out[f_idx[m], t[m]] = n[m]  # last write wins if duplicates
 
         return out, flights  # 'flights' tells you which row corresponds to which flight_id
-
-    def flight_spans_contiguous(self, matrix: np.ndarray, *, fill_value: int = -1):
-        """
-        For each row (flight), find the first contiguous block of non-`fill_value`
-        entries and return (start, stop, duration), where `stop` is exclusive.
-
-        Assumes each flight occupies one contiguous block; if multiple blocks
-        exist, only the *first* is used. Rows with no non-`fill_value` data get
-        start = stop = -1 and duration = 0.
-        """
-        valid = matrix != fill_value              # shape (F, T)
-        F, T = valid.shape
-
-        # Pad False on both sides so every run has a start & end transition.
-        padded = np.zeros((F, T + 2), dtype=bool)
-        padded[:, 1:-1] = valid
-
-        left  = padded[:, :-1]
-        right = padded[:, 1:]
-
-        starts_mask = (~left) & right             # False->True transitions
-        ends_mask   = left & (~right)             # True->False transitions
-
-        has_run = starts_mask.any(axis=1)         # at least one active cell?
-
-        # argmax returns first True; safe because has_run tells us if any exist.
-        start = np.argmax(starts_mask, axis=1)    # index in 0..T  (T=exclusive)
-        stop  = np.argmax(ends_mask,   axis=1)    # index in 0..T
-
-        start = np.where(has_run, start, -1)
-        stop  = np.where(has_run,  stop,  -1)
-
-        duration = np.where(has_run, stop - start, 0)
-
-        return start, stop, duration
 
 

@@ -31,7 +31,7 @@ import networkx as nx
 import warnings
 
 from ..auxiliaries.dto_helpers import convert_dto_to_global_vars, convert_global_vars_to_dto
-from ..auxiliaries.computation_helpers import compute_total_number_sectors, last_valid_pos, system_loads_computation, minimize_number_of_sectors_new
+from ..auxiliaries.computation_helpers import compute_total_number_sectors, flight_spans_contiguous, last_valid_pos, system_loads_computation, minimize_number_of_sectors_new
 from ..auxiliaries.communication_helpers import decode_ndarray, encode_ndarray
 from ..navpoint_sector_allocation_bootstrap import to_window as to_evaluation_window
 
@@ -265,7 +265,6 @@ class EvaluateSolution:
             converted_instance_matrix[flight_ids, :] = -1
             converted_navpoint_matrix[flight_ids, :] = -1
 
-            new_flight_durations = {}
             for flight in all_sector_flights:
                 flight_id = int(str(flight.arguments[0]))
                 position_id = int(str(flight.arguments[1]))
@@ -301,20 +300,6 @@ class EvaluateSolution:
 
                 #print(f"converted_instance_matrix[{flight_id},{time_id}] = {position_id}")
                 converted_instance_matrix[flight_id, time_id] = position_id
-
-                if flight_id not in new_flight_durations:
-                    new_flight_durations[flight_id] = {}
-                    new_flight_durations[flight_id]["min"] = time_id
-                    new_flight_durations[flight_id]["max"] = time_id
-                    new_flight_durations[flight_id]["duration"] = new_flight_durations[flight_id]["max"] - new_flight_durations[flight_id]["min"]
-
-                if time_id < new_flight_durations[flight_id]["min"]:
-                    new_flight_durations[flight_id]["min"] = time_id
-
-                if time_id > new_flight_durations[flight_id]["max"]:
-                    new_flight_durations[flight_id]["max"] = time_id
-
-                new_flight_durations[flight_id]["duration"] = new_flight_durations[flight_id]["max"] - new_flight_durations[flight_id]["min"]
 
             for navpoint_flight in all_navpoint_flights:
 
@@ -444,8 +429,11 @@ class EvaluateSolution:
                 self._max_explored_vertices = original_max_explored_vertices
                 self.number_capacity_management_configs = default_number_capacity_management_configs
 
-                for flight_id in new_flight_durations.keys():
-                    flight_durations[flight_id] = new_flight_durations[flight_id]["duration"]
+                # The flights of the answer get the duration of their kept plan, counted as at setup
+                # (time steps occupied in the instance matrix, after the sector merging above).
+                if len(flight_ids) > 0:
+                    flight_durations[flight_ids] = flight_spans_contiguous(
+                        converted_instance_matrix[flight_ids, :], fill_value=fill_value)[2]
 
                 if max_number_processors < 20 or max_number_airplanes_considered_in_ASP > 2:
                     if self.verbosity > 1:

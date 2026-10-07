@@ -20,7 +20,7 @@ def capture_before(evaluator, solutions, flight_ids, converted_navpoint_matrix, 
     prev = controller_sector_diff_dict.get("prev_sector_config", {}).get(sector_index, {})
     hotspot["vertices"] = list(prev.get("vertices", []))
     hotspot["overload"] = prev.get("overload")
-    # The flights in the hotspot cell with the stored durations the candidate sort used
+    # The flights in the hotspot cell with the flight durations the candidate sort used
     # (iteration_step.py build_job: stable sort by duration, so ties fall to the lower flight number),
     # and how many of them were passed to the solver. Both matrices still hold the plan before the answer.
     instance_matrix = optimization_dto.get("converted_instance_matrix")

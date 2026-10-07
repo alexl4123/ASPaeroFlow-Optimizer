@@ -250,7 +250,6 @@ class IterationStep:
 
                 self._sequential_execution_candidate_dict[(time_index,sector_index)] = True
                 
-                #_, _, flight_durations = self.flight_spans_contiguous(converted_instance_matrix, fill_value=-1)
                 job, candidates = self.build_job(time_index, sector_index, converted_instance_matrix, converted_navpoint_matrix,
                                 capacity_time_matrix,
                                 system_loads, capacity_demand_diff_matrix, additional_time_increase, fill_value, 
@@ -457,7 +456,8 @@ class IterationStep:
 
         candidate_duration = duration[candidate]
 
-        # Sort Flights according to duration (ascending) and take the first ones:
+        # Shortest flight duration first (time steps occupied, computation_helpers.flight_spans_contiguous);
+        # stable sort over ascending flight ids, so ties go to the lower flight number. Take the first ones:
         order = np.argsort(candidate_duration, kind="stable")
         candidate_sorted = candidate[order]
         candidate = candidate_sorted
