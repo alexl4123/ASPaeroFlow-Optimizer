@@ -12,8 +12,11 @@ sector configurations generated for that step's hotspot. Nothing is claimed abou
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+
+import clingo
 
 from .reasons import explain_step, step_context
 from .subproblem import LEVELS, LEVEL_TEXT, amount, CandidatePath, Solution, Subproblem, SubproblemSolver, compare
@@ -91,6 +94,9 @@ class IterationExplainer:
         self.chosen_config = int(self.sub_record["chosen_config"])
         self.chosen_paths = {int(f): int(p) for f, p in self.sub_record["chosen_paths"].items()}
         self.factual = self._solve_factual()
+        # foils of the keep contrasts (keep_contrasts), solved once or read from keep_contrasts.jsonl (load_keep), so
+        # that a row line and the dialog card about the same flight describe the same answer
+        self._foils: Dict[Tuple, Solution] = {}
 
     # ------------------------------------------------------------------ helpers
 
@@ -112,6 +118,152 @@ class IterationExplainer:
 
     def unchanged(self, flight: int) -> Optional[int]:
         return self.sub.unchanged_path(flight, self.current.get(flight))
+
+    # ------------------------------------------------------------------ keep contrasts (row reasons, K12)
+
+    def unchanged_paths(self, flight: int) -> Optional[List[int]]:
+        """Every candidate path of a solver flight whose trajectory equals its current one (None: none, or unknown)."""
+        cur = self.current.get(flight)
+        if cur is None:
+            return None
+        found = [p for p in self._all_paths(flight) if self.sub.paths[flight][p].trajectory == cur]
+        return found or None
+
+    def _trajectory(self, flight: int, index: Optional[int]) -> Optional[Dict[int, int]]:
+        if index is None or index not in self.sub.paths.get(flight, {}):
+            return None
+        return self.sub.paths[flight][index].trajectory
+
+    def chosen_current(self, flight: int) -> bool:
+        """The recorded answer gives the flight its current trajectory."""
+        cur = self.current.get(flight)
+        return cur is not None and self._trajectory(flight, self.chosen_paths.get(flight)) == cur
+
+    def _foil(self, key: Tuple, ban_paths: PathSet = frozenset(), ban_configs: Iterable[int] = ()) -> Solution:
+        if key not in self._foils:
+            self._foils[key], _ = self.solver.solve(ban_paths=ban_paths, ban_configs=ban_configs)
+        return self._foils[key]
+
+    def keep_flight(self, flight: int) -> Optional[Solution]:
+        """Best answer of the step with the solver flight on its current trajectory (None: not offered or unknown)."""
+        allowed = self.unchanged_paths(flight)
+        if not allowed:
+            return None
+        return self._foil(("keep", flight), ban_paths=self._ban_all_but(flight, allowed))
+
+    def keep_both(self, flight: int, other: int) -> Optional[Solution]:
+        a, b = self.unchanged_paths(flight), self.unchanged_paths(other)
+        if not a or not b:
+            return None
+        return self._foil(("keep_both", flight, other),
+                          ban_paths=self._ban_all_but(flight, a) | self._ban_all_but(other, b))
+
+    def alt_flight(self, flight: int) -> Optional[Solution]:
+        """Best answer of the step with every path banned whose trajectory is the chosen one."""
+        chosen = self._trajectory(flight, self.chosen_paths.get(flight))
+        if chosen is None:
+            return None
+        same = {(flight, p) for p in self._all_paths(flight) if self.sub.paths[flight][p].trajectory == chosen}
+        return self._foil(("alt", flight), ban_paths=same)
+
+    def keep_layout(self) -> Optional[Solution]:
+        """Best answer of the step with the current layout of the hotspot sector (configuration 0)."""
+        if self.chosen_config == 0:
+            return None
+        return self._foil(("keep_layout",), ban_configs=[c for c in self.sub.configs if c != 0])
+
+    def alt_layout(self) -> Optional[Solution]:
+        if self.chosen_config == 0:
+            return None
+        return self._foil(("alt_layout",), ban_configs=[self.chosen_config])
+
+    @staticmethod
+    def _solution_entry(sol: Solution) -> Dict[str, Any]:
+        return {"feasible": sol.satisfiable, "optimal": sol.optimal,
+                "costs": dict(sol.costs) if sol.satisfiable else None, "clingo_cost": list(sol.clingo_cost),
+                "chosen_paths": {str(f): p for f, p in sorted(sol.chosen_paths.items())} if sol.satisfiable else None,
+                "chosen_config": sol.chosen_config}
+
+    @staticmethod
+    def _solution_of(entry: Dict[str, Any]) -> Solution:
+        feasible = bool(entry.get("feasible"))
+        return Solution(feasible, bool(entry.get("optimal")), dict(entry.get("costs") or {}),
+                        list(entry.get("clingo_cost") or []), entry.get("chosen_config"),
+                        {int(f): int(p) for f, p in (entry.get("chosen_paths") or {}).items()}, [], {}, 0.0)
+
+    def _moved(self, foil: Solution, flight: int) -> Tuple[List[int], List[int]]:
+        """(moves, others) of a keep-F foil: the solver flights other than F that keep their current trajectory in the
+        recorded answer and leave it in the foil, and every solver flight other than F whose trajectory in the foil
+        differs from the recorded answer."""
+        moves, others = [], []
+        for g in self.sub.decision_flights:
+            if g == flight:
+                continue
+            in_foil = self._trajectory(g, foil.chosen_paths.get(g))
+            if in_foil != self._trajectory(g, self.chosen_paths.get(g)):
+                others.append(g)
+                if self.chosen_current(g):
+                    moves.append(g)
+        return moves, others
+
+    def keep_contrasts(self) -> Dict[str, Any]:
+        """Raw numbers of the keep contrasts of this step (no text), one line of keep_contrasts.jsonl (xai/keep.py).
+
+        For every changed solver flight F: keep F on its current trajectory, another trajectory than the chosen one
+        (alt), and, when keeping F is exactly as good and moves exactly one other solver flight G, keep F and G
+        together. For a chosen layout other than the current one: keep the current layout, and another layout."""
+        start = time.time()
+        changed = {int(f) for f in (self.record.get("flight_changes") or {})}
+        flights: Dict[str, Any] = {}
+        for f in self.sub.decision_flights:
+            item: Dict[str, Any] = {"current_recorded": f in self.current, "chosen_current": self.chosen_current(f),
+                                    "changed": f in changed, "unchanged_paths": self.unchanged_paths(f),
+                                    "keep": None, "keep_both": None, "alt": None}
+            if f in changed:
+                keep = self.keep_flight(f)
+                if keep is not None:
+                    item["keep"] = self._solution_entry(keep)
+                    if keep.satisfiable:
+                        moves, others = self._moved(keep, f)
+                        item["keep"]["moves"] = moves
+                        item["keep"]["others"] = others
+                        item["keep"]["layout_differs"] = keep.chosen_config != self.chosen_config
+                        if compare(self.factual, keep) is None and len(moves) == 1:
+                            both = self.keep_both(f, moves[0])
+                            if both is not None:
+                                item["keep_both"] = self._solution_entry(both) | {"flight": moves[0]}
+                alt = self.alt_flight(f)
+                if alt is not None:
+                    item["alt"] = self._solution_entry(alt)
+            flights[str(f)] = item
+        layout: Dict[str, Any] = {"chosen_config": self.chosen_config, "keep": None, "alt": None}
+        if self.chosen_config != 0:
+            layout["keep"] = self._solution_entry(self.keep_layout())
+            layout["alt"] = self._solution_entry(self.alt_layout())
+        return {"v": 1, "iteration": self.iteration, "subproblems": len(self.record.get("subproblems") or []),
+                "factual": self._solution_entry(self.factual),
+                "recorded_cost": [int(c) for c in self.sub_record.get("clingo_cost") or []],
+                "flights": flights, "layout": layout, "seconds": round(time.time() - start, 3),
+                "clingo": clingo.__version__}
+
+    def load_keep(self, entry: Dict[str, Any]) -> None:
+        """Use the foils of a stored keep_contrasts line (same iteration) instead of solving them again."""
+        if int(entry.get("iteration", -1)) != self.iteration:
+            raise ValueError(f"keep contrasts of iteration {entry.get('iteration')} given to iteration {self.iteration}")
+        for f, item in (entry.get("flights") or {}).items():
+            f = int(f)
+            if item.get("keep"):
+                self._foils.setdefault(("keep", f), self._solution_of(item["keep"]))
+            if item.get("alt"):
+                self._foils.setdefault(("alt", f), self._solution_of(item["alt"]))
+            if item.get("keep_both"):
+                g = int(item["keep_both"]["flight"])
+                self._foils.setdefault(("keep_both", f, g), self._solution_of(item["keep_both"]))
+        layout = entry.get("layout") or {}
+        if layout.get("keep"):
+            self._foils.setdefault(("keep_layout",), self._solution_of(layout["keep"]))
+        if layout.get("alt"):
+            self._foils.setdefault(("alt_layout",), self._solution_of(layout["alt"]))
 
     def describe_path(self, flight: int, index: int) -> Dict[str, Any]:
         """A candidate path in terms of the flight's current trajectory."""
@@ -209,8 +361,9 @@ class IterationExplainer:
         return deciding, text
 
     def _contrast(self, label: str, ban_paths: PathSet = frozenset(), ban_configs: Iterable[int] = (),
-                  skip_flights=(), skip_config: bool = False) -> Contrast:
-        foil, core = self.solver.solve(ban_paths=ban_paths, ban_configs=ban_configs)
+                  skip_flights=(), skip_config: bool = False, foil: Optional[Solution] = None) -> Contrast:
+        if foil is None:
+            foil, _ = self.solver.solve(ban_paths=ban_paths, ban_configs=ban_configs)
         if not foil.satisfiable:
             return Contrast(label, False, None, None,
                             f"{label.capitalize()} is impossible in this step: no combination of the candidates satisfies it.")
@@ -280,9 +433,9 @@ class IterationExplainer:
         else:
             question = f"Why was flight {f} changed?"
             answer = f"In this step {self.path_text(f, pf)}."
-            if pu is not None:
-                contrasts.append(self._contrast(f"keeping flight {f} as it was", ban_paths=self._ban_all_but(f, [pu]),
-                                                skip_flights=[f]))
+            keep = self.keep_flight(f)          # the same answer as the row line of this flight (keep_contrasts)
+            if keep is not None:
+                contrasts.append(self._contrast(f"keeping flight {f} as it was", skip_flights=[f], foil=keep))
             if chosen.get("rerouted"):
                 same_route = [p for p in self._all_paths(f) if not self.describe_path(f, p).get("rerouted")]
                 if same_route:
@@ -308,8 +461,8 @@ class IterationExplainer:
         else:
             question = "Why were the sectors changed?"
             answer = "In this step ASPaeroFlow chose " + self.config_text(c) + "."
-            contrasts = [self._contrast("keeping the hotspot's sectors as they are",
-                                        ban_configs=[x for x in self.sub.configs if x != 0], skip_config=True)]
+            contrasts = [self._contrast("keeping the hotspot's sectors as they are", skip_config=True,
+                                        foil=self.keep_layout())]
         changes = self.record.get("sector_changes") or {}
         return self._payload(question, answer, contrasts, {"sector_changes": changes})
 
