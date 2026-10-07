@@ -24,8 +24,8 @@ PathSet = Set[Tuple[int, int]]
 SCOPE = ("Scope: this compares answers of one ASPaeroFlow step only - the candidate routes, delays and "
          "sector configurations generated for this step's hotspot. Plans outside these candidates are not "
          "considered, and the step's costs are local: network overload, then the arrival delay of the "
-         "flights in the step, then the number of sectors at the hotspot time, then the number of hotspot "
-         "flights off the filed route or earliest offered departure, then the index of the sector "
+         "flights in the step, then the number of sectors at the hotspot time, then the number of flights "
+         "sent to the solver off the filed route or the earliest offered departure, then the index of the sector "
          "configuration.")
 
 

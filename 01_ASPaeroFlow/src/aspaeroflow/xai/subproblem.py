@@ -45,7 +45,7 @@ def amount(level: str, n: int) -> str:
         "overload": f"{n} more unit{s} of overload",
         "delay": f"{n} more time period{s} of arrival delay",
         "sectors": f"{n} more sector{s}",
-        "changed": f"{n} more hotspot flight{s} off the filed route or earliest offered departure",
+        "changed": f"{n} more flight{s} sent to the solver off the filed route or the earliest offered departure",
         "config": "a sector configuration further from the current one",
     }[level]
 
@@ -54,7 +54,7 @@ LEVEL_TEXT = {
     "overload": "network overload",
     "delay": "arrival delay",
     "sectors": "number of sectors",
-    "changed": "hotspot flights off the filed route or earliest offered departure",
+    "changed": "flights sent to the solver off the filed route or the earliest offered departure",
     "config": "deviation from the current sector configuration",
 }
 
