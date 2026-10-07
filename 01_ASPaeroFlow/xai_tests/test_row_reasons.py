@@ -54,7 +54,8 @@ EXPECTED = {
          'instead of 42, but it would have 24 instead of 30 open sectors at time 9.'),
         ('flight:6', 'keep_overload', 'capacity',
          'With flight 6 kept as it was, the best answer of this step would leave a total overload of 46 '
-         'instead of 42, but its net arrival delay would be 0 instead of 31 time periods. Another new '
+         'instead of 42, but the net arrival delay of the flights of this step '
+         'would be 0 instead of 31 time periods. Another new '
          'trajectory was exactly as good.'),
         ('flight:8', 'keep_overload', 'capacity',
          'With flight 8 kept as it was, the best answer of this step would leave a total overload of 43 '
@@ -71,11 +72,13 @@ EXPECTED = {
          'instead of 22, but it would have 30 instead of 31 open sectors at time 11.'),
         ('flight:18', 'keep_overload', 'capacity',
          'With flight 18 kept as it was, the best answer of this step would leave a total overload of 23 '
-         'instead of 22, but its net arrival delay would be 26 instead of 27 time periods. Another new '
+         'instead of 22, but the net arrival delay of the flights of this step '
+         'would be 26 instead of 27 time periods. Another new '
          'trajectory was exactly as good.'),
         ('flight:19', 'keep_overload', 'capacity',
          'With flight 19 kept as it was, the best answer of this step would leave a total overload of 24 '
-         'instead of 22, but its net arrival delay would be 1 instead of 27 time periods.'),
+         'instead of 22, but the net arrival delay of the flights of this step '
+         'would be 1 instead of 27 time periods.'),
         ('flight:26', 'leg', 'rule',
          'Flies after flight 19 on the same aircraft and moved with it.'),
     ],
@@ -98,11 +101,13 @@ EXPECTED = {
     ('JUNE', 12): [
         ('flight:55', 'keep_overload', 'capacity',
          'With flight 55 kept as it was, the best answer of this step would leave a total overload of 4 '
-         'instead of 2, but its net arrival delay would be 2 instead of 11 time periods. Another new '
+         'instead of 2, but the net arrival delay of the flights of this step '
+         'would be 2 instead of 11 time periods. Another new '
          'trajectory was exactly as good.'),
         ('flight:56', 'keep_overload', 'capacity',
          'With flight 56 kept as it was, the best answer of this step would leave a total overload of 4 '
-         'instead of 2, but its net arrival delay would be 2 instead of 11 time periods. Another new '
+         'instead of 2, but the net arrival delay of the flights of this step '
+         'would be 2 instead of 11 time periods. Another new '
          'trajectory was exactly as good.'),
     ],
     ('TG4', 1): [
@@ -111,7 +116,8 @@ EXPECTED = {
          'instead of 31, but it would have 14 instead of 18 open sectors at time 17.'),
         ('flight:4', 'keep_overload', 'capacity',
          'With flight 4 kept as it was, the best answer of this step would leave a total overload of 33 '
-         'instead of 31, but its net arrival delay would be 3 instead of 10 time periods. Another new '
+         'instead of 31, but the net arrival delay of the flights of this step '
+         'would be 3 instead of 10 time periods. Another new '
          'trajectory was exactly as good.'),
         ('flight:29', 'leg', 'rule',
          'Flies after flight 4 on the same aircraft and moved with it.'),
@@ -235,7 +241,8 @@ class Texts(unittest.TestCase):
                     texts[(name, n, r["ref"])] = r["text"]
         self.assertEqual(texts[("JUNE", 6, "flight:19")],
                          "With flight 19 kept as it was, the best answer of this step would leave a total overload "
-                         "of 24 instead of 22, but its net arrival delay would be 1 instead of 27 time periods.")
+                         "of 24 instead of 22, but the net arrival delay of the flights of this step would be 1 instead of "
+                         "27 time periods.")
         self.assertEqual(texts[("JUNE", 9, "flight:30")],
                          "With flight 30 kept as it was, the best answer of this step would have the same total "
                          "overload and a net arrival delay of 8 instead of 0 time periods, summed over the flights of "
@@ -357,7 +364,8 @@ class Synthetic(unittest.TestCase):
 
     def test_tie_other_by_delay(self):
         self.tie_with_move({"delay": 30})
-        self.assertIn("would have the same total overload and a net arrival delay of 30 instead of 27 time periods",
+        self.assertIn("would have the same total overload and a net arrival delay of 30 instead of 27 time periods, "
+                      "summed over the flights of this step. Keeping flight 18",
                       self.row(self.out(), "flight:18")["text"])
 
     def test_tie_other_impossible(self):
@@ -481,13 +489,13 @@ class Synthetic(unittest.TestCase):
         set_costs(self.keep["factual"], delay=0)
         self.keep["recorded_cost"] = list(self.keep["factual"]["clingo_cost"])
         set_costs(self.keep["flights"]["18"]["keep"], delay=-2)
-        self.assertIn("but its net arrival delay would be -2 instead of 0 time periods",
+        self.assertIn("but the net arrival delay of the flights of this step would be -2 instead of 0 time periods",
                       self.row(self.out(), "flight:18")["text"])
 
     def test_plain_delay_words(self):
         # synthetic: a run that scores late arrivals only
         self.run = dict(self.run, arrival_delay_metric="floored")
-        self.assertIn("but its arrival delay would be 26 instead of 27 time periods",
+        self.assertIn("but the arrival delay of the flights of this step would be 26 instead of 27 time periods",
                       self.row(self.out(), "flight:18")["text"])
 
     def test_leg_after_a_kept_flight(self):

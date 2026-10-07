@@ -81,13 +81,13 @@ template(layout_keep_changed, developer, "If sector {sector} had not been split,
 template(layout_keep_tie, developer, "If sector {sector} had not been split, the best answer of this step would be exactly as good on every criterion; the solver picked one of the equally good answers.").
 template(words_net, developer, "net arrival delay").
 template(words_plain, developer, "arrival delay").
-template(gain_delay, developer, ", but its {delay_words} would be {gain_foil} instead of {gain_chosen} time periods").
+template(gain_delay, developer, ", but the {delay_words} of the flights of this step would be {gain_foil} instead of {gain_chosen} time periods").
 template(gain_sectors, developer, ", but it would have {gain_foil} instead of {gain_chosen} open sectors at time {time}").
 template(gain_changed, developer, ", but it would have {gain_foil} instead of {gain_chosen} flights sent to the solver off the filed route or the earliest offered departure").
 template(alt_flight, developer, " Another new trajectory was exactly as good.").
 template(alt_layout, developer, " Another split of sector {sector} was exactly as good.").
 template(both_overload, developer, "would leave a total overload of {both_foil} instead of {both_chosen}").
-template(both_delay, developer, "would have the same total overload and a {delay_words} of {both_foil} instead of {both_chosen} time periods").
+template(both_delay, developer, "would have the same total overload and a {delay_words} of {both_foil} instead of {both_chosen} time periods, summed over the flights of this step").
 template(both_sectors, developer, "would have the same total overload and arrival delay and {both_foil} instead of {both_chosen} open sectors at time {time}").
 template(both_changed, developer, "would be the same on overload, arrival delay and open sectors and would have {both_foil} instead of {both_chosen} flights sent to the solver off the filed route or the earliest offered departure").
 template(both_config, developer, "would use a sector layout that the optimizer ranks below the chosen one, all else being equal").
