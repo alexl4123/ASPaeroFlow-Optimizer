@@ -511,17 +511,30 @@ def _foil_facts(facts: Facts, entry: Optional[Dict[str, Any]], args: Tuple, cost
     return True
 
 
-def keep_facts(keep: Dict[str, Any], run: Dict[str, Any]) -> str:
-    """The input facts of the row reasons for one line of keep_contrasts.jsonl (IterationExplainer.keep_contrasts)."""
+def keep_facts(keep: Dict[str, Any], run: Dict[str, Any], record: Dict[str, Any]) -> str:
+    """The input facts of the row reasons for one line of keep_contrasts.jsonl (IterationExplainer.keep_contrasts)
+    and the trace record of its iteration. The recorded clingo vector, paths and layout come from the record, so a
+    line made for another record (a stale file) fails the row checks factual_mismatch or keep_stale."""
     facts = Facts()
     n = int(keep["iteration"])
     facts.add("keep_recorded", n)
-    facts.add("subproblem_count", n, int(keep.get("subproblems") or 0))
+    subproblems = record.get("subproblems") or []
+    facts.add("subproblem_count", n, len(subproblems))
     factual = keep.get("factual") or {}
     for i, v in enumerate(factual.get("clingo_cost") or []):
         facts.add("factual_clingo", n, i, int(v))
-    for i, v in enumerate(keep.get("recorded_cost") or []):
-        facts.add("recorded_clingo", n, i, int(v))
+    for f, p in sorted((factual.get("chosen_paths") or {}).items(), key=lambda x: int(x[0])):
+        facts.add("factual_path", n, int(f), int(p))
+    if _int(factual.get("chosen_config")) is not None:
+        facts.add("factual_config", n, int(factual["chosen_config"]))
+    if subproblems:
+        sub = subproblems[0]
+        for i, v in enumerate(sub.get("clingo_cost") or []):
+            facts.add("recorded_clingo", n, i, int(v))
+        for f, p in sorted((sub.get("chosen_paths") or {}).items(), key=lambda x: int(x[0])):
+            facts.add("recorded_path", n, int(f), int(p))
+        if _int(sub.get("chosen_config")) is not None:
+            facts.add("recorded_config", n, int(sub["chosen_config"]))
     if factual.get("feasible"):
         for level in COST_LEVELS:
             value = _int((factual.get("costs") or {}).get(level))
@@ -636,7 +649,7 @@ def explain_rows(record: Dict[str, Any], keep: Dict[str, Any], *, previous: Opti
         raise ValueError(f"keep contrasts of iteration {keep.get('iteration')} given to iteration {n}")
     facts = step_facts(record, previous=previous, run=run, trace_folder=trace_folder,
                        rejected_before=rejected_before, run_length=run_length, run_kept=run_kept)
-    atoms, templates, error_texts = solve(facts + keep_facts(keep, run))
+    atoms, templates, error_texts = solve(facts + keep_facts(keep, run, record))
     notice = templates.get("row_unchecked", "The reasons of this step could not be checked.")
     if any(a.name == "error" for a in atoms):
         return {"iteration": n, "rows": [], "errors": [{"code": "record_error", "text": "the record breaks a rule"}],

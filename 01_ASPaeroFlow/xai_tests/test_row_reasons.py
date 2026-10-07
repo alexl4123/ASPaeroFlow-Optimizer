@@ -33,7 +33,7 @@ sys.path.insert(0, str(HERE))
 import shared_run  # noqa: E402
 from src.aspaeroflow.xai import reasons  # noqa: E402
 from src.aspaeroflow.xai.contrastive import IterationExplainer  # noqa: E402
-from src.aspaeroflow.xai.keep import FILE_NAME, append_keep, precompute, read_keep  # noqa: E402
+from src.aspaeroflow.xai.keep import FILE_NAME, append_keep, keep_matches, precompute, read_keep  # noqa: E402
 from src.aspaeroflow.xai.session import ReplaySession  # noqa: E402
 from src.aspaeroflow.xai.subproblem import compare  # noqa: E402
 from src.aspaeroflow.xai.trace import TraceReader  # noqa: E402
@@ -287,7 +287,7 @@ class Texts(unittest.TestCase):
                     previous, rejected = reasons.step_context(records, n)
                     facts = reasons.step_facts(records[n], previous=previous, run=run, trace_folder=folder,
                                                rejected_before=rejected)
-                    atoms, templates, error_texts = reasons.solve(facts + reasons.keep_facts(keep[n], run))
+                    atoms, templates, error_texts = reasons.solve(facts + reasons.keep_facts(keep[n], run, records[n]))
                     lines, errors = reasons._finish(n, atoms, templates, error_texts)
                     header = header_of(folder, records, run, n)
                     self.assertEqual(lines, header["lines"])
@@ -395,16 +395,44 @@ class Synthetic(unittest.TestCase):
         set_costs(self.keep["flights"]["18"]["keep"], overload=21)
         self.assert_row_error("not_optimal")
 
+    def record_with(self, **sub):
+        """synthetic: record 6 with fields of its sub-problem 0 replaced"""
+        record = copy.deepcopy(self.records[6])
+        record["subproblems"][0].update(sub)
+        return record
+
+    def assert_record_row_error(self, record, code):
+        out = self.out(record)
+        self.assertEqual(out["rows"], [])
+        self.assertIn(code, [e["code"] for e in out["errors"]], out["errors"])
+        self.assertEqual(out["notice"], "The reasons of this step could not be checked.")
+
     def test_factual_mismatch(self):
-        # synthetic: the recorded clingo cost vector differs from the factual re-solve
-        self.keep["recorded_cost"] = [22, 27, 31, 2, 2]
-        self.assert_row_error("factual_mismatch")
+        # synthetic: the record's clingo cost vector differs from the factual re-solve of the stored line
+        self.assert_record_row_error(self.record_with(clingo_cost=[99, 99, 99, 99, 99]), "factual_mismatch")
+        # the stored line's own copy of the recorded vector is not what is checked
+        self.keep["recorded_cost"] = [99, 99, 99, 99, 99]
+        self.assertEqual(self.out()["errors"], [])
+
+    def test_keep_stale(self):
+        # synthetic: the record chose other paths or another layout than the factual of the stored line (a line made
+        # for an earlier run of the folder), with the same clingo cost vector
+        paths = {f: 0 for f in self.records[6]["subproblems"][0]["chosen_paths"]}
+        self.assert_record_row_error(self.record_with(chosen_paths=paths), "keep_stale")
+        self.assert_record_row_error(self.record_with(chosen_config=0), "keep_stale")
+        self.assertFalse(keep_matches(self.record_with(chosen_paths=paths), self.keep))
+        self.assertFalse(keep_matches(self.record_with(chosen_config=0), self.keep))
+        self.assertFalse(keep_matches(self.record_with(clingo_cost=[99, 99, 99, 99, 99]), self.keep))
+        self.assertTrue(keep_matches(self.records[6], self.keep))
+        # the review's probe: every path 0 and the clingo vector 99 at once
+        out = self.out(self.record_with(chosen_paths=paths, clingo_cost=[99, 99, 99, 99, 99]))
+        self.assertEqual(out["rows"], [])
+        self.assertTrue({"factual_mismatch", "keep_stale"} <= {e["code"] for e in out["errors"]}, out["errors"])
 
     def test_missing_level_is_no_mismatch(self):
         # synthetic: a step that offers layout 0 only: clingo drops the level of the layout rank from both vectors
         self.keep["factual"]["clingo_cost"] = self.keep["factual"]["clingo_cost"][:4]
-        self.keep["recorded_cost"] = list(self.keep["factual"]["clingo_cost"])
-        out = self.out()
+        out = self.out(self.record_with(clingo_cost=list(self.keep["factual"]["clingo_cost"])))
         self.assertEqual(out["errors"], [])
         self.assertEqual(len(out["rows"]), 4)
 
@@ -460,9 +488,18 @@ class Synthetic(unittest.TestCase):
         self.assert_row_error("foil_cost_mismatch")
 
     def test_two_subproblems(self):
-        # synthetic: the step had two sub-problems
-        self.keep["subproblems"] = 2
-        self.assert_row_error("multi_subproblem")
+        # synthetic: the record of step 6 has two sub-problems. The step facts refuse such a record (explain_rows
+        # raises, a session reports reasons_failed); reasons.lp checks it too, on the count read from the record
+        record = copy.deepcopy(self.records[6])
+        record["subproblems"].append(copy.deepcopy(record["subproblems"][0]))
+        with self.assertRaises(ValueError):
+            self.out(record)
+        previous, rejected = reasons.step_context(self.records, 6)
+        facts = reasons.step_facts(self.records[6], previous=previous, run=self.run, trace_folder=FIX,
+                                   rejected_before=rejected)
+        atoms, _, _ = reasons.solve(facts + reasons.keep_facts(self.keep, self.run, record))
+        self.assertIn("multi_subproblem(6)", [str(a.arguments[0]) for a in atoms if a.name == "row_error"])
+        self.assertFalse(keep_matches(record, self.keep))
 
     def test_layout_mismatch(self):
         # synthetic: the recorded split goes with layout 0
@@ -487,10 +524,10 @@ class Synthetic(unittest.TestCase):
     def test_negative_delay(self):
         # synthetic: the recorded answer has a net arrival delay of 0, the answer that keeps 18 one of -2
         set_costs(self.keep["factual"], delay=0)
-        self.keep["recorded_cost"] = list(self.keep["factual"]["clingo_cost"])
+        record = self.record_with(clingo_cost=list(self.keep["factual"]["clingo_cost"]))
         set_costs(self.keep["flights"]["18"]["keep"], delay=-2)
         self.assertIn("but the net arrival delay of the flights of this step would be -2 instead of 0 time periods",
-                      self.row(self.out(), "flight:18")["text"])
+                      self.row(self.out(record), "flight:18")["text"])
 
     def test_plain_delay_words(self):
         # synthetic: a run that scores late arrivals only
@@ -567,7 +604,7 @@ class AspLayer(unittest.TestCase):
         run, records, keep = load(FIX)
         previous, rejected = reasons.step_context(records, 6)
         facts = reasons.step_facts(records[6], previous=previous, run=run, trace_folder=FIX, rejected_before=rejected)
-        self.assertEqual(facts + reasons.keep_facts(keep[6], run), (FIX / "step06_keep_facts.lp").read_text())
+        self.assertEqual(facts + reasons.keep_facts(keep[6], run, records[6]), (FIX / "step06_keep_facts.lp").read_text())
 
     def test_clingo_562(self):
         atoms, _, _ = reasons.solve((FIX / "step06_keep_facts.lp").read_text())
@@ -709,6 +746,29 @@ class Sessions(unittest.TestCase):
                 self.assertEqual(s["reasons"]["errors"], [], s["iteration"])
             else:
                 self.assertNotIn("reasons", s)
+
+    def test_stale_line_is_not_used(self):
+        # synthetic: the line of the first kept step says the factual chose path 0 for every flight (a line left
+        # from an earlier run of the folder); a replay drops it and computes it again, precompute replaces it
+        folder = Path(self.tmp.name) / "stale"
+        shutil.copytree(self.with_file, folder)
+        lines = read_keep(folder)
+        n = min(lines)
+        good = copy.deepcopy(lines[n])
+        lines[n]["factual"]["chosen_paths"] = {f: 0 for f in lines[n]["factual"]["chosen_paths"]}
+        (folder / FILE_NAME).write_text("".join(json.dumps(lines[m], sort_keys=True) + "\n" for m in sorted(lines)))
+        session = ReplaySession(folder)
+        summaries = {s["iteration"]: s for s in self.summaries(session)}
+        self.assertNotIn("reasons", summaries[n])
+        expected = {s["iteration"]: s for s in self.summaries(ReplaySession(self.with_file))}
+        self.assertEqual(session.reasons(n), expected[n]["reasons"])
+        for m in lines:
+            if m != n:
+                self.assertEqual(summaries[m]["reasons"], expected[m]["reasons"])
+        new = precompute(folder)
+        strip = lambda e: {k: v for k, v in e.items() if k != "seconds"}
+        self.assertEqual(strip(new[n]), strip(good))
+        self.assertEqual(strip(read_keep(folder)[n]), strip(good))
 
     def test_replay_without_file_is_read_only(self):
         for p in [*self.without.rglob("*"), self.without]:

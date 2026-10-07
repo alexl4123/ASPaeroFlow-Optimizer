@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .contrastive import IterationExplainer, Lock
-from .keep import append_keep, read_keep
+from .keep import append_keep, keep_matches, read_keep
 from .reasons import explain_rows, explain_start, explain_step, step_context
 from .trace import TraceReader
 
@@ -349,7 +349,15 @@ class ReplaySession(_ExplainingSession):
         written on another machine or outside the container that replays it)."""
         super().__init__(folder)
         self.records = list(self.trace())
-        self._keep = read_keep(self.folder)       # precomputed by xai/keep.py; the lines come with each step
+        # precomputed by xai/keep.py; the lines come with each step. A line that does not match its record (a file
+        # left from an earlier run) is dropped: the reasons worker computes that step again.
+        by_iteration = {int(r["iteration"]): r for r in self.records}
+        self._keep = {}
+        for n, entry in read_keep(self.folder).items():
+            if n in by_iteration and keep_matches(by_iteration[n], entry):
+                self._keep[n] = entry
+            else:
+                log.warning("iteration %s: the stored keep contrasts do not match the trace; not used", n)
         self.cursor = 0
         self.status = "ready" if self.records else "finished"
         run = self.trace().run

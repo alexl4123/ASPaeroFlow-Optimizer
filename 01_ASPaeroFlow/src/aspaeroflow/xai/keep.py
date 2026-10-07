@@ -54,6 +54,29 @@ def read_keep(folder: Path) -> Dict[int, Dict[str, Any]]:
     return found
 
 
+def keep_matches(record: Dict[str, Any], entry: Dict[str, Any]) -> bool:
+    """True when a stored line was made for this trace record: same iteration and number of sub-problems, the
+    record's clingo cost vector, and a factual re-solve that chose the record's paths and layout. A line from an
+    earlier run of the same trace folder fails this (reasons.lp checks the same with keep_stale)."""
+    try:
+        subs = record.get("subproblems") or []
+        if int(entry.get("iteration", -1)) != int(record["iteration"]) or not subs:
+            return False
+        if int(entry.get("subproblems") or 0) != len(subs):
+            return False
+        sub = subs[0]
+        recorded = [int(c) for c in sub.get("clingo_cost") or []]
+        if [int(c) for c in entry.get("recorded_cost") or []] != recorded:
+            return False
+        factual = entry.get("factual") or {}
+        paths = {int(f): int(p) for f, p in (factual.get("chosen_paths") or {}).items()}
+        if paths != {int(f): int(p) for f, p in (sub.get("chosen_paths") or {}).items()}:
+            return False
+        return factual.get("chosen_config") is not None and int(factual["chosen_config"]) == int(sub["chosen_config"])
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return False
+
+
 def append_keep(folder: Path, entry: Dict[str, Any]) -> None:
     """One whole line per call (one write under a lock)."""
     line = json.dumps(entry, sort_keys=True) + "\n"
@@ -64,7 +87,8 @@ def append_keep(folder: Path, entry: Dict[str, Any]) -> None:
 
 
 def precompute(folder: Path, force: bool = False) -> Dict[int, Dict[str, Any]]:
-    """Writes the line of every kept step that has none yet (all of them with force); returns all lines."""
+    """Writes the line of every kept step that has none yet or whose line does not match its record (keep_matches;
+    all of them with force); returns all lines."""
     folder = Path(folder)
     trace = TraceReader(folder)
     existing = {} if force else read_keep(folder)
@@ -72,7 +96,13 @@ def precompute(folder: Path, force: bool = False) -> Dict[int, Dict[str, Any]]:
     for n in trace.accepted():
         if not trace.iterations[n].get("subproblems"):
             continue
-        entries[n] = existing[n] if n in existing else IterationExplainer(trace, n).keep_contrasts()
+        record = trace.iterations[n]
+        if n in existing and keep_matches(record, existing[n]):
+            entries[n] = existing[n]
+        else:
+            if n in existing:
+                log.warning("%s: the line of iteration %s does not match the trace; computed again", folder, n)
+            entries[n] = IterationExplainer(trace, n).keep_contrasts()
     text = "".join(json.dumps(entries[n], sort_keys=True) + "\n" for n in sorted(entries))
     tmp = folder / (FILE_NAME + ".tmp")
     tmp.write_text(text, encoding="utf-8")

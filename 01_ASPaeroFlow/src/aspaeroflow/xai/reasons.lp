@@ -29,8 +29,10 @@
 %   start_overload(O)  start_sector_overload(S,O)
 % Row reasons (K12; only with the keep contrasts of the step, xai/keep.py, written by reasons.py keep_facts):
 %   keep_recorded(N)  subproblem_count(N,K)  factual_clingo(N,I,V)  recorded_clingo(N,I,V)  (clingo vectors, by
-%   position)  factual_cost(N,L,V)  (by level L in overload, delay, sectors, changed, config: the priorities 10..6
-%   of encoding.lp, read off the atoms)  flight_entry(N,F)  current_recorded(N,F)  chosen_checked(N,F)
+%   position)  factual_path(N,F,P)  recorded_path(N,F,P)  factual_config(N,C)  recorded_config(N,C)  (chosen path
+%   per flight and chosen layout; recorded_* and subproblem_count come from the trace record, factual_* from the
+%   stored line)  factual_cost(N,L,V)  (by level L in overload, delay, sectors, changed, config: the priorities
+%   10..6 of encoding.lp, read off the atoms)  flight_entry(N,F)  current_recorded(N,F)  chosen_checked(N,F)
 %   chosen_current(N,F)  keep_offered(N,F)  keep_cost(N,F,L,V) | keep_infeasible(N,F)  keep_unproven(N,F)
 %   keep_cost_mismatch(N,F)  keep_moves(N,F,G)  keep_other(N,F,G)  keep_layout_differs(N,F)
 %   keep_both_flight(N,F,G)  keep_both_cost(N,F,L,V) | keep_both_infeasible(N,F)  keep_both_unproven(N,F)
@@ -75,6 +77,7 @@
 #defined keep_layout_infeasible/1. #defined keep_layout_unproven/1. #defined keep_layout_cost_mismatch/1.
 #defined alt_layout_cost/3.  #defined alt_layout_infeasible/1. #defined alt_layout_unproven/1.
 #defined alt_layout_cost_mismatch/1.
+#defined factual_path/3.     #defined recorded_path/3.    #defined factual_config/2.  #defined recorded_config/2.
 
 when(before;after).
 objective_key(overload;arrival_delay;sector_number;reroute;sector_diff;reconfig).
@@ -611,6 +614,13 @@ reason_source(R,run_option(arrival_delay_metric,M)) :- reason_arg(R,delay_words,
 row_error(factual_mismatch(N)) :- row_step(N), recorded_clingo(N,I,V), not factual_clingo(N,I,V).
 row_error(factual_mismatch(N)) :- row_step(N), factual_clingo(N,I,V), not recorded_clingo(N,I,V).
 row_error(factual_mismatch(N)) :- row_step(N), not factual_level(N,overload).
+% the stored line was made for this record: its factual re-solve chose the recorded path of every flight and the
+% recorded layout (a line from an earlier run of the trace folder fails here)
+row_error(keep_stale(N)) :- row_step(N), recorded_path(N,F,P), not factual_path(N,F,P).
+row_error(keep_stale(N)) :- row_step(N), factual_path(N,F,P), not recorded_path(N,F,P).
+row_error(keep_stale(N)) :- row_step(N), recorded_config(N,C), not factual_config(N,C).
+row_error(keep_stale(N)) :- row_step(N), factual_config(N,C), not recorded_config(N,C).
+row_error(keep_stale(N)) :- row_step(N), not recorded_config(N,_).
 % level 10 of the factual is the total overload after the step
 row_error(keep_scope(N)) :- row_step(N), factual_cost(N,overload,V), objective(N,after,overload,A), V != A.
 row_error(not_optimal(X)) :- better(X), contrast_of(X,N), row_step(N).
