@@ -70,6 +70,24 @@ class TraceAndExplanations(unittest.TestCase):
                 for row in c["ladder"] or []:
                     self.assertNotIn("changed flights", row["text"], f"iteration {n}")
 
+    def test_no_delay_card_says_what_its_foil_allows(self):
+        """The no-delay foil allows every path of F that departs no later, the unchanged one included, so its card
+        says "not delaying flight F" and never claims a reroute; its answer departs no later than now."""
+        seen = 0
+        for n in self.trace.accepted():
+            ex = IterationExplainer(self.trace, n)
+            for f in ex.sub.decision_flights:
+                answer = ex.why_flight(f)
+                for c in answer["contrasts"]:
+                    self.assertNotIn("rerouting", c["label"])
+                    if c["label"] == f"not delaying flight {f}" and c["feasible"]:
+                        seen += 1
+                        foil, _ = ex.solver.solve(ban_paths={(f, p) for p in ex.sub.paths[f]
+                                                             if ex.describe_path(f, p).get("departure_shift", 0) > 0})
+                        self.assertLessEqual(ex.describe_path(f, foil.chosen_paths[f]).get("departure_shift", 0), 0)
+                        self.assertTrue(c["text"].startswith(f"Not delaying flight {f} "), c["text"])
+        self.assertGreater(seen, 0)
+
     def test_contradictory_locks_give_a_minimal_core(self):
         n = self.trace.accepted()[0]
         ex = IterationExplainer(self.trace, n)

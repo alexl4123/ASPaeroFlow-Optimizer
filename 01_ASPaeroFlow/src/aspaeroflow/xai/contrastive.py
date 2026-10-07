@@ -289,9 +289,10 @@ class IterationExplainer:
                     contrasts.append(self._contrast(f"delaying flight {f} on its current route instead",
                                                     ban_paths=self._ban_all_but(f, same_route)))
             if chosen.get("departure_shift", 0) > 0:
+                # the foil allows every path of F without a later departure, the unchanged one included
                 no_delay = [p for p in self._all_paths(f) if self.describe_path(f, p).get("departure_shift", 0) <= 0]
                 if no_delay:
-                    contrasts.append(self._contrast(f"rerouting flight {f} without delaying it",
+                    contrasts.append(self._contrast(f"not delaying flight {f}",
                                                     ban_paths=self._ban_all_but(f, no_delay)))
         if flight != f:
             answer = f"Flight {flight} is a later leg of the aircraft that flies flight {f}; it moves with it. " + answer
