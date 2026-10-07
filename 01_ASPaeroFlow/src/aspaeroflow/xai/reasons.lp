@@ -9,7 +9,8 @@
 % sector_diff, reconfig; W in before/after):
 %   step(N)  kept(N) | rejected(N)
 %   hotspot(N,S,T)  hotspot_load(N,S,T,Demand,Capacity)  hotspot_overload(N,S,T,O)  hotspot_navpoints(N,S,K)
-%   occupants_recorded(N)  occupant(N,F,StoredDuration,Rank)  taken_count(N,K)
+%   occupants_recorded(N)  occupant(N,F,Duration,Rank)  taken_count(N,K)
+%   current_span(N,F,D)   (last minus first time + 1 of the recorded current trajectory of occupant F)
 %   param(N,P,V)    P in max_aircraft, additional_time_increase, max_delay_per_iteration,
 %                   number_capacity_management_configs, failed_attempts_before
 %   instance_read(N)  subproblem_flight(N,F)  later_leg(N,Leg,F)  layout_option(N,C)
@@ -22,14 +23,16 @@
 %   objective(N,W,K,V)  recorded_before(N,overload,V)
 %   rejected_before(N,R) with hotspot(R,S,T) and param(R,P,V)
 %   run_option(O,V) | option_assumed(O)   O in sequential_execution, minimize_number_sectors (true/false),
-%                                         composite_sector_function (max/other)
+%                                         composite_sector_function (max/other),
+%                                         flight_duration_rule (occupied_steps/other)
 %   filed_layout_static  evaluation_window(W)  run_length(L)  run_kept(K)
 %   start_overload(O)  start_sector_overload(S,O)
 % Evidence facts (flights_recorded, sector_record, instance_read, occupants_recorded) guard every
 % sentence that says "no ..." or "unchanged": a missing fact never produces such a sentence.
 %
 % Output (#show): reason/1, about/2, reason_kind/2, reason_class/2, reason_arg/4 (Key, I orders list items,
-% scalars I = 0), reason_source/2, show/4 (R, audience, visible|detail, order), delta/5, error/1.
+% scalars I = 0), reason_source/2, reason_template/2 (R, template replacing the one of its kind), show/4
+% (R, audience, visible|detail, order), delta/5, error/1.
 % Reason terms: step N: hotspot(N), retry(N), not_kept(N) (visible); rule(N), capacity(N), subproblem(N),
 % legs(N), delays(N), layouts(N), changed(N), unchanged(N), layout_result(N), scope(N) (detail);
 % filed plan: start, start_rule. Later audiences (operator) add about(R, flight(N,F)) and
@@ -39,6 +42,7 @@
 #defined hotspot/3.          #defined hotspot_load/5.     #defined hotspot_overload/4.
 #defined hotspot_navpoints/3.
 #defined occupants_recorded/1. #defined occupant/4.       #defined taken_count/2.
+#defined current_span/3.
 #defined param/3.
 #defined instance_read/1.    #defined subproblem_flight/2. #defined later_leg/3.  #defined layout_option/2.
 #defined offered_paths/3.    #defined offered_starts/3.    #defined offered_delay/4.
@@ -66,6 +70,12 @@ option_source(merging, run_option(minimize_number_sectors,V)) :- run_option(mini
 option_source(merging, option_assumed(minimize_number_sectors)) :- option_assumed(minimize_number_sectors).
 option_source(composite, run_option(composite_sector_function,V)) :- run_option(composite_sector_function,V).
 option_source(composite, option_assumed(composite_sector_function)) :- option_assumed(composite_sector_function).
+% Runs that record flight_duration_rule = occupied_steps sort the cell by the time steps each flight occupies,
+% at setup and after every kept step (computation_helpers.flight_spans_contiguous). Runs that do not record
+% the rule may hold a stored duration one time period short for flights re-planned in a kept step.
+duration_exact :- run_option(flight_duration_rule,occupied_steps).
+option_source(duration, run_option(flight_duration_rule,V)) :- run_option(flight_duration_rule,V).
+option_source(duration, option_assumed(flight_duration_rule)) :- option_assumed(flight_duration_rule).
 
 % ------------------------------------------------------------------ objectives and deltas
 has_objective(N,W,K) :- objective(N,W,K,_).
@@ -107,7 +117,7 @@ cap(N,X) :- need(N,X), param(N,max_aircraft,M), X <= M.
 cap(N,M) :- need(N,X), param(N,max_aircraft,M), M < X.
 error(taken_rule(N)) :- take(N,K), taken_count(N,K2), K != K2.
 
-% The first K flights of the cell by stored duration (ties: lower flight number) are the solver's flights.
+% The first K flights of the cell by recorded duration (ties: lower flight number) are the solver's flights.
 selected(N,F) :- occupant(N,F,_,I), taken_count(N,K), I <= K.
 check_candidates(N) :- step(N), instance_read(N), occupants_recorded(N), taken_count(N,_).
 error(candidate_rule(N)) :- check_candidates(N), selected(N,F), not subproblem_flight(N,F).
@@ -115,6 +125,9 @@ error(candidate_rule(N)) :- check_candidates(N), subproblem_flight(N,F), not sel
 in_subproblem(N,F) :- subproblem_flight(N,F).
 in_subproblem(N,L) :- later_leg(N,L,_).
 error(changed_outside(N,F)) :- instance_read(N), flights_recorded(N), changed_flight(N,F), not in_subproblem(N,F).
+% With the rule recorded, the duration of every occupant with a recorded trajectory (the solver flights) equals
+% the time periods of that trajectory.
+error(duration_rule(N)) :- duration_exact, occupant(N,F,D,_), current_span(N,F,D2), D != D2.
 
 % Departure options in the lp file (optimize_flights.py): every candidate route of a solver flight comes with
 % W delays (W = max_delay_per_iteration), so its paths have W distinct start times; in sequential mode the
@@ -243,7 +256,7 @@ subproblem_all(N) :- reason(subproblem(N)), with_occupants(N), taken_count(N,K),
 reason_kind(subproblem(N),subproblem_only) :- subproblem_all(N), cell_demand(N,1).
 reason_kind(subproblem(N),subproblem_both) :- subproblem_all(N), cell_demand(N,2).
 reason_kind(subproblem(N),subproblem_all) :- subproblem_all(N), cell_demand(N,D), D > 2.
-% some were left out: a tie at the cut, or the shortest stored durations
+% some were left out: a tie at the cut, or the shortest durations
 cut(N,K) :- reason(subproblem(N)), with_occupants(N), taken_count(N,K), cell_demand(N,D), K < D.
 tie_at_cut(N) :- cut(N,K), occupant_rank(N,K,_,D), occupant_rank(N,K+1,_,D).
 tied(N,F,R) :- tie_at_cut(N), cut(N,K), occupant_rank(N,K,_,D), occupant_rank(N,R,F,D), R > K.
@@ -267,7 +280,7 @@ reason_arg(subproblem(N),taken_durations,R,(F,D)) :- cut(N,K), occupant_rank(N,R
 reason_arg(subproblem(N),left_out,R,F) :- cut(N,K), occupant_rank(N,R,F,_), R > K.
 reason_arg(subproblem(N),left_out_durations,R,(F,D)) :- cut(N,K), occupant_rank(N,R,F,D), R > K.
 reason_arg(subproblem(N),tied,R,F) :- tied(N,F,R).
-% the optional {longer} part of the tie lines: left-out flights with a longer stored duration than the tie
+% the optional {longer} part of the tie lines: left-out flights with a longer duration than the tie
 reason_arg(subproblem(N),longer,R,F) :- longer(N,F,R).
 reason_source(subproblem(N),subproblem_flight(N,F)) :- reason(subproblem(N)), subproblem_flight(N,F).
 reason_source(subproblem(N),hotspot_load(N,S,T,D,C)) :- reason(subproblem(N)), hotspot(N,S,T), hotspot_load(N,S,T,D,C).
@@ -276,6 +289,14 @@ reason_source(subproblem(N),taken_count(N,K)) :- reason(subproblem(N)), taken_co
 reason_source(subproblem(N),param(N,max_aircraft,M)) :- reason(subproblem(N)), not with_occupants(N), param(N,max_aircraft,M).
 reason_source(subproblem(N),hotspot_overload(N,S,T,O)) :- reason(subproblem(N)), not with_occupants(N), hotspot(N,S,T), hotspot_overload(N,S,T,O).
 show(subproblem(N),developer,detail,3) :- reason(subproblem(N)).
+% the lines that state the sort rule say stored flight duration unless the run records the rule
+stored_wording(subproblem_shortest,subproblem_shortest_stored).
+stored_wording(subproblem_shortest_one,subproblem_shortest_one_stored).
+stored_wording(subproblem_tie,subproblem_tie_stored).
+stored_wording(subproblem_tie_many,subproblem_tie_many_stored).
+stored_wording(subproblem_rule,subproblem_rule_stored).
+reason_template(R,T) :- reason_kind(R,K), stored_wording(K,T), not duration_exact.
+reason_source(R,A) :- reason_kind(R,K), stored_wording(K,_), option_source(duration,A).
 
 % legs(N): later flights of the same aircraft that went with the solver's flights (detail).
 leg_group(N,P,M) :- later_leg(N,_,P), M = #min{ L : later_leg(N,L,P) }.
@@ -415,6 +436,7 @@ error(no_source(R)) :- reason(R), not has_source(R).
 has_template(K) :- template(K,developer,_).
 error(no_template(K)) :- reason_kind(_,K), not has_template(K).
 error(no_template(K)) :- reason_arg(_,limits,_,K), not has_template(K).
+error(no_template(T)) :- reason_template(_,T), not has_template(T).
 
 #show reason/1.
 #show about/2.
@@ -422,6 +444,7 @@ error(no_template(K)) :- reason_arg(_,limits,_,K), not has_template(K).
 #show reason_class/2.
 #show reason_arg/4.
 #show reason_source/2.
+#show reason_template/2.
 #show show/4.
 #show delta/5.
 #show error/1.

@@ -27,11 +27,17 @@ template(capacity_one, developer, "Sector {sector} has 1 navpoint at time {time}
 template(subproblem_all, developer, "All {demand} flights in sector {sector} at time {time} went to the solver: {taken}.").
 template(subproblem_both, developer, "Both flights in sector {sector} at time {time} went to the solver: {taken}.").
 template(subproblem_only, developer, "The only flight in sector {sector} at time {time} went to the solver: {taken}.").
-template(subproblem_shortest, developer, "Of the {demand} flights in sector {sector} at time {time}, the {k} with the shortest stored flight duration went to the solver: {taken_durations}; {left_out_durations}.").
-template(subproblem_shortest_one, developer, "Of the {demand} flights in sector {sector} at time {time}, the one with the shortest stored flight duration went to the solver: {taken_durations}; {left_out_durations}.").
-template(subproblem_tie, developer, "Of the {demand} flights in sector {sector} at time {time}, {k} went to the solver: {taken}; {tied} has the same stored duration and was left out by its higher flight number{longer}.").
-template(subproblem_tie_many, developer, "Of the {demand} flights in sector {sector} at time {time}, {k} went to the solver: {taken}; {tied} have the same stored duration and were left out by their higher flight numbers{longer}.").
-template(subproblem_rule, developer, "Of the {demand} flights in sector {sector} at time {time}, {taken} went to the solver (rule: at most {limit}, shortest stored flight duration first, lower flight number on ties).").
+template(subproblem_shortest, developer, "Of the {demand} flights in sector {sector} at time {time}, the {k} with the shortest flight duration went to the solver: {taken_durations}; {left_out_durations}.").
+template(subproblem_shortest_one, developer, "Of the {demand} flights in sector {sector} at time {time}, the one with the shortest flight duration went to the solver: {taken_durations}; {left_out_durations}.").
+template(subproblem_tie, developer, "Of the {demand} flights in sector {sector} at time {time}, {k} went to the solver: {taken}; {tied} has the same flight duration and was left out by its higher flight number{longer}.").
+template(subproblem_tie_many, developer, "Of the {demand} flights in sector {sector} at time {time}, {k} went to the solver: {taken}; {tied} have the same flight duration and were left out by their higher flight numbers{longer}.").
+template(subproblem_rule, developer, "Of the {demand} flights in sector {sector} at time {time}, {taken} went to the solver (rule: at most {limit}, shortest flight duration first, lower flight number on ties).").
+% the same five lines for traces that do not record flight_duration_rule (made before the rule was fixed)
+template(subproblem_shortest_stored, developer, "Of the {demand} flights in sector {sector} at time {time}, the {k} with the shortest stored flight duration went to the solver: {taken_durations}; {left_out_durations}.").
+template(subproblem_shortest_one_stored, developer, "Of the {demand} flights in sector {sector} at time {time}, the one with the shortest stored flight duration went to the solver: {taken_durations}; {left_out_durations}.").
+template(subproblem_tie_stored, developer, "Of the {demand} flights in sector {sector} at time {time}, {k} went to the solver: {taken}; {tied} has the same stored duration and was left out by its higher flight number{longer}.").
+template(subproblem_tie_many_stored, developer, "Of the {demand} flights in sector {sector} at time {time}, {k} went to the solver: {taken}; {tied} have the same stored duration and were left out by their higher flight numbers{longer}.").
+template(subproblem_rule_stored, developer, "Of the {demand} flights in sector {sector} at time {time}, {taken} went to the solver (rule: at most {limit}, shortest stored flight duration first, lower flight number on ties).").
 template(legs, developer, "Later flights of the same aircraft also went to the solver: {legs}.").
 template(delays, developer, "{taken} could each depart {lo} to {hi} time periods later than in the current plan.").
 template(delays_one, developer, "{taken} could depart {lo} to {hi} time periods later than in the current plan.").
@@ -68,6 +74,7 @@ error_text(not_unique, "a value is recorded twice").
 error_text(taken_rule, "the number of flights passed to the solver does not follow the rule").
 error_text(candidate_rule, "the flights passed to the solver are not the ones the rule selects").
 error_text(changed_outside, "a flight outside the sub-problem changed").
+error_text(duration_rule, "a recorded flight duration differs from the time periods of its trajectory").
 error_text(delay_options, "the departure options in the sub-problem do not match the delay rule").
 error_text(parts_mismatch, "the parts after the split do not cover the sector").
 error_text(split_extent, "the sector count rose by more than a split from the hotspot time on allows").

@@ -177,6 +177,80 @@ class Occupants(Base):
         self.assertIn("taken_rule", codes(out))
 
 
+class DurationRule(Base):
+    """2b. Runs that record flight_duration_rule = occupied_steps say "flight duration"; traces without the field
+    (the June trace) keep "stored flight duration". Synthetic occupants as in Occupants; their durations equal the
+    time periods of the June trajectories (step 3: 6 and 8 have 5; step 6: 19 has 3, 18 has 4; step 12: 55, 56: 4)."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_info = dict(self.run_info, flight_duration_rule="occupied_steps")
+
+    def subproblem_line(self, n, durations, taken=2):
+        self.records[n] = with_occupants(self.records[n], durations, taken)
+        out = explain(self.records, n, self.run_info)
+        return out, next((line for line in out["lines"] if line["kind"].startswith("subproblem")), None)
+
+    def test_shortest_step6(self):
+        out, line = self.subproblem_line(6, {17: 6, 18: 4, 19: 3})
+        self.assertEqual(out["errors"], [])
+        self.assertEqual(line["kind"], "subproblem_shortest")
+        self.assertEqual(line["text"], "Of the 3 flights in sector 21 at time 11, the 2 with the shortest flight "
+                                       "duration went to the solver: 19 (3 time periods) and 18 (4); 17 has 6.")
+        self.assertIn("run_option(flight_duration_rule,occupied_steps)", line["source"])
+
+    def test_tie_step3(self):
+        out, line = self.subproblem_line(3, {6: 5, 8: 5, 11: 6, 12: 5})
+        self.assertEqual(out["errors"], [])
+        self.assertEqual(line["kind"], "subproblem_tie")
+        self.assertEqual(line["text"], "Of the 4 flights in sector 6 at time 9, 2 went to the solver: 6 and 8; 12 has "
+                                       "the same flight duration and was left out by its higher flight number; 11 has "
+                                       "a longer one.")
+
+    def test_tie_step12(self):
+        out, line = self.subproblem_line(12, {55: 4, 56: 4, 57: 4})
+        self.assertEqual(out["errors"], [])
+        self.assertEqual(line["text"], "Of the 3 flights in sector 5 at time 20, 2 went to the solver: 55 and 56; 57 "
+                                       "has the same flight duration and was left out by its higher flight number.")
+
+    def test_rule_only_without_occupants(self):
+        out = explain(self.records, 6, self.run_info)
+        self.assertEqual(out["errors"], [])
+        line = next(line for line in out["lines"] if line["kind"] == "subproblem_rule")
+        self.assertEqual(line["text"], "Of the 3 flights in sector 21 at time 11, 18 and 19 went to the solver (rule: "
+                                       "at most 2, shortest flight duration first, lower flight number on ties).")
+        self.assertIn("run_option(flight_duration_rule,occupied_steps)", line["source"])
+
+    def test_other_rule_keeps_stored_wording(self):
+        self.run_info["flight_duration_rule"] = "something_else"
+        out, line = self.subproblem_line(6, {17: 6, 18: 4, 19: 3})
+        self.assertEqual(out["errors"], [])
+        self.assertEqual(line["kind"], "subproblem_shortest")
+        self.assertIn("the 2 with the shortest stored flight duration went to the solver", line["text"])
+        self.assertIn("run_option(flight_duration_rule,other)", line["source"])
+
+    def test_forged_duration(self):
+        # synthetic: 18 recorded with 5, its trajectory has 4 time periods (same order, so no candidate_rule)
+        out, _ = self.subproblem_line(6, {17: 6, 18: 5, 19: 3})
+        self.assertEqual(codes(out), ["duration_rule"])
+        self.assertEqual([line["kind"] for line in out["lines"]], ["record_error"])
+        self.assertIn("a recorded flight duration differs from the time periods of its trajectory",
+                      out["lines"][0]["text"])
+
+    def test_forged_duration_without_rule_is_no_error(self):
+        # traces without the field may hold a stored duration one period short: not checked
+        del self.run_info["flight_duration_rule"]
+        out, line = self.subproblem_line(6, {17: 6, 18: 5, 19: 3})
+        self.assertEqual(out["errors"], [])
+        self.assertIn("shortest stored flight duration", line["text"])
+
+    def test_old_trace_source(self):
+        del self.run_info["flight_duration_rule"]
+        out, line = self.subproblem_line(6, {17: 6, 18: 4, 19: 3})
+        self.assertIn("option_assumed(flight_duration_rule)", line["source"])
+        self.assertEqual(line["kind"], "subproblem_shortest")
+
+
 class AllSteps(Base):
     """3. All 13 steps; templates; the sector count of a split."""
 

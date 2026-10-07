@@ -63,3 +63,4 @@ recorded_before(6,overload,28).
 option_assumed(sequential_execution).
 option_assumed(minimize_number_sectors).
 run_option(composite_sector_function,max).
+option_assumed(flight_duration_rule).

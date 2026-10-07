@@ -121,12 +121,14 @@ reason_source(scope(6),kept(6)).
 reason_source(scope(6),option_assumed(sequential_execution)).
 reason_source(subproblem(6),hotspot_load(6,21,11,3,1)).
 reason_source(subproblem(6),hotspot_overload(6,21,11,2)).
+reason_source(subproblem(6),option_assumed(flight_duration_rule)).
 reason_source(subproblem(6),param(6,max_aircraft,2)).
 reason_source(subproblem(6),subproblem_flight(6,18)).
 reason_source(subproblem(6),subproblem_flight(6,19)).
 reason_source(unchanged(6),flights_recorded(6)).
 reason_source(unchanged(6),later_leg(6,47,18)).
 reason_source(unchanged(6),later_leg(6,58,18)).
+reason_template(subproblem(6),subproblem_rule_stored).
 show(capacity(6),developer,detail,2).
 show(changed(6),developer,detail,7).
 show(delays(6),developer,detail,5).

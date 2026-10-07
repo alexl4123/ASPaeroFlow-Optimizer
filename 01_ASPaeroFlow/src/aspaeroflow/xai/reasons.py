@@ -98,6 +98,12 @@ def _run_facts(facts: Facts, run: Dict[str, Any]) -> None:
         facts.add("option_assumed", "composite_sector_function")
     else:
         facts.add("run_option", "composite_sector_function", "max" if composite == "max" else "other")
+    # how the candidate sort counted flight durations (main_optimizer_loop.py xai_run_info; absent in older traces)
+    rule = run.get("flight_duration_rule")
+    if rule is None:
+        facts.add("option_assumed", "flight_duration_rule")
+    else:
+        facts.add("run_option", "flight_duration_rule", "occupied_steps" if rule == "occupied_steps" else "other")
     window = _int(run.get("evaluation_window"))
     if window is not None:
         facts.add("evaluation_window", window)
@@ -123,8 +129,15 @@ def _hotspot_facts(facts: Facts, n: int, record: Dict[str, Any], full: bool) -> 
         facts.add("hotspot_navpoints", n, s, len(h["vertices"]))
     if isinstance(h.get("flights"), list):
         facts.add("occupants_recorded", n)
+        subs = record.get("subproblems") or []
+        trajectories = (subs[0].get("current_trajectories") or {}) if subs else {}
         for rank, f in enumerate(h["flights"], start=1):
             facts.add("occupant", n, int(f["id"]), int(f["duration"]), rank)
+            # time periods of the occupant's recorded current trajectory (only the solver flights have one)
+            trajectory = trajectories.get(str(f["id"]), trajectories.get(int(f["id"])))
+            if trajectory:
+                times = [int(t) for t in trajectory]
+                facts.add("current_span", n, int(f["id"]), max(times) - min(times) + 1)
     if _int(h.get("taken")) is not None:
         facts.add("taken_count", n, int(h["taken"]))
     return s, t
@@ -336,12 +349,15 @@ def _refs(key: str, values: List[Any], n: int, start: bool) -> List[Tuple[str, s
 
 def _render(atoms: List[clingo.Symbol], templates: Dict[str, str], n: int) -> List[Dict[str, Any]]:
     kinds: Dict[str, str] = {}
+    template_of: Dict[str, str] = {}
     shown: Dict[str, Tuple[str, int]] = {}
     args: Dict[str, Dict[str, List[Tuple[int, Any]]]] = {}
     sources: Dict[str, List[str]] = {}
     for a in atoms:
         if a.name == "reason_kind":
             kinds[str(a.arguments[0])] = str(a.arguments[1])
+        elif a.name == "reason_template":        # the line keeps its kind; only its text template differs
+            template_of[str(a.arguments[0])] = str(a.arguments[1])
         elif a.name == "show" and str(a.arguments[1]) == AUDIENCE:
             shown[str(a.arguments[0])] = (str(a.arguments[2]), a.arguments[3].number)
         elif a.name == "reason_arg":
@@ -352,7 +368,7 @@ def _render(atoms: List[clingo.Symbol], templates: Dict[str, str], n: int) -> Li
     lines = []
     for rid, (level, order) in shown.items():
         kind = kinds[rid]
-        template = templates[kind]
+        template = templates[template_of.get(rid, kind)]
         values = {key: [v for _, v in sorted(items, key=lambda x: x[0])] for key, items in args.get(rid, {}).items()}
         fill = {key: _format(key, vs, templates) for key, vs in values.items()}
         fill.setdefault("limits", "")
