@@ -9,7 +9,8 @@ picks one path per flight and one configuration under five lexicographic weak co
     priority 10  overload     overload inside the instance + overload elsewhere under the configuration
     priority  9  delay        arrival delay of the flights in the instance
     priority  8  sectors      number of sectors at the hotspot time under the configuration
-    priority  7  changed      number of flights whose path is not path 0
+    priority  7  changed      number of decision flights whose path is not path 0 (path 0: the filed
+                              route at the earliest departure the step offers; later legs not counted)
     priority  6  config       index of the configuration (prefers the current one, index 0)
 
 Because the instance is self-contained, a contrastive question about the iteration ("why was flight
@@ -44,7 +45,7 @@ def amount(level: str, n: int) -> str:
         "overload": f"{n} more unit{s} of overload",
         "delay": f"{n} more time period{s} of arrival delay",
         "sectors": f"{n} more sector{s}",
-        "changed": f"{n} more changed flight{s}",
+        "changed": f"{n} more hotspot flight{s} off the filed route or earliest offered departure",
         "config": "a sector configuration further from the current one",
     }[level]
 
@@ -53,7 +54,7 @@ LEVEL_TEXT = {
     "overload": "network overload",
     "delay": "arrival delay",
     "sectors": "number of sectors",
-    "changed": "number of changed flights",
+    "changed": "hotspot flights off the filed route or earliest offered departure",
     "config": "deviation from the current sector configuration",
 }
 

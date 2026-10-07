@@ -6,6 +6,7 @@ Checks that the trace does not change the run, that the recorded choice of every
 reproduced and optimal for its sub-problem, that no foil beats the recorded choice, and that
 contradictory locks come back as a minimal core.
 """
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -59,6 +60,16 @@ class TraceAndExplanations(unittest.TestCase):
                         level = c["deciding_level"]
                         self.assertGreater(c["costs"][level], answer["factual"]["costs"][level], c["text"])
 
+    def test_changed_row_counts_decision_flights_off_path_0(self):
+        """The priority-7 row counts decision flights not on path 0, so its label must not claim all changes."""
+        for n in self.trace.accepted():
+            ex = IterationExplainer(self.trace, n)
+            off = sum(1 for f in ex.sub.decision_flights if ex.chosen_paths.get(f, 0) != 0)
+            self.assertEqual(ex.factual.costs["changed"], off, f"iteration {n}")
+            for c in ex.why_sectors()["contrasts"]:
+                for row in c["ladder"] or []:
+                    self.assertNotIn("changed flights", row["text"], f"iteration {n}")
+
     def test_contradictory_locks_give_a_minimal_core(self):
         n = self.trace.accepted()[0]
         ex = IterationExplainer(self.trace, n)
@@ -92,6 +103,22 @@ class PathTextWords(unittest.TestCase):
         from src.aspaeroflow.xai.subproblem import amount
         self.assertEqual(amount("delay", 3), "3 more time periods of arrival delay")
         self.assertEqual(amount("delay", -1), "1 more time period of arrival delay")
+
+
+@unittest.skipUnless(os.environ.get("CE7_TRACE"), "set CE7_TRACE to the full CE-7x7 study trace (with lp/)")
+class StudyStepSixLabel(unittest.TestCase):
+    """Study step 6: the header lists 3 new trajectories (18, 19, 26); the dialog's priority-7 row counts 2."""
+
+    def test_row_label_does_not_claim_changed_flights(self):
+        trace = TraceReader(os.environ["CE7_TRACE"])
+        ex = IterationExplainer(trace, 6)
+        self.assertEqual(sorted(int(f) for f in ex.record["flight_changes"]), [18, 19, 26])
+        rows = [row for c in ex.why_sectors()["contrasts"] for row in c["ladder"] or [] if row["level"] == "changed"]
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertEqual(row["chosen"], 2)
+            self.assertNotIn("changed flights", row["text"])
+            self.assertIn("filed route", row["text"])
 
 
 if __name__ == "__main__":
