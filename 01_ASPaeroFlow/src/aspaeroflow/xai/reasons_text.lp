@@ -60,6 +60,40 @@ template(start, developer, "The filed plan has a total overload of {overload} (f
 template(start_none, developer, "The filed plan has no overload.").
 template(start_rule, developer, "Each step works on one overloaded sector at a single time and is kept only if the total overload falls.").
 
+% ------------------------------------------------------------------ row reasons (one line under a change-list row)
+% Clauses: {delay_words} (words_net, words_plain), {gain} (gain_*: the first criterion below the deciding one on
+% which the answer that keeps the flight or the layout is better), {alt} (alt_*), {both} (both_*); each clause is
+% filled with the row's arguments first (gain_foil, gain_chosen, both_foil, both_chosen, time, sector, delay_words).
+template(keep_overload, developer, "With flight {flight} kept as it was, the best answer of this step would leave a total overload of {foil} instead of {chosen}{gain}.{alt}").
+template(keep_delay, developer, "With flight {flight} kept as it was, the best answer of this step would have the same total overload and a {delay_words} of {foil} instead of {chosen} time periods, summed over the flights of this step{gain}.{alt}").
+template(keep_sectors, developer, "With flight {flight} kept as it was, the best answer of this step would have the same total overload and arrival delay and {foil} instead of {chosen} open sectors at time {time}{gain}.{alt}").
+template(keep_changed, developer, "With flight {flight} kept as it was, the best answer of this step would be the same on overload, arrival delay and open sectors and would have {foil} instead of {chosen} flights sent to the solver off the filed route or the earliest offered departure{gain}.{alt}").
+template(keep_config, developer, "With flight {flight} kept as it was, the best answer of this step would be the same on overload, arrival delay, open sectors and flights sent to the solver, and would use a sector layout that the optimizer ranks below the chosen one when all else is equal.{alt}").
+template(keep_tie_other, developer, "Flight {flight} or flight {other} had to change: keeping both as they were {both}. Keeping flight {flight} as it was and changing flight {other} is exactly as good; the solver picked one of the equally good answers.").
+template(keep_tie, developer, "Keeping flight {flight} as it was is exactly as good on every criterion of this step; the solver picked one of the equally good answers.").
+template(not_offered, developer, "The current trajectory of flight {flight} was not among the options of this step, so every answer changed it.").
+template(keep_infeasible, developer, "No answer of this step keeps flight {flight} on its current trajectory.").
+template(leg, developer, "Flies after flight {parent} on the same aircraft and moved with it.").
+template(leg_parent_kept, developer, "Flies after flight {parent} on the same aircraft; its trajectory follows the option chosen for flight {parent}.").
+template(layout_keep_overload, developer, "If sector {sector} had not been split, the best answer of this step would leave a total overload of {foil} instead of {chosen}{gain}.{alt}").
+template(layout_keep_delay, developer, "If sector {sector} had not been split, the best answer of this step would have the same total overload and a {delay_words} of {foil} instead of {chosen} time periods, summed over the flights of this step{gain}.{alt}").
+template(layout_keep_changed, developer, "If sector {sector} had not been split, the best answer of this step would be the same on overload, arrival delay and open sectors and would have {foil} instead of {chosen} flights sent to the solver off the filed route or the earliest offered departure{gain}.{alt}").
+template(layout_keep_tie, developer, "If sector {sector} had not been split, the best answer of this step would be exactly as good on every criterion; the solver picked one of the equally good answers.").
+template(words_net, developer, "net arrival delay").
+template(words_plain, developer, "arrival delay").
+template(gain_delay, developer, ", but its {delay_words} would be {gain_foil} instead of {gain_chosen} time periods").
+template(gain_sectors, developer, ", but it would have {gain_foil} instead of {gain_chosen} open sectors at time {time}").
+template(gain_changed, developer, ", but it would have {gain_foil} instead of {gain_chosen} flights sent to the solver off the filed route or the earliest offered departure").
+template(alt_flight, developer, " Another new trajectory was exactly as good.").
+template(alt_layout, developer, " Another split of sector {sector} was exactly as good.").
+template(both_overload, developer, "would leave a total overload of {both_foil} instead of {both_chosen}").
+template(both_delay, developer, "would have the same total overload and a {delay_words} of {both_foil} instead of {both_chosen} time periods").
+template(both_sectors, developer, "would have the same total overload and arrival delay and {both_foil} instead of {both_chosen} open sectors at time {time}").
+template(both_changed, developer, "would be the same on overload, arrival delay and open sectors and would have {both_foil} instead of {both_chosen} flights sent to the solver off the filed route or the earliest offered departure").
+template(both_config, developer, "would use a sector layout that the optimizer ranks below the chosen one, all else being equal").
+template(both_infeasible, developer, "is not possible in this step").
+template(row_unchecked, developer, "The reasons of this step could not be checked.").
+
 % ------------------------------------------------------------------ errors
 template(record_error, developer, "The recorded numbers of this step do not match the documented rules: {text}. No explanation is shown.").
 template(render_error, developer, "The explanation text of this step could not be produced.").

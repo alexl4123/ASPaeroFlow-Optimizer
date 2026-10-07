@@ -8,6 +8,8 @@ holds the text templates; this module fills them.
     explain_step(record, previous=..., run=..., trace_folder=...)   one recorded iteration
     explain_start(run)                                               the filed plan (step 0)
     step_context(records_by_iteration, n)                            previous record and rejected attempts before n
+    explain_rows(record, keep, previous=..., run=..., trace_folder=...)   one line per row of the change list (K12),
+                                                                     from the step's keep contrasts (xai/keep.py)
 
 Both explain functions return {"iteration", "kept", "run_length", "run_kept", "arrival_delay_metric",
 "lines": [{"id", "kind", "level", "order", "text", "refs", "source"}], "deltas": [{"key", "before", "after",
@@ -35,7 +37,11 @@ PARAMETERS = ("max_aircraft", "additional_time_increase", "max_delay_per_iterati
               "number_capacity_management_configs", "failed_attempts_before")
 AUDIENCE = "developer"
 #: reason_arg keys whose values are flight numbers (each becomes a ref "flight:F").
-FLIGHT_KEYS = ("taken", "tied", "longer", "left_out", "changed", "unchanged")
+FLIGHT_KEYS = ("taken", "tied", "longer", "left_out", "changed", "unchanged", "flight", "parent", "other")
+#: reason_arg keys of the row reasons whose value names a sub-template (filled in this order: delay_words first).
+CLAUSE_KEYS = ("delay_words", "gain", "alt", "both")
+#: Levels of the keep contrasts (subproblem.LEVELS), the names reasons.lp uses.
+COST_LEVELS = ("overload", "delay", "sectors", "changed", "config")
 
 _CONSTANT = re.compile(r"^[a-z][A-Za-z0-9_]*$")
 #: lp facts written by optimize_flights.py: paths(F,0..P-1) and actual_flight_operations_start_time(F,T,P).
@@ -358,7 +364,7 @@ def _render(atoms: List[clingo.Symbol], templates: Dict[str, str], n: int) -> Li
             kinds[str(a.arguments[0])] = str(a.arguments[1])
         elif a.name == "reason_template":        # the line keeps its kind; only its text template differs
             template_of[str(a.arguments[0])] = str(a.arguments[1])
-        elif a.name == "show" and str(a.arguments[1]) == AUDIENCE:
+        elif a.name == "show" and str(a.arguments[1]) == AUDIENCE and str(a.arguments[2]) != "row":
             shown[str(a.arguments[0])] = (str(a.arguments[2]), a.arguments[3].number)
         elif a.name == "reason_arg":
             args.setdefault(str(a.arguments[0]), {}).setdefault(str(a.arguments[1]), []).append(
@@ -471,3 +477,177 @@ def step_context(records_by_iteration: Dict[int, Dict[str, Any]], n: int):
         rejected.append(records_by_iteration[m])
         m -= 1
     return previous, list(reversed(rejected))
+
+
+# ------------------------------------------------------------------ row reasons (K12)
+
+def _nonzero(values: Iterable[int]) -> List[int]:
+    return [int(v) for v in values if int(v) != 0]
+
+
+def _cost_mismatch(entry: Dict[str, Any]) -> bool:
+    """The costs read off the atoms against clingo's vector, zeros removed on both sides (clingo drops a priority
+    level without ground weak literals, so the vector is never mapped to named levels)."""
+    costs = entry.get("costs") or {}
+    return _nonzero(costs.get(level, 0) for level in COST_LEVELS) != _nonzero(entry.get("clingo_cost") or [])
+
+
+def _foil_facts(facts: Facts, entry: Optional[Dict[str, Any]], args: Tuple, cost: str, infeasible: str,
+                unproven: str, mismatch: str) -> bool:
+    """Facts of one foil; True when it is feasible."""
+    if not entry:
+        return False
+    if not entry.get("feasible"):
+        facts.add(infeasible, *args)
+        return False
+    for level in COST_LEVELS:
+        value = _int((entry.get("costs") or {}).get(level))
+        if value is not None:
+            facts.add(cost, *args, level, value)
+    if not entry.get("optimal"):
+        facts.add(unproven, *args)
+    if _cost_mismatch(entry):
+        facts.add(mismatch, *args)
+    return True
+
+
+def keep_facts(keep: Dict[str, Any], run: Dict[str, Any]) -> str:
+    """The input facts of the row reasons for one line of keep_contrasts.jsonl (IterationExplainer.keep_contrasts)."""
+    facts = Facts()
+    n = int(keep["iteration"])
+    facts.add("keep_recorded", n)
+    facts.add("subproblem_count", n, int(keep.get("subproblems") or 0))
+    factual = keep.get("factual") or {}
+    for i, v in enumerate(factual.get("clingo_cost") or []):
+        facts.add("factual_clingo", n, i, int(v))
+    for i, v in enumerate(keep.get("recorded_cost") or []):
+        facts.add("recorded_clingo", n, i, int(v))
+    if factual.get("feasible"):
+        for level in COST_LEVELS:
+            value = _int((factual.get("costs") or {}).get(level))
+            if value is not None:
+                facts.add("factual_cost", n, level, value)
+    for f, item in sorted((keep.get("flights") or {}).items(), key=lambda x: int(x[0])):
+        f = int(f)
+        facts.add("flight_entry", n, f)
+        if item.get("current_recorded"):
+            facts.add("current_recorded", n, f)
+            facts.add("chosen_checked", n, f)
+        if item.get("chosen_current"):
+            facts.add("chosen_current", n, f)
+        if item.get("unchanged_paths"):
+            facts.add("keep_offered", n, f)
+        k = item.get("keep")
+        if _foil_facts(facts, k, (n, f), "keep_cost", "keep_infeasible", "keep_unproven", "keep_cost_mismatch"):
+            for g in k.get("moves") or []:
+                facts.add("keep_moves", n, f, int(g))
+            for g in k.get("others") or []:
+                facts.add("keep_other", n, f, int(g))
+            if k.get("layout_differs"):
+                facts.add("keep_layout_differs", n, f)
+        both = item.get("keep_both")
+        if both:
+            facts.add("keep_both_flight", n, f, int(both["flight"]))
+            _foil_facts(facts, both, (n, f), "keep_both_cost", "keep_both_infeasible", "keep_both_unproven",
+                        "keep_both_cost_mismatch")
+        _foil_facts(facts, item.get("alt"), (n, f), "alt_cost", "alt_infeasible", "alt_unproven", "alt_cost_mismatch")
+    layout = keep.get("layout") or {}
+    if _int(layout.get("chosen_config")) is not None:
+        facts.add("layout_choice", n, int(layout["chosen_config"]))
+    _foil_facts(facts, layout.get("keep"), (n,), "keep_layout_cost", "keep_layout_infeasible", "keep_layout_unproven",
+                "keep_layout_cost_mismatch")
+    _foil_facts(facts, layout.get("alt"), (n,), "alt_layout_cost", "alt_layout_infeasible", "alt_layout_unproven",
+                "alt_layout_cost_mismatch")
+    metric = run.get("arrival_delay_metric")
+    if metric is None:
+        facts.add("option_assumed", "arrival_delay_metric")
+    else:
+        facts.add("run_option", "arrival_delay_metric", metric if metric in ("signed", "floored", "absolute") else "other")
+    return facts.text()
+
+
+def _ref_of(about: clingo.Symbol) -> Optional[str]:
+    """about(R, flight(N,F)) -> "flight:F"; about(R, sector(N,S,T,Phase)) -> "sector:S@N:Phase"."""
+    a = about.arguments
+    if about.name == "flight" and len(a) == 2:
+        return f"flight:{a[1].number}"
+    if about.name == "sector" and len(a) == 4:
+        return f"sector:{a[1].number}@{a[0].number}:{a[3]}"
+    return None
+
+
+def _render_rows(atoms: List[clingo.Symbol], templates: Dict[str, str], n: int) -> List[Dict[str, Any]]:
+    kinds: Dict[str, str] = {}
+    classes: Dict[str, str] = {}
+    refs_of: Dict[str, str] = {}
+    rows_shown = []
+    args: Dict[str, Dict[str, List[Tuple[int, Any]]]] = {}
+    sources: Dict[str, List[str]] = {}
+    for a in atoms:
+        if a.name == "reason_kind":
+            kinds[str(a.arguments[0])] = str(a.arguments[1])
+        elif a.name == "reason_class":
+            classes[str(a.arguments[0])] = str(a.arguments[1])
+        elif a.name == "about":
+            ref = _ref_of(a.arguments[1])
+            if ref is not None:
+                refs_of[str(a.arguments[0])] = ref
+        elif a.name == "show" and str(a.arguments[1]) == AUDIENCE and str(a.arguments[2]) == "row":
+            rows_shown.append(str(a.arguments[0]))
+        elif a.name == "reason_arg":
+            args.setdefault(str(a.arguments[0]), {}).setdefault(str(a.arguments[1]), []).append(
+                (a.arguments[2].number, _value(a.arguments[3])))
+        elif a.name == "reason_source":
+            sources.setdefault(str(a.arguments[0]), []).append(str(a.arguments[1]))
+    rows = []
+    for rid in rows_shown:
+        kind = kinds[rid]
+        template = templates[kind]
+        values = {key: [v for _, v in sorted(items, key=lambda x: x[0])] for key, items in args.get(rid, {}).items()}
+        fill = {key: _format(key, vs, templates) for key, vs in values.items() if key not in CLAUSE_KEYS}
+        for key in CLAUSE_KEYS:
+            fill[key] = "".join(templates[v] for v in values.get(key, [])).format(**fill)
+        text = template.format(**fill)
+        refs: List[Dict[str, str]] = []
+        seen = set()
+        for _, key, _, _ in string.Formatter().parse(template):
+            if key is None or key not in values:
+                continue
+            for ref, ref_text in _refs(key, values[key], n, False):
+                if ref not in seen:
+                    seen.add(ref)
+                    refs.append({"ref": ref, "text": ref_text})
+        rows.append({"ref": refs_of[rid], "id": rid, "kind": kind, "class": classes[rid], "text": text, "refs": refs,
+                     "source": sorted(sources.get(rid, []))})
+    rows.sort(key=lambda row: (0 if row["ref"].startswith("sector:") else 1,
+                               int(row["ref"].split(":")[1]) if row["ref"].startswith("flight:") else 0))
+    return rows
+
+
+def explain_rows(record: Dict[str, Any], keep: Dict[str, Any], *, previous: Optional[Dict[str, Any]],
+                 run: Dict[str, Any], trace_folder: Optional[Path], rejected_before: Sequence[Dict[str, Any]] = (),
+                 run_length: Optional[int] = None, run_kept: Optional[int] = None) -> Dict[str, Any]:
+    """One line per row of the change list of a kept step: {"iteration", "rows": [{"ref", "id", "kind", "class",
+    "text", "refs", "source"}], "errors": [{"code", "text"}], "notice"}. No rows when the record breaks a rule
+    (error/1, the header says why: errors [record_error], no notice) or a row check fails (errors = the checks,
+    notice = the line the change list shows in place of the rows). Never part of the step header (explain_step)."""
+    n = int(record["iteration"])
+    if int(keep.get("iteration", -1)) != n:
+        raise ValueError(f"keep contrasts of iteration {keep.get('iteration')} given to iteration {n}")
+    facts = step_facts(record, previous=previous, run=run, trace_folder=trace_folder,
+                       rejected_before=rejected_before, run_length=run_length, run_kept=run_kept)
+    atoms, templates, error_texts = solve(facts + keep_facts(keep, run))
+    notice = templates.get("row_unchecked", "The reasons of this step could not be checked.")
+    if any(a.name == "error" for a in atoms):
+        return {"iteration": n, "rows": [], "errors": [{"code": "record_error", "text": "the record breaks a rule"}],
+                "notice": None}
+    row_errors = sorted(str(a.arguments[0]) for a in atoms if a.name == "row_error")
+    if row_errors:
+        return {"iteration": n, "rows": [], "errors": [{"code": e.split("(")[0], "text": e} for e in row_errors],
+                "notice": notice}
+    try:
+        rows = _render_rows(atoms, templates, n)
+    except (KeyError, IndexError, ValueError):
+        return {"iteration": n, "rows": [], "errors": [{"code": "render_error", "text": "render_error"}],
+                "notice": notice}
+    return {"iteration": n, "rows": rows, "errors": [], "notice": None}

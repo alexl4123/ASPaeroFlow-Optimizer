@@ -11,6 +11,7 @@ Endpoints (JSON):
     GET  /health
     GET  /instances                                   folders under --instances-root
     POST /sessions        {"instance": name} | {"data_dir": path} | {"replay": trace folder [, "instance": name]}, "options": {...}
+                          reply: {"id", "status", "objectives", "step", "reasons_worker": true}
     GET  /sessions/{id}                               status, last objectives, final summary
     GET  /sessions/{id}/graph                         vertices (coordinates), edges, initial sectors
     POST /sessions/{id}/step                          one iteration, returns its summary
@@ -21,12 +22,17 @@ Endpoints (JSON):
     POST /sessions/{id}/iterations/{n}/explain        {"question": hotspot|flight|sectors|tie|alternatives, "flight": F}
     POST /sessions/{id}/iterations/{n}/what-if        {"locks": ["keep 18", "avoid 22", "max_delay 19 2", ...]}
     GET  /sessions/{id}/events?after=SEQ              text/event-stream; "id:" = sequence number (Last-Event-ID works)
-Events: {"v": 1, "seq": n, "type": "state" | "iteration" | "finished" | "error", "data": {...}}, each a few KB.
+Events: {"v": 1, "seq": n, "type": "state" | "iteration" | "reasons" | "finished" | "error", "data": {...}}, each a few KB.
+A kept iteration's summary carries "reasons" (one line per row of its change list) when its keep contrasts are known
+(a replay with keep_contrasts.jsonl); otherwise the session's reasons worker computes them after the step and sends
+a "reasons" event {"iteration", "rows", "errors", "notice"}, or {"iteration", "rows": [], "errors": [{"code":
+"reasons_failed", ...}]} when that fails. Rejected iterations get none.
 """
 
 import argparse
 import asyncio
 import json
+import queue
 import sys
 import threading
 import time
@@ -67,7 +73,7 @@ class EventLog:
 
 
 class Handle:
-    """A session with its event log and its background worker."""
+    """A session with its event log, its background worker and its reasons worker."""
 
     def __init__(self, session, kind: str):
         self.session = session
@@ -77,6 +83,29 @@ class Handle:
         self.stop = threading.Event()
         self.pace = 0.0
         self.last: Optional[Dict[str, Any]] = None
+        # kept iterations whose summary had no row reasons; one thread computes them in order (K12)
+        self.reasons_queue: "queue.Queue[Optional[int]]" = queue.Queue()
+        self.reasons_stop = threading.Event()
+        self.reasons_worker = threading.Thread(target=self._reasons_loop, daemon=True)
+        self.reasons_worker.start()
+
+    def _reasons_loop(self) -> None:
+        while not self.reasons_stop.is_set():
+            n = self.reasons_queue.get()
+            if n is None or self.reasons_stop.is_set():
+                return
+            try:
+                data = self.session.reasons(n)
+            except Exception as exc:   # the reasons of a step must never stop the session
+                data = {"iteration": n, "rows": [], "notice": None,
+                        "errors": [{"code": "reasons_failed", "text": f"{type(exc).__name__}: {exc}"}]}
+            if not self.reasons_stop.is_set():
+                self.events.append("reasons", data)
+
+    def close(self) -> None:
+        self.stop.set()
+        self.reasons_stop.set()
+        self.reasons_queue.put(None)
 
     def state(self) -> Dict[str, Any]:
         running = self.worker is not None and self.worker.is_alive()
@@ -89,6 +118,8 @@ class Handle:
         if summary is not None:
             self.last = summary
             self.events.append("iteration", summary)
+            if summary.get("accepted") and "reasons" not in summary:
+                self.reasons_queue.put(int(summary["iteration"]))
         if self.session.status == "finished":
             self.events.append("finished", self.session.final)
         return summary
@@ -129,6 +160,7 @@ def create_app(instances_root: Optional[Path], sessions_root: Path) -> FastAPI:
     app = FastAPI(title="ASPaeroFlow XAI sessions", version=str(PROTOCOL_VERSION))
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
     sessions: Dict[str, Handle] = {}
+    app.state.sessions = sessions
     sessions_root.mkdir(parents=True, exist_ok=True)
 
     def get(sid: str) -> Handle:
@@ -174,10 +206,14 @@ def create_app(instances_root: Optional[Path], sessions_root: Path) -> FastAPI:
             if not (data_dir / "flights.csv").exists():
                 raise HTTPException(400, f"not an instance folder: {data_dir}")
             handle = Handle(OptimizerSession(data_dir, sessions_root / sid, req.options), "live")
-        begun = handle.session.begin()
+        try:
+            begun = handle.session.begin()
+        except Exception:
+            handle.close()
+            raise
         sessions[sid] = handle
         handle.events.append("state", handle.state())
-        return {"id": sid} | begun
+        return {"id": sid} | begun | {"reasons_worker": True}
 
     @app.get("/sessions/{sid}")
     def session_state(sid: str):
@@ -186,7 +222,7 @@ def create_app(instances_root: Optional[Path], sessions_root: Path) -> FastAPI:
     @app.delete("/sessions/{sid}")
     def delete_session(sid: str):
         h = get(sid)
-        h.stop.set()
+        h.close()
         del sessions[sid]
         return {"deleted": sid}
 

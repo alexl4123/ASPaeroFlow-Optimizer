@@ -4,3 +4,5 @@ Reduced June study trace: CENTRAL-EUROPE-7x7, 13 kept steps (the replay of the J
 `hotspot.flights`/`hotspot.taken` and no `evaluation_window`; tests add them where needed and say so.
 `step06_facts.lp` holds the reasons.lp input facts of step 6 (hand-reviewed), `step06_expected.lp` the shown atoms
 of reasons.lp + reasons_text.lp on them.
+`keep_contrasts.jsonl` was computed by xai/keep.py from the full lp files of the June trace (the reduced ones here
+cannot be solved); the row reasons of test_row_reasons.py read it.

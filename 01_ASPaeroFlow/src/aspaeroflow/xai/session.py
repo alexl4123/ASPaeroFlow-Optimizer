@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .contrastive import IterationExplainer, Lock
-from .reasons import explain_start, explain_step, step_context
+from .keep import append_keep, read_keep
+from .reasons import explain_rows, explain_start, explain_step, step_context
 from .trace import TraceReader
 
 OPTIMIZER_DIR = Path(__file__).resolve().parents[3]          # 01_ASPaeroFlow/
@@ -107,6 +108,10 @@ def instance_graph(data_dir: Path) -> Dict[str, Any]:
 class _ExplainingSession:
     """What live and replayed sessions share: the trace and the questions about it."""
 
+    #: a live session appends the keep contrasts it computes to its own trace folder; a replay keeps them in memory
+    #: (its folder may be shared by several sessions, or read-only)
+    writes_keep = False
+
     def __init__(self, folder: Path):
         self.folder = Path(folder)
         self._trace: Optional[TraceReader] = None
@@ -115,6 +120,9 @@ class _ExplainingSession:
         self._steps: Dict[int, Dict[str, Any]] = {}       # step header per iteration (xai/reasons.py)
         self._aircraft: Optional[Dict[int, int]] = None
         self._aircraft_read = False
+        # keep contrasts per kept iteration (xai/keep.py) and the row reasons made from them (explain_rows)
+        self._keep: Dict[int, Dict[str, Any]] = {}
+        self._rows: Dict[int, Dict[str, Any]] = {}
 
     def trace(self) -> TraceReader:
         if self._trace is None:
@@ -132,6 +140,11 @@ class _ExplainingSession:
             if iteration not in trace.iterations:
                 raise KeyError(f"iteration {iteration} is not (yet) in the trace")
             ex = IterationExplainer(trace, iteration)
+            if iteration in self._keep:     # the dialog's keep cards then describe the answers of the row lines
+                try:
+                    ex.load_keep(self._keep[iteration])
+                except (ValueError, KeyError, TypeError):
+                    log.exception("iteration %s: stored keep contrasts not usable", iteration)
             self._explainers[iteration] = ex
             while len(self._explainers) > 16:
                 self._explainers.popitem(last=False)
@@ -156,6 +169,48 @@ class _ExplainingSession:
             log.warning("step %s: explanation errors %s", n, ", ".join(e["code"] for e in step["errors"]))
         self._steps[n] = step
         return step
+
+    def _rows_of(self, record: Dict[str, Any], records: List[Dict[str, Any]],
+                 run_length: Optional[int] = None, run_kept: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """The row reasons of a kept record whose keep contrasts are known (None otherwise); never raises."""
+        n = int(record["iteration"])
+        if not record.get("accepted") or n not in self._keep:
+            return None
+        if n in self._rows:
+            return self._rows[n]
+        try:
+            previous, rejected = step_context({int(r["iteration"]): r for r in records}, n)
+            rows = explain_rows(record, self._keep[n], previous=previous, run=self.trace().run,
+                                trace_folder=self.folder, rejected_before=rejected, run_length=run_length,
+                                run_kept=run_kept)
+        except Exception as exc:  # a reason line must never stop a step
+            log.exception("step %s: row reasons failed", n)
+            rows = {"iteration": n, "rows": [], "errors": [{"code": "reasons_failed", "text": type(exc).__name__}],
+                    "notice": None}
+        if rows.get("errors"):
+            log.warning("step %s: row reasons not shown: %s", n, ", ".join(e["code"] for e in rows["errors"]))
+        self._rows[n] = rows
+        return rows
+
+    def _records(self) -> List[Dict[str, Any]]:
+        return list(self.trace())
+
+    def reasons(self, iteration: int) -> Dict[str, Any]:
+        """The row reasons of a kept iteration, computing its keep contrasts if needed (up to a few seconds on
+        CE-7x7). A live session appends them to its trace folder; a replay keeps them in memory."""
+        trace = self.trace()
+        record = trace.iterations.get(iteration)
+        if record is None or not record.get("accepted"):
+            raise KeyError(f"iteration {iteration} is not a kept iteration of the trace")
+        if iteration not in self._keep:
+            ex = self.explainer(iteration)
+            with self._explain_lock:
+                entry = ex.keep_contrasts()
+            if self.writes_keep:
+                append_keep(self.folder, entry)
+            self._keep[iteration] = entry
+        run_length, run_kept = self._run_counts() if hasattr(self, "_run_counts") else (None, None)
+        return self._rows_of(record, self._records(), run_length, run_kept)
 
     def _start_step(self, run_length: Optional[int] = None, run_kept: Optional[int] = None) -> Dict[str, Any]:
         try:
@@ -192,6 +247,9 @@ class _ExplainingSession:
                  run_length: Optional[int] = None, run_kept: Optional[int] = None) -> Dict[str, Any]:
         summary = record_summary(record)
         summary["step"] = self._step_of(record, records, run_length, run_kept)
+        rows = self._rows_of(record, records, run_length, run_kept)
+        if rows is not None:
+            summary["reasons"] = rows
         aircraft = self._aircraft_map(summary, record)
         if aircraft is not None:
             summary["aircraft"] = aircraft
@@ -235,6 +293,8 @@ class _ExplainingSession:
 
 class OptimizerSession(_ExplainingSession):
     """A live run with its trace in `folder`; options are main.py's long options without the dashes."""
+
+    writes_keep = True
 
     def __init__(self, data_dir: Path, folder: Path, options: Optional[Dict[str, Any]] = None):
         super().__init__(folder)
@@ -289,6 +349,7 @@ class ReplaySession(_ExplainingSession):
         written on another machine or outside the container that replays it)."""
         super().__init__(folder)
         self.records = list(self.trace())
+        self._keep = read_keep(self.folder)       # precomputed by xai/keep.py; the lines come with each step
         self.cursor = 0
         self.status = "ready" if self.records else "finished"
         run = self.trace().run

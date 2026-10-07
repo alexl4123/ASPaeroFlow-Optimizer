@@ -1,0 +1,37 @@
+{
+  "data_dir": "CENTRAL-EUROPE-7x7-TG4",
+  "seed": 11904657,
+  "timestep_granularity": 4,
+  "max_explored_vertices": 6,
+  "max_delay_per_iteration": 20,
+  "max_considered_aircraft": 2,
+  "number_capacity_management_configs": 7,
+  "capacity_management_enabled": true,
+  "composite_sector_function": "max",
+  "sector_capacity_factor": 6,
+  "arrival_delay_metric": "signed",
+  "solver_options": [],
+  "sequential_execution": false,
+  "minimize_number_sectors": false,
+  "max_number_sectors": 100000,
+  "convex_sectors": 0,
+  "evaluation_window": 100,
+  "flight_duration_rule": "occupied_steps",
+  "initial_overload": 60,
+  "number_flights": 100,
+  "initial_objectives": {
+    "ITERATION": 0,
+    "OVERLOAD": 60,
+    "ARRIVAL-DELAY": 0,
+    "SECTOR-NUMBER": 1400,
+    "SECTOR-DIFF": 0,
+    "REROUTE": 0,
+    "RECONFIG": 0
+  },
+  "initial_sector_overload": {
+    "0": 6,
+    "6": 32,
+    "21": 1,
+    "24": 21
+  }
+}
