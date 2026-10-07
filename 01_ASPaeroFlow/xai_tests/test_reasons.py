@@ -7,6 +7,7 @@ June records with fields changed by the test; the comment next to each says whic
 """
 import copy
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -433,6 +434,32 @@ class Rejected(Base):
         self.assertEqual(codes(out), ["render_error"])
         self.assertEqual([line["text"] for line in out["lines"]],
                          ["The explanation text of this step could not be produced."])
+
+
+class TemplateShape(unittest.TestCase):
+    """The step header of the XAI frontend (step-header.model.ts, shortForm) shortens these sentences by exact
+    patterns and falls back to the full text when they do not match. A wording change here must change the patterns
+    there as well."""
+
+    @staticmethod
+    def filled(text, limits=""):
+        return re.sub(r"\{(\w+)\}", lambda m: limits if m.group(1) == "limits" else "17", text)
+
+    def test_shortened_templates_keep_their_shape(self):
+        _, templates, _ = reasons.solve("")
+        hotspot = re.compile(r"^(Sector \d+ at time \d+ had \d+ flights? for a capacity of \d+): "
+                             r"the earliest overload, lowest sector number first\.$")
+        for kind in ("hotspot_rule", "hotspot_rule_one"):
+            sentence = self.filled(templates[kind])
+            self.assertRegex(sentence, hotspot, kind)
+            # the short form is the hotspot template of sequential runs
+            short = hotspot.match(sentence).group(1) + "."
+            self.assertEqual(short, self.filled(templates[kind.replace("_rule", "")]), kind)
+        not_kept = re.compile(r"^(Step \d+ \(sector \d+ at time \d+\) was not kept): the total overload did not fall"
+                              r" \(stays at \d+\)\.")
+        for kind in ("not_kept", "not_kept_sequential"):
+            for limits in ("", templates["clause_layout"]):
+                self.assertRegex(self.filled(templates[kind], limits), not_kept, kind)
 
 
 class Start(Base):
