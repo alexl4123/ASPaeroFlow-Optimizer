@@ -122,6 +122,16 @@ class PathTextWords(unittest.TestCase):
         self.assertEqual(amount("delay", 3), "3 more time periods of arrival delay")
         self.assertEqual(amount("delay", -1), "1 more time period of arrival delay")
 
+    def test_criterion_words(self):
+        """One word per criterion in the cards, the step header and the row lines: the header says "total overload",
+        and level 8 counts every open sector of the network at the hotspot time (config_number_sectors)."""
+        from src.aspaeroflow.xai.contrastive import SCOPE
+        from src.aspaeroflow.xai.subproblem import LEVEL_TEXT
+        self.assertEqual(LEVEL_TEXT["overload"], "total overload")
+        self.assertEqual(LEVEL_TEXT["sectors"], "open sectors at the hotspot time")
+        self.assertNotIn("network overload", SCOPE)
+        self.assertIn("total overload", SCOPE)
+
 
 @unittest.skipUnless(os.environ.get("CE7_TRACE"), "set CE7_TRACE to the full CE-7x7 study trace (with lp/)")
 class StudyStepSixLabel(unittest.TestCase):

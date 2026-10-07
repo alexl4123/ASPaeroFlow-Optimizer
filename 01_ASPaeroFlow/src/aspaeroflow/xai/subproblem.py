@@ -51,9 +51,9 @@ def amount(level: str, n: int) -> str:
 
 
 LEVEL_TEXT = {
-    "overload": "network overload",
+    "overload": "total overload",
     "delay": "arrival delay",
-    "sectors": "number of sectors",
+    "sectors": "open sectors at the hotspot time",
     "changed": "flights sent to the solver off the filed route or the earliest offered departure",
     "config": "deviation from the current sector configuration",
 }
