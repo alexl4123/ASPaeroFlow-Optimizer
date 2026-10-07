@@ -60,6 +60,12 @@ search configuration alone, so there is no thread tier.
                    manifest (--tiers U --out usc27_tasks.tsv) so the ablation's rows keep their
                    numbers, and analyse it with analyze_usc27.py.
 
+    D  default 27  default search x ALL 27 exact-ASP variants x every small instance, one row per
+                   solver run: tier U with the default profile. The V2 campaign ran default search
+                   on the encoding before the 2026-10-05 fixes, so after them the comparison with
+                   tier U needs its own run. Own manifest (--tiers D --out default27_tasks.tsv),
+                   analysed with analyze_usc27.py --tier D.
+
 WHY tier B NEEDS ONE ROW PER SOLVER RUN
 The caller's --experiment-* flags cannot express the ten: the per-variant flags
 (--experiment-asp-r-d-s and friends) are parsed and then never read in build_system_config(), so
@@ -101,7 +107,7 @@ ALL_PROFILES = ("default", "usc", "domain", "usc-domain")
 RUNS_PER_VARIANT_SET = {"named2": 2, "all27": 27, "breadth10": 10}
 
 #: Tiers this script knows, in submission order.
-ALL_TIERS = ("P", "A", "B", "U")
+ALL_TIERS = ("P", "A", "B", "U", "D")
 
 #: Tier B's variants, as the <rerouting>_<delay>_<sectorisation> suffix of the system keys
 #: all27_systems() builds. Order is the order of the rows.
@@ -328,6 +334,10 @@ def build_rows(problems, instances_of, args) -> List[List[str]]:
                 for inst in available:
                     emit("U", "usc", 1, "all27", name, inst, granularity)
 
+            elif tier == "D":
+                for inst in available:
+                    emit("D", "default", 1, "all27", name, inst, granularity)
+
     return rows
 
 
@@ -377,9 +387,9 @@ def summarise(rows, time_limit: int, chunk: int, max_array: int,
         acc["first"] = min(acc["first"], int(row[0]))
         acc["last"] = max(acc["last"], int(row[0]))
 
-    cpus = {"P": 2, "A": 2, "B": 2, "U": 2}
+    cpus = {"P": 2, "A": 2, "B": 2, "U": 2, "D": 2}
     label = {"P": "preflight", "A": "main grid", "B": "variant breadth",
-             "U": "usc over all 27 variants"}
+             "U": "usc over all 27 variants", "D": "default search over all 27 variants"}
 
     def hours_per_task(acc):
         """Worst-case wall time of ONE array task, which is what the -t request has to cover."""
@@ -505,14 +515,15 @@ def main() -> int:
         raise SystemExit("[ERROR] tier B runs ten of the 27 exact-ASP variants, which only "
                          "--only-system can select: pass --per-run-systems (or leave B out of "
                          "--tiers). Without it a tier-B row could only mean all 27.")
-    if "U" in args.tiers and not args.per_run_systems:
-        raise SystemExit("[ERROR] tier U without --per-run-systems would put all 27 runs of an "
-                         "instance into ONE job, up to 27 x the time limit (13.5 h at 1800 s). "
-                         "Pass --per-run-systems: one job per solver run.")
-    if "U" in args.tiers and args.out.name == "ablation_tasks.tsv":
-        raise SystemExit("[ERROR] tier U goes into its own manifest so the ablation's row numbers "
-                         "stay valid: pass --out usc27_tasks.tsv (and MANIFEST=usc27_tasks.tsv "
-                         "to the runner, as the printed sbatch lines do).")
+    for tier in ("U", "D"):
+        if tier in args.tiers and not args.per_run_systems:
+            raise SystemExit(f"[ERROR] tier {tier} without --per-run-systems would put all 27 runs of an "
+                             "instance into ONE job, up to 27 x the time limit (13.5 h at 1800 s). "
+                             "Pass --per-run-systems: one job per solver run.")
+        if tier in args.tiers and args.out.name == "ablation_tasks.tsv":
+            raise SystemExit(f"[ERROR] tier {tier} goes into its own manifest so the ablation's row "
+                             "numbers stay valid: pass --out usc27_tasks.tsv (U) or "
+                             "default27_tasks.tsv (D), and MANIFEST=<that file> to the runner.")
     args.tier_b_sizes = [int(x) for x in args.tier_b_sizes.split(",") if x.strip()]
     args.sizes_all = [int(x) for x in args.sizes.split(",") if x.strip()]
     seeds_all = [int(x) for x in args.seeds.split(",") if x.strip()]

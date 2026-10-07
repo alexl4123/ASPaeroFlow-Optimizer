@@ -186,7 +186,7 @@ def main() -> int:
         return "-" if value is None else str(value)
 
     lines = [
-        "# usc over all 27 exact-ASP variants", "",
+        f"# {runs[0].profile if runs else 'usc'} over all 27 exact-ASP variants (tier {args.tier})", "",
         f"{len(runs)} runs, per-run limit {args.time_limit:.0f} s. Closed = clingo's "
         "SOLVER-EXHAUSTED (optimum proven). PAR2 counts an unclosed run as twice the limit.", "",
         "| variant | runs | closed | closed % | median s (closed) | PAR2 s | timeout | memout | "
