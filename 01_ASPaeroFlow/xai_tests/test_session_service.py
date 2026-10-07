@@ -117,6 +117,11 @@ class SessionService(unittest.TestCase):
         r = self.client.post(f"/sessions/{sid}/iterations/{n}/what-if", json={"locks": [f"keep {f}"]})
         self.assertEqual(r.status_code, 200, r.text)
         self.assertIn("feasible", r.json())
+        r = self.client.post(f"/sessions/{sid}/iterations/{n}/explain", json={"question": "menu"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["menu"][-1]["lock"], "keep_sectors")
+        r = self.client.post(f"/sessions/{sid}/iterations/{n}/what-if", json={"locks": ["keep 9999"]})
+        self.assertEqual(r.status_code, 400, r.text)
         self.assertEqual(self.client.post(f"/sessions/{sid}/iterations/999/explain",
                                           json={"question": "hotspot"}).status_code, 404)
 

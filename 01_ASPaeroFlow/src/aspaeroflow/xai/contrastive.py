@@ -97,6 +97,7 @@ class IterationExplainer:
         # foils of the keep contrasts (keep_contrasts), solved once or read from keep_contrasts.jsonl (load_keep), so
         # that a row line and the dialog card about the same flight describe the same answer
         self._foils: Dict[Tuple, Solution] = {}
+        self._memo: Dict[Tuple, Solution] = {}         # answers of the other cards, by their bans (_solve_bans)
 
     # ------------------------------------------------------------------ helpers
 
@@ -138,6 +139,14 @@ class IterationExplainer:
         """The recorded answer gives the flight its current trajectory."""
         cur = self.current.get(flight)
         return cur is not None and self._trajectory(flight, self.chosen_paths.get(flight)) == cur
+
+    def _solve_bans(self, ban_paths: PathSet = frozenset(), ban_configs: Iterable[int] = ()) -> Solution:
+        """Best answer under these bans, solved once per explainer: a card and a what-if with the same bans then
+        describe the same answer, also when several answers are equally good."""
+        key = (frozenset(ban_paths), frozenset(ban_configs))
+        if key not in self._memo:
+            self._memo[key], _ = self.solver.solve(ban_paths=ban_paths, ban_configs=ban_configs)
+        return self._memo[key]
 
     def _foil(self, key: Tuple, ban_paths: PathSet = frozenset(), ban_configs: Iterable[int] = ()) -> Solution:
         if key not in self._foils:
@@ -286,10 +295,14 @@ class IterationExplainer:
             out["unchanged"] = path.trajectory == cur
         return out
 
-    def path_text(self, flight: int, index: int) -> str:
+    def change_clause(self, flight: int, index: int) -> str:
+        """What a candidate path does to the flight compared with its trajectory before the step, without the
+        flight's name: "keeps its trajectory", "departs 1 time period later, flies 51-22-15-53 instead of ..."."""
         d = self.describe_path(flight, index)
+        if "departure_shift" not in d:      # trajectory before the step not recorded: say only what the path is
+            return "flies " + "-".join(map(str, d["route"])) + f" from time {d['start']}"
         if d.get("unchanged"):
-            return f"flight {flight} keeps its trajectory"
+            return "keeps its trajectory"
         parts = []
         shift = d.get("departure_shift", 0)
         if shift > 0:
@@ -303,7 +316,10 @@ class IterationExplainer:
         arr = d.get("arrival_shift", 0)
         if arr != shift and arr != 0:
             parts.append(f"arrives {_periods(abs(arr))} {'later' if arr > 0 else 'earlier'}")
-        return f"flight {flight} " + ", ".join(parts) if parts else f"flight {flight} keeps its trajectory"
+        return ", ".join(parts) if parts else "keeps its trajectory"
+
+    def path_text(self, flight: int, index: int) -> str:
+        return f"flight {flight} " + self.change_clause(flight, index)
 
     def config_text(self, config: int) -> str:
         sc = self.sub.configs.get(config)
@@ -337,7 +353,9 @@ class IterationExplainer:
             out.append(self.config_text(foil.chosen_config))
         return out
 
-    def _contrast_text(self, label: str, foil: Solution) -> Tuple[Optional[str], str]:
+    def _contrast_text(self, label: str, foil: Solution,
+                       chosen_name: str = "the chosen answer") -> Tuple[Optional[str], str]:
+        """The verdict of one comparison: `label` names the foil, `chosen_name` the recorded answer."""
         deciding = compare(self.factual, foil)
         if deciding is None:
             return None, (f"{label.capitalize()} is exactly as good on every criterion. The step's choice "
@@ -357,13 +375,13 @@ class IterationExplainer:
             if below and self.factual.costs[name] > foil.costs[name]:
                 prices.append(amount(name, self.factual.costs[name] - foil.costs[name]))
         if prices:
-            text += " The chosen answer accepts " + " and ".join(prices) + " for that."
+            text += f" {chosen_name[0].upper()}{chosen_name[1:]} accepts " + " and ".join(prices) + " for that."
         return deciding, text
 
     def _contrast(self, label: str, ban_paths: PathSet = frozenset(), ban_configs: Iterable[int] = (),
                   skip_flights=(), skip_config: bool = False, foil: Optional[Solution] = None) -> Contrast:
         if foil is None:
-            foil, _ = self.solver.solve(ban_paths=ban_paths, ban_configs=ban_configs)
+            foil = self._solve_bans(ban_paths, ban_configs)
         if not foil.satisfiable:
             return Contrast(label, False, None, None,
                             f"{label.capitalize()} is impossible in this step: no combination of the candidates satisfies it.")
@@ -505,6 +523,79 @@ class IterationExplainer:
 
     # ------------------------------------------------------------------ what-if with user locks
 
+    def _flight_of_lock(self, lock: Lock) -> int:
+        """The solver flight a flight lock constrains (a later leg names the flight it follows); ValueError for a
+        flight that is not part of the step, whose lock would ban nothing."""
+        if not lock.args:
+            raise ValueError(f"lock '{lock}' needs a flight")
+        f = self.sub.decision_flight_of(lock.args[0])
+        if f not in self.sub.decision_flights:
+            raise ValueError(f"flight {lock.args[0]} is not part of step {self.iteration}")
+        return f
+
+    def _filed_before(self, flight: int) -> bool:
+        """The flight's trajectory before this step is its filed one: no kept step before this one changed it (the
+        run starts from the filed plan). False when a record does not list its changed flights."""
+        if "flight_changes" not in self.record:
+            return False
+        for n, record in self.trace.iterations.items():
+            if n >= self.iteration or not record.get("accepted"):
+                continue
+            changes = record.get("flight_changes")
+            if changes is None:
+                return False
+            if str(flight) in {str(f) for f in changes}:
+                return False
+        return True
+
+    def lock_text(self, lock: Lock) -> str:
+        """The requirement in the interface's words (lower case; the menu capitalises it)."""
+        k, a = lock.kind, lock.args
+        if k == "keep_sectors":
+            return self.config_text(0)
+        if k == "avoid":
+            if len(a) > 1:
+                return f"flight {self._flight_of_lock(Lock('keep', a[1:]))} does not pass navpoint {a[0]}"
+            return f"no flight of the step passes navpoint {a[0]}"
+        f = self._flight_of_lock(lock)
+        if k == "keep":
+            return f"flight {f} keeps its trajectory from before the step"
+        if k == "no_delay":
+            if self._filed_before(f):
+                return f"flight {f} departs on time, as in the filed plan"
+            return f"flight {f} departs no later than before the step"
+        if k == "path":
+            return f"flight {f} takes candidate path {a[1]}"
+        if k == "max_delay":
+            return f"flight {f} and its later flights arrive at most {_periods(a[1])} after their planned arrival"
+        raise ValueError(f"unknown lock kind: {k}")
+
+    def lock_met(self, lock: Lock) -> bool:
+        """The recorded answer of the step already satisfies the lock (no ban hits it)."""
+        paths, configs = self._lock_bans(lock)
+        return (not any((f, p) in paths for f, p in self.chosen_paths.items())
+                and self.chosen_config not in configs)
+
+    def what_if_menu(self) -> Dict[str, Any]:
+        """The requirements a user can pick for this step, each with its state: open (it changes the answer of the
+        step), met (the recorded answer already meets it) or not_offered (no candidate of the step meets it). A
+        solver flight whose trajectory before the step is not recorded gets no entries (neither can be checked)."""
+        entries: List[Dict[str, Any]] = []
+
+        def entry(lock: Lock, flight: Optional[int], offered: bool) -> None:
+            state = "not_offered" if not offered else ("met" if self.lock_met(lock) else "open")
+            entries.append({"lock": str(lock), "kind": lock.kind, "flight": flight, "text": self.lock_text(lock),
+                            "state": state})
+
+        for f in self.sub.decision_flights:
+            if f not in self.current:
+                continue
+            entry(Lock("keep", (f,)), f, bool(self.unchanged_paths(f)))
+            entry(Lock("no_delay", (f,)), f,
+                  any(self.describe_path(f, p).get("departure_shift", 0) <= 0 for p in self._all_paths(f)))
+        entry(Lock("keep_sectors"), None, 0 in self.sub.configs)
+        return {"iteration": self.iteration, "menu": entries}
+
     def _lock_bans(self, lock: Lock) -> Tuple[PathSet, Set[int]]:
         k, a = lock.kind, lock.args
         paths: PathSet = set()
@@ -512,10 +603,10 @@ class IterationExplainer:
         if k == "keep_sectors":
             configs = {c for c in self.sub.configs if c != 0}
         elif k in ("keep", "path", "no_delay", "max_delay"):
-            f = self.sub.decision_flight_of(a[0])
+            f = self._flight_of_lock(lock)
             if k == "keep":
-                pu = self.unchanged(f)
-                paths = self._ban_all_but(f, [pu] if pu is not None else [])
+                # every candidate whose trajectory is the one before the step stays allowed (the keep card's bans)
+                paths = self._ban_all_but(f, self.unchanged_paths(f) or [])
             elif k == "path":
                 paths = self._ban_all_but(f, [a[1]])
             elif k == "no_delay":
@@ -532,7 +623,7 @@ class IterationExplainer:
                             break
         elif k == "avoid":
             nav = a[0]
-            only = self.sub.decision_flight_of(a[1]) if len(a) > 1 else None
+            only = self._flight_of_lock(Lock("keep", a[1:])) if len(a) > 1 else None
             for f in self.sub.decision_flights:
                 if only is not None and f != only:
                     continue
@@ -545,33 +636,137 @@ class IterationExplainer:
             raise ValueError(f"unknown lock kind: {k}")
         return paths, configs
 
+    def _same_card(self, lock: Lock) -> Optional[Tuple[str, Solution]]:
+        """The card of this step's explanation that compares exactly this one lock with the recorded answer (same
+        bans), with that card's answer; None when the step has no such card."""
+        if lock.kind == "keep_sectors":
+            if self.chosen_config == 0:
+                return None
+            return "Keeping the hotspot's sectors as they are", self.keep_layout()
+        if lock.kind not in ("keep", "no_delay"):
+            return None
+        f = self._flight_of_lock(lock)
+        pf, pu = self.chosen_paths.get(f), self.unchanged(f)
+        if pf is None or (pu is not None and pf == pu):     # why_flight: no changed-flight cards
+            return None
+        if lock.kind == "keep":
+            keep = self.keep_flight(f)
+            return None if keep is None else (f"Keeping flight {f} as it was", keep)
+        if self.describe_path(f, pf).get("departure_shift", 0) <= 0:
+            return None
+        allowed = [p for p in self._all_paths(f) if self.describe_path(f, p).get("departure_shift", 0) <= 0]
+        if not allowed:
+            return None
+        return f"Not delaying flight {f}", self._solve_bans(self._ban_all_but(f, allowed))
+
+    def _members(self) -> List[Tuple[int, Optional[int]]]:
+        """(flight, the solver flight it follows or None) for every flight of the sub-problem, solver flights first."""
+        out: List[Tuple[int, Optional[int]]] = []
+        for f in self.sub.decision_flights:
+            out.append((f, None))
+            out += [(l, f) for l, par in sorted(self.sub.parent.items()) if par == f]
+        return out
+
+    def _answer_of(self, paths: Dict[int, int], config: Optional[int]) -> Dict[str, Any]:
+        """One answer of the step: every flight of the sub-problem with its path (a later flight follows the path
+        index of its solver flight), what that does to it, and the sector configuration."""
+        flights = []
+        for m, parent in self._members():
+            index = paths.get(parent if parent is not None else m)
+            if index is None or index not in self.sub.paths.get(m, {}):
+                continue
+            path = self.sub.paths[m][index]
+            flights.append({"flight": m, "parent": parent, "path": index, "text": self.change_clause(m, index),
+                            "route": list(path.route),
+                            "trajectory": {str(t): n for t, n in sorted(path.trajectory.items())},
+                            "changed": path.trajectory != self.current.get(m)})
+        return {"flights": flights, "config": config,
+                "sectors": self.config_text(config) if config is not None else None}
+
+    def _table(self, recorded: Dict[str, Any], other: Dict[str, Any]) -> Dict[str, Any]:
+        """Rows of the flights whose trajectory differs between the two answers, the sector configuration row when
+        the configurations differ, and the clauses that are the same in both answers and differ from before the
+        step."""
+        mine = {e["flight"]: e for e in recorded["flights"]}
+        rows, same = [], []
+        for e in other["flights"]:
+            r = mine.get(e["flight"])
+            if r is None:
+                continue
+            if r["trajectory"] != e["trajectory"]:
+                rows.append({"flight": e["flight"], "parent": e["parent"], "recorded": r["text"], "what_if": e["text"]})
+            elif r["changed"]:
+                same.append(f"flight {e['flight']} {e['text']}")
+        config_row = None
+        if recorded["config"] != other["config"]:
+            config_row = {"time": self.record["hotspot"].get("time"), "recorded": recorded["sectors"],
+                          "what_if": other["sectors"]}
+        elif recorded["config"] not in (None, 0):
+            same.append(recorded["sectors"])
+        return {"rows": rows, "config": config_row, "same": same}
+
     def what_if(self, locks: List[Lock]) -> Dict[str, Any]:
-        names = []
-        for lock in locks:
-            paths, configs = self._lock_bans(lock)
-            self.solver.add_group(str(lock), paths=paths, configs=configs)
-            names.append(str(lock))
-        sol, core = self.solver.solve(groups=names)
-        question = "What if " + " and ".join(names) + "?"
-        if not sol.satisfiable:
-            # Shrink the core to a minimal one: drop every lock without which it stays unsatisfiable.
-            core = list(core) or list(names)
-            for name in list(core):
-                rest = [c for c in core if c != name]
-                if rest and not self.solver.solve(groups=rest)[0].satisfiable:
-                    core = rest
-            if len(core) == 1:
-                answer = (f"'{core[0]}' cannot hold in this step: it excludes every candidate of the flight "
-                          f"(or configuration) it constrains.")
+        """The step's sub-problem solved again under the user's locks and compared with the recorded answer of the
+        step. Nothing else is recomputed: later steps and the final plan are not touched. Locks the recorded answer
+        already meets are not solved when all are met; otherwise all locks are solved together."""
+        if not locks:
+            raise ValueError("no lock given")
+        step = f"step {self.iteration}"
+        many = len(locks) > 1
+        noun = "these requirements" if many else "this requirement"
+        texts = [self.lock_text(lock) for lock in locks]              # raises for a flight outside the step
+        requirements = [{"lock": str(lock), "text": text, "met": self.lock_met(lock)}
+                        for lock, text in zip(locks, texts)]
+        question = f"What if, in {step}, " + " and ".join(texts) + "?"
+        out: Dict[str, Any] = {"iteration": self.iteration, "question": question, "requirements": requirements,
+                               "already_met": False, "feasible": True, "same_as": None, "scope": SCOPE}
+        if all(r["met"] for r in requirements):
+            if not many and locks[0].kind == "avoid" and not self._lock_bans(locks[0])[0]:
+                answer = (f"No candidate route of {step} passes navpoint {locks[0].args[0]}; {step}'s choice already "
+                          f"meets this requirement.")
             else:
-                answer = ("These requirements cannot hold together in this step: " +
-                          " and ".join(f"'{c}'" for c in core) + " exclude every combination of the candidates.")
-            return {"iteration": self.iteration, "question": question, "answer": answer, "feasible": False,
-                    "core": core, "scope": SCOPE}
-        deciding, text = self._contrast_text("this answer", sol)
+                answer = f"{step.capitalize()}'s choice already meets {noun}. Nothing is solved again."
+            return out | {"already_met": True, "answer": answer}
+
+        same = self._same_card(locks[0]) if not many else None
+        if same is not None:
+            out["same_as"], sol = same
+            core: List[str] = []
+        else:
+            names = []
+            for lock in locks:
+                paths, configs = self._lock_bans(lock)
+                self.solver.add_group(str(lock), paths=paths, configs=configs)
+                names.append(str(lock))
+            sol, core = self.solver.solve(groups=names)
+            if not sol.satisfiable:
+                # Shrink the core to a minimal one: drop every lock without which it stays unsatisfiable.
+                core = list(core) or list(names)
+                for name in list(core):
+                    rest = [c for c in core if c != name]
+                    if rest and not self.solver.solve(groups=rest)[0].satisfiable:
+                        core = rest
+                by_name = dict(zip(names, texts))
+                core_texts = [by_name[c] for c in core]
+                if len(core) == 1:
+                    answer = (f"No combination of {step}'s candidate routes, delays and sector options meets the "
+                              f"requirement: {core_texts[0]}.")
+                else:
+                    answer = (f"No combination of {step}'s candidate routes, delays and sector options meets these "
+                              f"requirements together: " + " and ".join(core_texts) + ".")
+                return out | {"feasible": False, "core": core, "core_texts": core_texts, "answer": answer}
+        if not sol.satisfiable:          # the card's own answer: no candidate meets the lock
+            text = self.lock_text(locks[0])
+            return out | {"feasible": False, "core": [str(locks[0])], "core_texts": [text],
+                          "answer": (f"No combination of {step}'s candidate routes, delays and sector options meets "
+                                     f"the requirement: {text}.")}
+        label = "the answer with your requirements" if many else "the answer with your requirement"
+        deciding, verdict = self._contrast_text(label, sol, chosen_name=f"{step}'s choice")
+        recorded = self._answer_of(self.chosen_paths, self.chosen_config)
+        other = self._answer_of(sol.chosen_paths, sol.chosen_config)
         changes = self._differences(sol)
-        answer = ("With these requirements the step's best answer: " + ("; ".join(changes) if changes else
-                  "is the same choice as recorded") + ". " + text)
-        return {"iteration": self.iteration, "question": question, "answer": answer, "feasible": True,
-                "costs": sol.costs, "chosen_paths": sol.chosen_paths, "chosen_config": sol.chosen_config,
-                "ladder": self._ladder(self.factual, sol), "scope": SCOPE}
+        answer = verdict + (" In that answer " + "; ".join(changes) + "." if changes else "")
+        return out | {"verdict": verdict, "deciding_level": deciding, "answer": answer,
+                      "answers": {"recorded": recorded, "what_if": other}, "table": self._table(recorded, other),
+                      "costs": sol.costs, "chosen_paths": sol.chosen_paths, "chosen_config": sol.chosen_config,
+                      "ladder": self._ladder(self.factual, sol)}

@@ -283,6 +283,8 @@ class _ExplainingSession:
                 return ex.tie_check()
             if question == "alternatives":
                 return ex.alternatives()
+            if question == "menu":
+                return ex.what_if_menu()
         raise ValueError(f"unknown question: {question}")
 
     def what_if(self, iteration: int, locks: List[str]) -> Dict[str, Any]:
