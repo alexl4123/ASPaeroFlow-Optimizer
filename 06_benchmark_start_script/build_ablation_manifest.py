@@ -188,7 +188,7 @@ def verify_system_keys() -> int:
                  "experiment_asp_aero_flow_nr_nd", "experiment_asp_aero_flow_nr_d",
                  "experiment_asp_aero_flow_r_nd", "experiment_casa",
                  "experiment_route_delay", "experiment_route", "experiment_delay",
-                 "experiment_mip"):
+                 "experiment_mip", "experiment_sequential"):
         setattr(args, name, 0)
     built = [s["key"] for s in module.build_system_config(here, Path("/tmp"), "verify", args)]
     expected = all27_systems() + list(NAMED2_SYSTEMS)
