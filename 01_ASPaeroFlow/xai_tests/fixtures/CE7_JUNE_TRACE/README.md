@@ -6,3 +6,6 @@ Reduced June study trace: CENTRAL-EUROPE-7x7, 13 kept steps (the replay of the J
 of reasons.lp + reasons_text.lp on them.
 `keep_contrasts.jsonl` was computed by xai/keep.py from the full lp files of the June trace (the reduced ones here
 cannot be solved); the row reasons of test_row_reasons.py read it.
+`CENTRAL-EUROPE-7x7/` holds the instance's `flights.csv`, `airplane_flight_assignment.csv` and `airports.csv`
+(copied unchanged), what xai/plan.py needs besides the trace; `run.json`'s `data_dir` points outside the repository,
+so plan.py finds them as the sibling folder of that name.
