@@ -244,29 +244,49 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
     """Return the list with per‑solver metadata."""
     system_config = []
 
+    def aspaeroflow_cmd(key: str) -> List[str]:
+        """01_ASPaeroFlow's settings, with the results folder and W&B suffix named after `key`.
+
+        One list for both systems that use it, so 0_Sequential cannot drift from 01_ASPaeroFlow:
+        it is 01_ASPaeroFlow plus --sequential-execution=true and nothing else.
+        """
+        return [
+            "--max-explored-vertices=3",
+            "--max-delay-per-iteration=5",
+            "--capacity-management-enabled=True",
+            "--number-capacity-management-configs=2",
+            "--sector-capacity-factor=6",
+            "--convex-sectors=0",
+            f"--results-format={args.results_format}",
+            f"--results-root={output_path}/solver_outputs/{key}",
+            f"--wandb-enabled={args.wandb_enabled}",
+            f"--wandb-experiment-name-suffix=_{key}",
+            f"--wandb-experiment-name-prefix={experiment_name}_",
+            "--wandb-entity=thinklex",
+            "--minimize-number-sectors=false",
+            "--max-number-navpoints-per-sector=1000000",
+            "--max-number-sectors=1000000",
+        ]
+
     if args.experiment_asp_aero_flow != 0:
         system_config.append({
             "key": "01_ASPaeroFlow",
             "script": base_dir / "../01_ASPaeroFlow/main.py",
             "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
             "verbosity": None,
-            "cmd": [
-                "--max-explored-vertices=3",
-                "--max-delay-per-iteration=5",
-                "--capacity-management-enabled=True",
-                "--number-capacity-management-configs=2",
-                "--sector-capacity-factor=6",
-                "--convex-sectors=0",
-                f"--results-format={args.results_format}",
-                f"--results-root={output_path}/solver_outputs/01_ASPaeroFlow",
-                f"--wandb-enabled={args.wandb_enabled}",
-                "--wandb-experiment-name-suffix=_01_ASPaeroFlow",
-                f"--wandb-experiment-name-prefix={experiment_name}_",
-                "--wandb-entity=thinklex",
-                "--minimize-number-sectors=false",
-                "--max-number-navpoints-per-sector=1000000",
-                "--max-number-sectors=1000000",
-                ]
+            "cmd": aspaeroflow_cmd("01_ASPaeroFlow"),
+        })
+
+    # 0_Sequential (the V1/ATMOS column of that name): 01_ASPaeroFlow's command line plus
+    # --sequential-execution=true. OPT-IN (--experiment-sequential, default 0), so no command line
+    # and no worklist that existed before it changes.
+    if args.experiment_sequential != 0:
+        system_config.append({
+            "key": "0_Sequential",
+            "script": base_dir / "../01_ASPaeroFlow/main.py",
+            "encoding": base_dir / "../01_ASPaeroFlow/encoding.lp",
+            "verbosity": None,
+            "cmd": aspaeroflow_cmd("0_Sequential") + ["--sequential-execution=true"],
         })
 
     if args.experiment_asp_aero_flow_no_convex != 0:
@@ -442,6 +462,10 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
         })
 
 
+    # 03A_CASA has its own results folder since 2026-09-29. Until then it wrote into
+    # solver_outputs/03_DELAY, the folder of 03_DELAY, and merge_benchmark_shards.py kept only the
+    # last matrix per instance, so the V2 campaign (818136e) lost 03_DELAY's matrices wherever
+    # both systems finished.
     if args.experiment_casa != 0:
         system_config.append({
             "key": "03A_CASA",
@@ -454,7 +478,7 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                 "--capacity-management-enabled=False",
                 "--number-capacity-management-configs=1",
                 f"--results-format={args.results_format}",
-                f"--results-root={output_path}/solver_outputs/03_DELAY",
+                f"--results-root={output_path}/solver_outputs/03A_CASA",
                 f"--wandb-enabled={args.wandb_enabled}",
                 "--wandb-experiment-name-suffix=_03_Delay",
                 f"--wandb-experiment-name-prefix={experiment_name}_",
@@ -536,6 +560,34 @@ def build_system_config(base_dir: Path, output_path:Path, experiment_name:str, a
                     })
                     
                     asp_index += 1
+
+    # getattr: build_ablation_manifest.py --verify-system-keys passes a hand-built namespace
+    if getattr(args, "experiment_initial_full_sectorization", 0) != 0:
+        # Initial full sectorization (--regulation-dynamic-sectorization=3): the full sectorization
+        # before 2026-10-05, over the sectors open at t=0 only. Label "si"; the indices continue
+        # after the 27 keys above (5..31), so both sets can run in one campaign.
+        si_index = 32
+        for ground_delay_regulation, ground_delay_flag in ((0, "nd"), (1, "dp"), (2, "d")):
+            for rerouting_regulation, rerouting_flag in ((0, "nr"), (1, "rp"), (2, "r")):
+                experiment_key = f"{si_index}_ASP_{rerouting_flag}_{ground_delay_flag}_si"
+                system_config.append({
+                    "key": experiment_key,
+                    "script": base_dir / "../02_ASP/main.py",
+                    "encoding": base_dir / "../02_ASP/encoding.lp",
+                    "verbosity": None,
+                    "cmd": [
+                        f"--results-format={args.results_format}",
+                        f"--results-root={output_path}/solver_outputs/" + experiment_key,
+                        f"--wandb-enabled={args.wandb_enabled}",
+                        "--wandb-experiment-name-suffix=_" + experiment_key,
+                        f"--wandb-experiment-name-prefix={experiment_name}_",
+                        "--wandb-entity=thinklex",
+                        "--regulation-ground-delay-active=" + str(ground_delay_regulation),
+                        "--regulation-rerouting-active=" + str(rerouting_regulation),
+                        "--regulation-dynamic-sectorization=3",
+                    ]
+                })
+                si_index += 1
 
 
     if args.experiment_asp_rp_dp_sp != 0:
@@ -838,6 +890,42 @@ RESULT_METRICS: List[str] = [
 ]
 
 
+def metric_rows(instance_names: List[str], system_names: List[str], sol_value: Dict[str, Dict],
+                metric: str) -> Tuple[List[str], List[List]]:
+    """Header and rows of one metric CSV.
+
+    The columns are the systems that report `metric` on at least one instance, in system_names
+    order, and a system without a value on an instance gets -1 there. Every row therefore has one
+    field per column, and a value always sits under its own system's name.
+
+    Until 2026-09-29 the header was built in order of FIRST APPEARANCE while the instances were
+    walked, and a row skipped every system not yet in the header. A system that reported the
+    metric only from the second instance on was appended at the end of the header, so the rows
+    before that point were short and later values sat under the wrong column name (8 of 325
+    problems of the V2 campaign, all USA-EAST-COAST-20x10 at T_gran = 1). Where every reporting
+    system appears on the first instance, which covers every problem the defect did not touch,
+    the output of this function is identical to the old one.
+    """
+    reporting = [s for s in system_names
+                 if any(metric in sol_value[inst][s][-1] for inst in instance_names)]
+    rows = []
+    for inst in instance_names:
+        row = [inst]
+        for s in reporting:
+            final = sol_value[inst][s][-1]
+            row.append(final[metric] if metric in final else -1)
+        rows.append(row)
+    return ["Instance"] + reporting, rows
+
+
+def write_metric_csvs(output_path: Path, instance_names: List[str], system_names: List[str],
+                      sol_value: Dict[str, Dict]) -> None:
+    """The per-metric CSVs of one problem directory (see metric_rows)."""
+    for metric in RESULT_METRICS:
+        head, rows = metric_rows(instance_names, system_names, sol_value, metric)
+        write_csv(output_path / f"{metric.lower()}.csv", head, rows)
+
+
 def write_result_csvs(
     output_path: Path,
     instance_names: List[str],
@@ -861,39 +949,9 @@ def write_result_csvs(
     def dicts_to_rows(container: Dict[str, Dict[str, float | int]]) -> List[List]:
         return [[inst] + [container[inst][name] for name in system_names] for inst in instance_names]
 
-    def sol_value_to_rows(container, metric):
-
-        own_heads = {}
-        own_heads["Instance"] = 1
-
-        output_list = []
-        for inst in instance_names:
-            tmp_list = [inst]
-
-            for system_name in system_names:
-
-                final_sol_dict = container[inst][system_name][-1]
-
-                if metric in final_sol_dict:
-                    if system_name not in own_heads:
-                        own_heads[system_name] = 1
-
-                    tmp_list.append(final_sol_dict[metric])
-
-                else:
-                    if system_name in own_heads:
-                        tmp_list.append(-1)
-
-            output_list.append(tmp_list)
-
-        return own_heads, output_list
-
     write_csv(output_path / "execution_time.csv", header, dicts_to_rows(exec_time))
     write_csv(output_path / "ram_usage.csv", header, dicts_to_rows(ram_usage))
-
-    for metric in RESULT_METRICS:
-        metric_values = sol_value_to_rows(sol_value, metric)
-        write_csv(output_path / f"{metric.lower()}.csv", metric_values[0], metric_values[1])
+    write_metric_csvs(output_path, instance_names, system_names, sol_value)
 
     for inst in instance_names:
         for system_name in system_names:
@@ -959,6 +1017,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "The CSVs in --output-dir are the authoritative results either way.")
 
     parser.add_argument("--experiment-asp-aero-flow", type=int, default=1, help="true (val!=0), false (val=0)")
+    # OPT-IN, unlike every flag around it: 0_Sequential is not part of any campaign run before it
+    # existed, so it must not appear in any command line or worklist unless asked for.
+    parser.add_argument("--experiment-sequential", type=int, default=0,
+                        help="0_Sequential = 01_ASPaeroFlow + --sequential-execution=true. "
+                             "Default 0 (off); 1 enables it.")
     parser.add_argument("--experiment-asp-aero-flow-no-convex", type=int, default=1, help="true (val!=0), false (val=0)")
     parser.add_argument("--experiment-asp-aero-flow-nr-nd", type=int, default=1, help="true (val!=0), false (val=0)")
     parser.add_argument("--experiment-asp-aero-flow-nr-d", type=int, default=1, help="true (val!=0), false (val=0)")
@@ -972,6 +1035,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--experiment-mip", type=int, default=1, help="true (val!=0), false (val=0)")
 
     parser.add_argument("--experiment-all-asp-variants", type=int, default=1, help="true (val!=0), false (val=0)")
+    parser.add_argument("--experiment-initial-full-sectorization", type=int, default=0,
+                        help="the 9 exact-ASP variants with initial full sectorization (label si, "
+                             "--regulation-dynamic-sectorization=3): true (val!=0), false (val=0)")
     parser.add_argument("--experiment-asp-rp-dp-sp", type=int, default=1, help="true (val!=0), false (val=0)")
     parser.add_argument("--experiment-asp-rp-d-sp", type=int, default=1, help="true (val!=0), false (val=0)")
 

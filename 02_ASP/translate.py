@@ -273,9 +273,10 @@ class TranslateCSVtoLogicProgram:
                                       broadcast that encoding.lp withholds from NAV;
           dynamic allocation (1, 2):  navpoint_sector_given(NAV,SEC,T), the reference RECONFIG
                                       counts departures from.
-        Full dynamic allocation (2) also gets navpoint_sector_time_varying and
+        Full dynamic allocation (2, 3) also gets navpoint_sector_time_varying and
         navpoint_sector_candidate(SEC) for every sector that has a navpoint at any timestep, which
         includes the sectors the schedule opens after T=0, so the schedule stays a possible choice.
+        Only initial full allocation (3) reads them; full allocation (2) may use every navpoint.
         Restricted dynamic allocation (1) gets the split options of each distinct partition,
         navpoint_sector_restricted_sector_allocation_from(SEC,DEC,NAV,SEC1,FROM), and
         restricted_epoch_at(FROM,T) naming the partition in force at T; the time-independent
@@ -294,7 +295,7 @@ class TranslateCSVtoLogicProgram:
             for t in range(1, horizon + 1):
                 instance.append(f"{predicate}({navaid},{allocation[navaid, t]},{t}).")
 
-        if regulation_dynamic_sectorization_active == 2:
+        if regulation_dynamic_sectorization_active in (2, 3):
             instance.append("navpoint_sector_time_varying.")
             for sector in sorted(set(allocation[listed, :].ravel().tolist())):
                 instance.append(f"navpoint_sector_candidate({sector}).")
@@ -730,6 +731,14 @@ class TranslateCSVtoLogicProgram:
             regulation_instance.append("regulation_restricted_dynamic_sector_allocation.")
         elif regulation_dynamic_sectorization_active == 2:
             regulation_instance.append("regulation_dynamic_sector_allocation.")
+        elif regulation_dynamic_sectorization_active == 3:
+            # Initial full allocation: full allocation over the sectors open at t=0 only (the full
+            # allocation before 2026-10-05), kept for comparison with earlier results.
+            regulation_instance.append("regulation_dynamic_sector_allocation.")
+            regulation_instance.append("regulation_initial_sector_domain.")
+        else:
+            raise ValueError(f"regulation_dynamic_sectorization_active must be 0..3, "
+                             f"got {regulation_dynamic_sectorization_active}")
 
 
         instance = graph_instance + flights_instance + sectors_instance + airplanes_instance +\

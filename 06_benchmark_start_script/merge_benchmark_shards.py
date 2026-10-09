@@ -15,11 +15,10 @@ Same files, same paths, same rows in the same order, same columns in the same or
 
 WHY THIS CALLS THE WRITER INSTEAD OF WRITING CSVs
 
-start_benchmark_caller.py's sol_value_to_rows() discovers each metric CSV's header WHILE it walks
-the instances: a system that does not report OVERLOAD on the first instance is absent from that
-header, and if it reports OVERLOAD on a later instance the column appears from there on, so rows
-can differ in length. That is the current output, quirk included. Re-implementing the writer would
-mean re-implementing the quirk and hoping; this imports write_result_csvs() and calls it, so
+Until 2026-09-29, start_benchmark_caller.py's sol_value_to_rows() discovered each metric CSV's
+header WHILE it walked the instances, so rows could differ in length and values could land under the
+wrong column (fixed in metric_rows(), see there). Re-implementing the writer would mean
+re-implementing its rules and hoping; this imports write_result_csvs() and calls it, so
 "identical" is structural rather than a matter of care.
 
 WHAT A SHARD CONTAINS
@@ -341,6 +340,29 @@ def main() -> int:
     return 0
 
 
+_HARVESTED: Dict[Path, Dict[str, List[str]]] = {}
+
+
+def harvest_provenance(units_root: Path) -> Dict[str, List[str]]:
+    """Settings the tasks recorded, over every task file of the campaign, read once per merge.
+
+    Where the tasks disagree -- a resubmission with a different TIME_LIMIT, say -- every value is
+    listed, because silently reporting one of them would misdescribe half the numbers in the
+    CSVs. The values do not depend on the problem, so they are read once and reused: reading all
+    task files again for every problem made a full merge of the V2 campaign (325 problems x ~81,000
+    task files) take hours.
+    """
+    if units_root not in _HARVESTED:
+        harvested: Dict[str, List[str]] = {}
+        for task_file in sorted((units_root / "provenance").glob("task_*.txt")):
+            for line in task_file.read_text(errors="replace").splitlines():
+                key, _, value = line.partition("=")
+                if key in PROVENANCE_KEYS and value not in harvested.setdefault(key, []):
+                    harvested[key].append(value)
+        _HARVESTED[units_root] = harvested
+    return _HARVESTED[units_root]
+
+
 def write_provenance(folder_root: Path, units_root: Path, problem: str, row: dict,
                      n_instances: int, systems: List[str], gaps: List[str]) -> None:
     """The per-problem provenance file the monolithic form writes, with the same keys.
@@ -351,15 +373,7 @@ def write_provenance(folder_root: Path, units_root: Path, problem: str, row: dic
     things downstream read them; benchmark_progress.py, for one, looks for "MIP ONLY" in
     experiment_family.
     """
-    # Settings the tasks recorded. Where the tasks disagree -- a resubmission with a different
-    # TIME_LIMIT, say -- every value is listed, because silently reporting one of them would
-    # misdescribe half the numbers in the CSVs.
-    harvested: Dict[str, List[str]] = {}
-    for task_file in sorted((units_root / "provenance").glob("task_*.txt")):
-        for line in task_file.read_text(errors="replace").splitlines():
-            key, _, value = line.partition("=")
-            if key in PROVENANCE_KEYS and value not in harvested.setdefault(key, []):
-                harvested[key].append(value)
+    harvested = harvest_provenance(units_root)
 
     def recorded(key: str) -> str:
         values = harvested.get(key) or ["unknown"]

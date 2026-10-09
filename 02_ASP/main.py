@@ -32,6 +32,7 @@ from clingo_options_bootstrap import (
     describe as describe_solver_options,
     options_from_args as solver_options_from_args,
 )
+import pareto_step
 
 
 AFFIRMATIVE: Final[set[str]] = {"yes", "y"}
@@ -194,7 +195,10 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
     parser.add_argument("--regulation-rerouting-active", type=int, default=str(C("regulation-rerouting-active", 2)),
                         help="0=no rerouting, 1=restricted rerouting, 2=full dynamic rerouting")
     parser.add_argument("--regulation-dynamic-sectorization", type=int, default=str(C("regulation-dynamic-sectorization", 2)),
-                        help="0=no dynamic sectorization, 1=restricted dynamic sectorization, 2=full dynamic sectorization.")
+                        choices=[0, 1, 2, 3],
+                        help="0=no dynamic sectorization, 1=restricted dynamic sectorization, 2=full dynamic "
+                             "sectorization (every non-airport navpoint may name a sector), 3=initial full dynamic "
+                             "sectorization (only the sectors open at t=0; the full sectorization before 2026-10-05).")
     add_arrival_delay_metric_argument(parser, default=C("arrival-delay-metric", None))
 
     parser.add_argument("--allow-overloads", type=str, default=str(C("allow-overloads", "false")),
@@ -224,6 +228,32 @@ def _build_arg_parser(cfg: Dict) -> argparse.ArgumentParser:
                              "limit (e.g. 1770 for 1800) so the run stops before it is killed. "
                              "Translation and grounding cannot be interrupted. Off by default: "
                              "without it the solve is the blocking call it has always been.")
+
+    # One epsilon-constraint step of an exact (delay, sectors) Pareto front; see pareto_step.py.
+    # All CLI-only and all off by default: without them the program, the search and the result
+    # line are exactly what they have always been. With any of the three, the result line carries
+    # PARETO-OBJECTIVE-ORDER, PARETO-DELAY-BOUND and PARETO-FIXED-HORIZON.
+    parser.add_argument("--objective-order", type=str, default=None,
+                        choices=list(pareto_step.OBJECTIVE_ORDERS),
+                        help="'delay-first' is the encoding's own order (arrival delay @9 above "
+                             "sector number @8). 'sectors-first' swaps the two, so sectors are "
+                             "minimised before delay; overload stays on top. Refuses to run if "
+                             "the encoding does not have exactly those two weak constraints at "
+                             "@9 and @8. Default: the encoding as it is.")
+    parser.add_argument("--delay-bound", type=int, default=None, metavar="K",
+                        help="Add the hard constraint total arrival delay <= K (the sum the "
+                             "arrival-delay objective level minimises, under the chosen "
+                             "--arrival-delay-metric; K may be negative under 'signed'). "
+                             "Implies --fixed-horizon.")
+    parser.add_argument("--fixed-horizon", action="store_true",
+                        help="Solve at --max-time only: do not re-solve with a longer horizon when "
+                             "the model still has overload under full ground delay. The result "
+                             "line then reports that overload.")
+    parser.add_argument("--program-stats", type=str, default="false",
+                        help="true/false: add the ground program's size (PROGRAM-ATOMS, "
+                             "PROGRAM-RULES, PROGRAM-BODIES, PROGRAM-VARS, PROGRAM-CONSTRAINTS), "
+                             "the process's PEAK-RSS-MB and CLINGO-VERSION to the final result "
+                             "line. Off by default.")
 
     return parser
 
@@ -305,6 +335,11 @@ def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
     #args.regulation_ground_delay_active = _str2bool(args.regulation_ground_delay_active)
     #args.regulation_rerouting_active = _str2bool(args.regulation_rerouting_active)
     args.allow_overloads = _str2bool(args.allow_overloads)
+    args.program_stats = _str2bool(args.program_stats)
+    # A bound below the least delay the horizon allows forces overload up, and the re-solve loop
+    # would then extend the horizon until its theorem bound: a bounded step is a fixed-horizon step.
+    if args.delay_bound is not None:
+        args.fixed_horizon = True
 
     if args.solve_deadline is not None and not 0 < args.solve_deadline < float("inf"):
         parser.error(f"--solve-deadline must be a positive number of seconds, "
@@ -480,7 +515,8 @@ def _deadline_fields(model, solver, args, process_start: float, last_max_time: i
       - the loop applies, and the last search was stopped with an incumbent that still has
         overloads, so whether it would have ended with overloads is unknown.
     """
-    loop_applies = args.regulation_ground_delay_active == 2 and args.allow_overloads is False
+    loop_applies = (args.regulation_ground_delay_active == 2 and args.allow_overloads is False
+                    and not getattr(args, "fixed_horizon", False))
     from_last_solve = model is not None and model is solver.final_model
     horizon_final = (not loop_applies) or (
         from_last_solve and not deadline_cut
@@ -494,6 +530,22 @@ def _deadline_fields(model, solver, args, process_start: float, last_max_time: i
         "SOLVER-MAX-TIME": last_max_time,
         "SOLVER-HORIZON-FINAL": bool(horizon_final),
     }
+
+
+def _step_fields(args, solver) -> Dict[str, object]:
+    """The keys --objective-order/--delay-bound/--fixed-horizon and --program-stats add to the final
+    result line. Empty -- so the line is unchanged -- when none of them was given."""
+    fields: Dict[str, object] = {}
+    if pareto_step.active(args):
+        fields.update(pareto_step.result_fields(args))
+    if getattr(args, "program_stats", False):
+        import clingo
+        import resource
+        fields.update(getattr(solver, "program_stats", None) or {})
+        # ru_maxrss is in KiB on Linux: the peak of this process, grounding and search included.
+        fields["PEAK-RSS-MB"] = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1)
+        fields["CLINGO-VERSION"] = clingo.__version__
+    return fields
 
 
 class ModelData:
@@ -627,6 +679,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         instance_asp_atoms = "\n".join(asp_instance)
 
         encoding = open(encoding_path, "r").read()
+        # --objective-order / --delay-bound; unchanged when neither is given.
+        encoding = pareto_step.apply(encoding, args.objective_order, args.delay_bound)
         # Select the arrival-delay metric the encoding should score.
         encoding += asp_metric_fact(arrival_delay_metric)
 
@@ -648,6 +702,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 f"% regulations: ground-delay={regulation_ground_delay_active} "
                 f"rerouting={regulation_rerouting_active} "
                 f"dynamic-sectorization={regulation_dynamic_sectorization_active}\n"
+                + pareto_step.export_header(args) +
                 f"% Self-contained: run with `clingo {args.export_program_lp.name}`.\n\n")
             args.export_program_lp.write_text(header + encoding + "\n" + instance_asp_atoms + "\n",
                                               encoding="utf-8")
@@ -663,7 +718,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                                report_solver_stats=args.solver_stats,
                                deadline=deadline_at,
                                evaluation_window=evaluation_window,
-                               arrival_delay_metric=arrival_delay_metric)
+                               arrival_delay_metric=arrival_delay_metric,
+                               report_program_stats=args.program_stats)
         model = solver.solve()
 
         if deadline_at is not None:
@@ -675,6 +731,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             if model is None and solver.stopped_at_deadline:
                 # Stopped before a first model at this horizon. Whatever there is to report --
                 # the model of a shorter horizon, or only the bound -- is reported after the loop.
+                break
+            if model is None and pareto_step.active(args):
+                # A Pareto step whose search ended without a model: the bound K is unsatisfiable.
+                # That is a result the front needs, so it is reported after the loop as well.
                 break
 
         if model is None:
@@ -698,7 +758,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         #quit()
         if model.get_total_overload() > 0 and allow_overloads is False:
-            if regulation_ground_delay_active == 2:
+            if regulation_ground_delay_active == 2 and not args.fixed_horizon:
                 if deadline_at is not None:
                     # Kept, so that a deadline arriving before the longer horizon produces a model
                     # still has something to report.
@@ -730,7 +790,12 @@ def main(argv: Optional[List[str]] = None) -> None:
                     "COMPUTATION-FINISHED": bool(last_solver.search_exhausted)}
             line.update(last_solver.solve_summary or {})
             line.update(fields)
+            line.update(_step_fields(args, last_solver))
             print(json.dumps(line), flush=True)
+            if pareto_step.active(args) and last_solver.search_exhausted:
+                raise RuntimeError(
+                    "the program is unsatisfiable: the search was exhausted without a model "
+                    f"(delay bound {args.delay_bound}).")
             raise RuntimeError(
                 "the solver returned no model before the solve deadline of "
                 f"{args.solve_deadline} s after process start (solver options: "
@@ -744,6 +809,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             if last_solver.solve_summary:
                 model.set_solver_summary(last_solver.solve_summary)
         model.set_solver_summary(fields)
+        model.set_solver_summary(_step_fields(args, last_solver))
         print(model.get_model_optimization_string(), flush=True)
 
     if verbosity > 0:
@@ -824,6 +890,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     # "finished" whether or not the optimum had been proven, and every line a timeout could see
     # said False. Do not reinstate the assignment.
     if deadline_at is None:          # with a deadline it was printed straight after the search
+        model.set_solver_summary(_step_fields(args, solver))
         print(model.get_model_optimization_string())
     #np.savetxt(sys.stdout, converted_instance_matrix, delimiter=",", fmt="%i") 
 
