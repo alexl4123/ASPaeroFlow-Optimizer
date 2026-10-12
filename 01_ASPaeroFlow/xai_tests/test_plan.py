@@ -100,6 +100,23 @@ class Plan(unittest.TestCase):
         self.assertEqual({c["name"]: c["ok"] for c in plan["checks"]}["chain"], True)
         self.assertEqual(plan["kpis"]["arrival_delay"]["final"], 340)
 
+    def test_upto_zero_is_the_filed_plan(self):
+        plan = build_plan(TRACE, upto=0)
+        self.assertEqual(plan["run"]["kept_steps"], 0)
+        self.assertFalse(any(f["changed"] for f in plan["flights"]))
+        self.assertEqual(plan["kpis"]["arrival_delay"]["final"], 0)
+        self.assertTrue(all(c["ok"] for c in plan["checks"]))
+
+    def test_upto_applies_only_the_steps_up_to_n(self):
+        records = [json.loads(l) for l in (TRACE / "trace.jsonl").read_text().splitlines() if l.strip()]
+        for n in range(0, max(r["iteration"] for r in records) + 1):
+            plan = build_plan(TRACE, upto=n)
+            moved = {int(f) for r in records if r["accepted"] and r["iteration"] <= n for f in r["flight_changes"]}
+            self.assertEqual({f["flight"] for f in plan["flights"] if f["moved_by"]}, moved, n)
+            self.assertTrue(all(m["iteration"] <= n for f in plan["flights"] for m in f["moved_by"]), n)
+            self.assertTrue(all(c["ok"] for c in plan["checks"]), (n, [c for c in plan["checks"] if not c["ok"]]))
+        self.assertEqual(build_plan(TRACE, upto=999)["kpis"], self.plan["kpis"])
+
     def test_lp_file_is_valid_asp(self):
         with tempfile.TemporaryDirectory() as tmp:
             _, lp = write_plan(TRACE, out_dir=Path(tmp))

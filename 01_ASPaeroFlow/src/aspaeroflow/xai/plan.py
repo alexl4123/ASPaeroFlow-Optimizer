@@ -70,11 +70,14 @@ def _check(name: str, violations: List[Any]) -> Dict[str, Any]:
     return {"name": name, "ok": not violations, "count": len(violations), "violations": violations[:MAX_LISTED]}
 
 
-def build_plan(folder: Path, data_dir: Optional[Path] = None) -> Dict[str, Any]:
-    return _build(folder, data_dir)[0]
+def build_plan(folder: Path, data_dir: Optional[Path] = None, upto: Optional[int] = None) -> Dict[str, Any]:
+    """The plan after the run, or with `upto=n` the plan as of step n: only the kept steps up to n are applied (step 0
+    is the filed plan), and the key figures are those of the last kept step up to n."""
+    return _build(folder, data_dir, upto)[0]
 
 
-def _build(folder: Path, data_dir: Optional[Path]) -> Tuple[Dict[str, Any], Dict[int, Trajectory], Dict[int, Trajectory]]:
+def _build(folder: Path, data_dir: Optional[Path],
+           upto: Optional[int] = None) -> Tuple[Dict[str, Any], Dict[int, Trajectory], Dict[int, Trajectory]]:
     """The plan and the filed and final trajectories (those go to plan.lp only: in plan.json they would be large)."""
     folder = Path(folder)
     trace = TraceReader(folder)
@@ -99,6 +102,8 @@ def _build(folder: Path, data_dir: Optional[Path]) -> Tuple[Dict[str, Any], Dict
     chain: List[Dict[str, Any]] = []
     last_objectives = run.get("initial_objectives") or {}
     for record in trace:
+        if upto is not None and record["iteration"] > upto:
+            break
         if not record.get("accepted"):
             continue
         it = record["iteration"]
@@ -187,7 +192,7 @@ def _build(folder: Path, data_dir: Optional[Path]) -> Tuple[Dict[str, Any], Dict
     plan = {"run": {"trace": str(folder), "instance": str(instance), "timestep_granularity": granularity,
                     "minutes_per_step": mps, "steps_per_day": per_day, "arrival_delay_metric": metric,
                     "flight_duration_rule": run.get("flight_duration_rule"), "number_flights": len(filed),
-                    "kept_steps": len(steps)},
+                    "kept_steps": len(steps), "upto": upto},
             "kpis": kpis, "flights": flights, "steps": steps, "turnarounds": turnarounds,
             "checks": [_check("chain", chain), _check("rotation", rotation),
                        _check("no_earlier_departure", earlier), _check("kpis", kpi_check)]}
