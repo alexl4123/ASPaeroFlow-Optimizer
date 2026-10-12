@@ -357,10 +357,9 @@ class IterationExplainer:
         rows, seen = [], False
         for _, name in LEVELS:
             va, vb = a.costs.get(name, 0), b.costs.get(name, 0)
-            if name == "delay":                 # K24: the arrival delay in minutes, numbers stay comparable
+            if name == "delay":                 # K24: the arrival delay in minutes (the interface writes h and min)
                 va, vb = minutes(va, self.g), minutes(vb, self.g)
-            rows.append({"level": name, "text": LEVEL_TEXT[name] + (" (min)" if name == "delay" else ""),
-                         "chosen": va, "alternative": vb,
+            rows.append({"level": name, "text": LEVEL_TEXT[name], "chosen": va, "alternative": vb,
                          "difference": vb - va, "decides": name == deciding, "below": seen})
             if name == deciding:
                 seen = True
