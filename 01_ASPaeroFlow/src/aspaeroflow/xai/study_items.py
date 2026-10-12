@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 
 from .keep import read_keep
 from .plan import build_plan, clock
+from .time_words import minutes_text
 
 #: the minimised criteria in priority order (encoding.lp: @10 overload, @9 arrival delay, @8 open sectors, @7 changed)
 CRITERIA = [("overload", "total overload"), ("delay", "arrival delay"), ("sectors", "open sectors"),
@@ -66,7 +67,7 @@ class Run:
         self._rows: Dict[int, Dict[str, Dict[str, Any]]] = {}
 
     def time(self, t: int) -> str:
-        return f"time {t} ({clock(t, self.mps, self.per_day)})"
+        return f"time step {t} ({clock(t, self.mps, self.per_day)})"
 
     def rows(self, n: int) -> Dict[str, Dict[str, Any]]:
         if n not in self._rows:
@@ -166,7 +167,7 @@ def claim_items(run: Run) -> List[Dict[str, Any]]:
             if len(worse) != 1 or any(v < 0 for v in d.values()):
                 continue
             label = dict(CRITERIA)[worse[0]]
-            unit = (f"{d[worse[0]] * run.mps:g} more minutes of" if worse[0] == "delay" else f"{d[worse[0]]} more")
+            unit = (f"{minutes_text(int(d[worse[0]] * run.mps))} more" if worse[0] == "delay" else f"{d[worse[0]]} more")
             same = [lbl for k, lbl in CRITERIA if k != worse[0] and k in d]
             equal = same[0] if len(same) == 1 else ", ".join(same[:-1]) + " and " + same[-1]
             out.append({

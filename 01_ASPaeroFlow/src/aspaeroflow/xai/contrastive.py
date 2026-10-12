@@ -20,6 +20,7 @@ import clingo
 
 from .reasons import explain_step, step_context
 from .subproblem import LEVELS, LEVEL_TEXT, amount, CandidatePath, Solution, Subproblem, SubproblemSolver, compare
+from .time_words import duration_text, granularity, minutes, minutes_text, time_text
 from .trace import TraceReader
 
 PathSet = Set[Tuple[int, int]]
@@ -34,9 +35,6 @@ SCOPE = ("Scope: this compares answers of one ASPaeroFlow step only - the candid
 
 # ---------------------------------------------------------------------------- user locks
 
-def _periods(n: int) -> str:
-    """A duration in the interface's words ("step N" is the optimizer step, a duration is "N time periods")."""
-    return "1 time period" if n == 1 else f"{n} time periods"
 
 
 @dataclass
@@ -80,6 +78,7 @@ class IterationExplainer:
 
     def __init__(self, trace: TraceReader, iteration: int, k: int = 0):
         self.trace = trace
+        self.g = granularity(trace.run)       # time steps per hour (K24: times and durations in clock words)
         self.iteration = iteration
         self.record = trace.iterations[iteration]
         self.sub_record = self.record["subproblems"][k]
@@ -309,27 +308,35 @@ class IterationExplainer:
     def _route(self, route: Sequence[Any]) -> str:
         return "-".join(self._nav(n) for n in route)
 
+    def _dur(self, steps: int) -> str:
+        """A shift of time steps as an unsigned duration ("15 min", "1 h 15 min"); the caller says later or earlier."""
+        return minutes_text(minutes(steps, self.g))
+
+    def _level_value(self, level: str, value: int) -> str:
+        """A cost of one level as text: the arrival delay (a sum of time steps, signed) in minutes, others as numbers."""
+        return duration_text(value, self.g) if level == "delay" else str(value)
+
     def change_clause(self, flight: int, index: int) -> str:
         """What a candidate path does to the flight compared with its trajectory before the step, without the
-        flight's name: "keeps its trajectory", "departs 1 time period later, flies 51-22-15-53 instead of ..."."""
+        flight's name: "keeps its trajectory", "departs 15 min later, flies ABGUS-BAKOL-... instead of ..."."""
         d = self.describe_path(flight, index)
         if "departure_shift" not in d:      # trajectory before the step not recorded: say only what the path is
-            return "flies " + self._route(d["route"]) + f" from time {d['start']}"
+            return "flies " + self._route(d["route"]) + f" from {time_text(d['start'], self.g)}"
         if d.get("unchanged"):
             return "keeps its trajectory"
         parts = []
         shift = d.get("departure_shift", 0)
         if shift > 0:
-            parts.append(f"departs {_periods(shift)} later")
+            parts.append(f"departs {self._dur(shift)} later")
         elif shift < 0:
-            parts.append(f"departs {_periods(-shift)} earlier")
+            parts.append(f"departs {self._dur(shift)} earlier")
         if d.get("rerouted"):
             parts.append("flies " + self._route(d["route"]) + " instead of " + self._route(d["current_route"]))
         elif shift != 0:
             parts.append("on its current route")
         arr = d.get("arrival_shift", 0)
         if arr != shift and arr != 0:
-            parts.append(f"arrives {_periods(abs(arr))} {'later' if arr > 0 else 'earlier'}")
+            parts.append(f"arrives {self._dur(arr)} {'later' if arr > 0 else 'earlier'}")
         return ", ".join(parts) if parts else "keeps its trajectory"
 
     def path_text(self, flight: int, index: int) -> str:
@@ -350,7 +357,10 @@ class IterationExplainer:
         rows, seen = [], False
         for _, name in LEVELS:
             va, vb = a.costs.get(name, 0), b.costs.get(name, 0)
-            rows.append({"level": name, "text": LEVEL_TEXT[name], "chosen": va, "alternative": vb,
+            if name == "delay":                 # K24: the arrival delay in minutes, numbers stay comparable
+                va, vb = minutes(va, self.g), minutes(vb, self.g)
+            rows.append({"level": name, "text": LEVEL_TEXT[name] + (" (min)" if name == "delay" else ""),
+                         "chosen": va, "alternative": vb,
                          "difference": vb - va, "decides": name == deciding, "below": seen})
             if name == deciding:
                 seen = True
@@ -376,10 +386,12 @@ class IterationExplainer:
                           f"between the two is a tie broken by the solver, not a reason.")
         fv, av = self.factual.costs[deciding], foil.costs[deciding]
         if av < fv:
-            return deciding, (f"{label.capitalize()} would be better on {LEVEL_TEXT[deciding]} ({av} instead of "
-                              f"{fv}); the recorded choice is not optimal for this step (time limit or a defect).")
-        text = (f"{label.capitalize()} would mean {amount(deciding, av - fv)} "
-                f"({LEVEL_TEXT[deciding]} {av} instead of {fv}).")
+            return deciding, (f"{label.capitalize()} would be better on {LEVEL_TEXT[deciding]} "
+                              f"({self._level_value(deciding, av)} instead of {self._level_value(deciding, fv)}); "
+                              f"the recorded choice is not optimal for this step (time limit or a defect).")
+        text = (f"{label.capitalize()} would mean {amount(deciding, av - fv, self.g)} "
+                f"({LEVEL_TEXT[deciding]} {self._level_value(deciding, av)} instead of "
+                f"{self._level_value(deciding, fv)}).")
         prices = []
         below = False
         for _, name in LEVELS:
@@ -387,7 +399,7 @@ class IterationExplainer:
                 below = True
                 continue
             if below and self.factual.costs[name] > foil.costs[name]:
-                prices.append(amount(name, self.factual.costs[name] - foil.costs[name]))
+                prices.append(amount(name, self.factual.costs[name] - foil.costs[name], self.g))
         if prices:
             text += f" {chosen_name[0].upper()}{chosen_name[1:]} accepts " + " and ".join(prices) + " for that."
         return deciding, text
@@ -581,7 +593,7 @@ class IterationExplainer:
         if k == "path":
             return f"flight {f} takes candidate path {a[1]}"
         if k == "max_delay":
-            return f"flight {f} and its later flights arrive at most {_periods(a[1])} after their planned arrival"
+            return f"flight {f} and its later flights arrive at most {self._dur(a[1])} after their planned arrival"
         raise ValueError(f"unknown lock kind: {k}")
 
     def lock_met(self, lock: Lock) -> bool:
@@ -713,7 +725,9 @@ class IterationExplainer:
                 same.append(f"flight {e['flight']} {e['text']}")
         config_row = None
         if recorded["config"] != other["config"]:
-            config_row = {"time": self.record["hotspot"].get("time"), "recorded": recorded["sectors"],
+            t = self.record["hotspot"].get("time")
+            config_row = {"time": t, "time_text": time_text(t, self.g) if t is not None else None,
+                          "recorded": recorded["sectors"],
                           "what_if": other["sectors"]}
         elif recorded["config"] not in (None, 0):
             same.append(recorded["sectors"])

@@ -58,8 +58,8 @@ class TraceFields(unittest.TestCase):
         for n in self.trace.accepted():
             answer = IterationExplainer(self.trace, n).why_hotspot()["answer"]
             with self.subTest(iteration=n):
-                self.assertIn("time ", answer)
-                for bad in ("time step", "widened", "with the shortest flight time"):
+                self.assertIn("time step ", answer)        # K24: "time step 18 (18:00)"
+                for bad in ("time period", "widened", "with the shortest flight time"):
                     self.assertNotIn(bad, answer)
 
 

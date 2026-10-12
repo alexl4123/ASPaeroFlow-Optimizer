@@ -26,6 +26,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import clingo
 
 from .subproblem import Subproblem
+from .time_words import duration_text, granularity, minutes, time_steps, time_text
 
 #: Objective keys of the trace, in the order of the interface (S0 step-words.ts OBJECTIVE_KEYS).
 OBJECTIVE_KEYS = ("OVERLOAD", "ARRIVAL-DELAY", "SECTOR-NUMBER", "REROUTE", "SECTOR-DIFF", "RECONFIG")
@@ -311,11 +312,18 @@ def join(items: Iterable[str]) -> str:
     return ", ".join(items[:-1]) + " and " + items[-1]
 
 
-def periods(n: int) -> str:
-    return "1 time period" if n == 1 else f"{n} time periods"
+#: reason_arg keys that hold a time of the timeline ("time step 37 (09:15)") or a departure delay ("15 min").
+TIME_KEYS = ("time",)
+DELAY_KEYS = ("lo", "hi")
+#: keys whose meaning depends on the deciding criterion; the delay templates use their minute form "<key>_min".
+LEVEL_KEYS = ("foil", "chosen", "gain_foil", "gain_chosen", "both_foil", "both_chosen")
 
 
-def _format(key: str, values: List[Any], templates: Dict[str, str]) -> str:
+def _format(key: str, values: List[Any], templates: Dict[str, str], g: int = 1) -> str:
+    if key in TIME_KEYS:
+        return join(time_text(v, g) for v in values)
+    if key in DELAY_KEYS:
+        return join(duration_text(v, g) for v in values)
     if key == "limits":
         return "".join(templates[v] for v in values)
     if key == "legs":                       # [(leg, parent)] grouped by parent: "26 (after 19), 47 and 58 (after 18)"
@@ -326,8 +334,8 @@ def _format(key: str, values: List[Any], templates: Dict[str, str]) -> str:
             else:
                 groups.append((parent, [leg]))
         return ", ".join(f"{join(str(l) for l in legs)} (after {parent})" for parent, legs in groups)
-    if key == "taken_durations":            # "19 (3 time periods) and 18 (4)"
-        return join(f"{f} ({periods(d)})" if i == 0 else f"{f} ({d})" for i, (f, d) in enumerate(values))
+    if key == "taken_durations":            # "19 (3 time steps) and 18 (4)"
+        return join(f"{f} ({time_steps(d)})" if i == 0 else f"{f} ({d})" for i, (f, d) in enumerate(values))
     if key == "longer":                     # "; 11 has a longer one" (optional part of the tie lines)
         return "; " + join(str(f) for f in values) + (" has a longer one" if len(values) == 1 else " have longer ones")
     if key == "left_out_durations":         # "17 has 6 and 20 has 7"
@@ -353,7 +361,16 @@ def _refs(key: str, values: List[Any], n: int, start: bool) -> List[Tuple[str, s
     return []
 
 
-def _render(atoms: List[clingo.Symbol], templates: Dict[str, str], n: int) -> List[Dict[str, Any]]:
+def _fill(values: Dict[str, List[Any]], templates: Dict[str, str], g: int, skip: Iterable[str] = ()) -> Dict[str, str]:
+    """The text of every argument, plus "<key>_min" (a signed duration) for the level-dependent keys."""
+    fill = {key: _format(key, vs, templates, g) for key, vs in values.items() if key not in skip}
+    for key in LEVEL_KEYS:
+        if len(values.get(key, [])) == 1 and isinstance(values[key][0], int):
+            fill[f"{key}_min"] = duration_text(values[key][0], g)
+    return fill
+
+
+def _render(atoms: List[clingo.Symbol], templates: Dict[str, str], n: int, g: int = 1) -> List[Dict[str, Any]]:
     kinds: Dict[str, str] = {}
     template_of: Dict[str, str] = {}
     shown: Dict[str, Tuple[str, int]] = {}
@@ -376,7 +393,7 @@ def _render(atoms: List[clingo.Symbol], templates: Dict[str, str], n: int) -> Li
         kind = kinds[rid]
         template = templates[template_of.get(rid, kind)]
         values = {key: [v for _, v in sorted(items, key=lambda x: x[0])] for key, items in args.get(rid, {}).items()}
-        fill = {key: _format(key, vs, templates) for key, vs in values.items()}
+        fill = _fill(values, templates, g)
         fill.setdefault("limits", "")
         fill.setdefault("longer", "")
         text = template.format(**fill)
@@ -418,13 +435,19 @@ def _errors(atoms: List[clingo.Symbol], error_texts: Dict[str, str]) -> List[Dic
     return [{"code": e.name, "text": error_texts.get(e.name, e.name)} for e in errors]
 
 
+def time_scale(run: Optional[Dict[str, Any]]) -> Dict[str, int]:
+    """What the interface needs to turn time steps into clock times and minutes (STEP payload)."""
+    g = granularity(run)
+    return {"minutes_per_step": minutes(1, g), "steps_per_day": 24 * g, "timestep_granularity": g}
+
+
 def _result(n: int, kept, run: Dict[str, Any], run_length, run_kept, lines, deltas, errors) -> Dict[str, Any]:
     return {"iteration": n, "kept": kept, "run_length": run_length, "run_kept": run_kept,
-            "arrival_delay_metric": run.get("arrival_delay_metric"),
+            "arrival_delay_metric": run.get("arrival_delay_metric"), **time_scale(run),
             "lines": lines, "deltas": deltas, "errors": errors}
 
 
-def _finish(n: int, atoms, templates, error_texts):
+def _finish(n: int, atoms, templates, error_texts, g: int = 1):
     """Lines and errors; a record error replaces every line, a template problem gives render_error."""
     errors = _errors(atoms, error_texts)
     if errors:
@@ -434,7 +457,7 @@ def _finish(n: int, atoms, templates, error_texts):
                   "source": [f"error({first})"]}]
         return lines, errors
     try:
-        return _render(atoms, templates, n), errors
+        return _render(atoms, templates, n, g), errors
     except (KeyError, IndexError, ValueError):
         lines = [{"id": f"render_error({n})", "kind": "render_error", "level": "visible", "order": 1,
                   "text": templates.get("render_error", "The explanation text of this step could not be produced."),
@@ -450,7 +473,7 @@ def explain_step(record: Dict[str, Any], *, previous: Optional[Dict[str, Any]], 
     facts = step_facts(record, previous=previous, run=run, trace_folder=trace_folder,
                        rejected_before=rejected_before, run_length=run_length, run_kept=run_kept)
     atoms, templates, error_texts = solve(facts)
-    lines, errors = _finish(n, atoms, templates, error_texts)
+    lines, errors = _finish(n, atoms, templates, error_texts, granularity(run))
     codes = {e["code"] for e in errors}
     hidden = set(OBJECTIVE_KEYS) if "missing_previous" in codes else ({"OVERLOAD"} if "before_mismatch" in codes else set())
     deltas = _deltas(atoms, record.get("objectives") or {}, hidden)
@@ -461,7 +484,7 @@ def explain_start(run: Dict[str, Any], *, run_length: Optional[int] = None,
                   run_kept: Optional[int] = None) -> Dict[str, Any]:
     """The filed plan before step 1: its total overload and the overloaded sectors."""
     atoms, templates, error_texts = solve(start_facts(run))
-    lines, errors = _finish(0, atoms, templates, error_texts)
+    lines, errors = _finish(0, atoms, templates, error_texts, granularity(run))
     initial = run.get("initial_objectives") or {}
     deltas = [{"key": key, "before": None, "after": int(initial[key]), "change": None, "direction": None,
                "hidden": False} for key in OBJECTIVE_KEYS if _int(initial.get(key)) is not None]
@@ -589,7 +612,7 @@ def _ref_of(about: clingo.Symbol) -> Optional[str]:
     return None
 
 
-def _render_rows(atoms: List[clingo.Symbol], templates: Dict[str, str], n: int) -> List[Dict[str, Any]]:
+def _render_rows(atoms: List[clingo.Symbol], templates: Dict[str, str], n: int, g: int = 1) -> List[Dict[str, Any]]:
     kinds: Dict[str, str] = {}
     classes: Dict[str, str] = {}
     refs_of: Dict[str, str] = {}
@@ -617,7 +640,7 @@ def _render_rows(atoms: List[clingo.Symbol], templates: Dict[str, str], n: int) 
         kind = kinds[rid]
         template = templates[kind]
         values = {key: [v for _, v in sorted(items, key=lambda x: x[0])] for key, items in args.get(rid, {}).items()}
-        fill = {key: _format(key, vs, templates) for key, vs in values.items() if key not in CLAUSE_KEYS}
+        fill = _fill(values, templates, g, skip=CLAUSE_KEYS)
         for key in CLAUSE_KEYS:
             fill[key] = "".join(templates[v] for v in values.get(key, [])).format(**fill)
         text = template.format(**fill)
@@ -659,7 +682,7 @@ def explain_rows(record: Dict[str, Any], keep: Dict[str, Any], *, previous: Opti
         return {"iteration": n, "rows": [], "errors": [{"code": e.split("(")[0], "text": e} for e in row_errors],
                 "notice": notice}
     try:
-        rows = _render_rows(atoms, templates, n)
+        rows = _render_rows(atoms, templates, n, granularity(run))
     except (KeyError, IndexError, ValueError):
         return {"iteration": n, "rows": [], "errors": [{"code": "render_error", "text": "render_error"}],
                 "notice": notice}

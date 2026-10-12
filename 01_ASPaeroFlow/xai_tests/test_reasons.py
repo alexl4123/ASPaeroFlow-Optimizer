@@ -112,13 +112,13 @@ class Step6June(Base):
         out = explain(self.records, 6, self.run_info, run_length=13, run_kept=13)
         self.assertEqual(out["errors"], [])
         self.assertEqual(out["lines"][0]["level"], "visible")
-        self.assertEqual(out["lines"][0]["text"], "Sector 21 at time 11 had 3 flights for a capacity of 1: the earliest "
+        self.assertEqual(out["lines"][0]["text"], "Sector 21 at time step 11 (11:00) had 3 flights for a capacity of 1: the earliest "
                                                   "overload, lowest sector number first.")
         details = all_text(out)
         for part in ("18 and 19 went to the solver (rule: at most 2", "26 (after 19), 47 and 58 (after 18)",
-                     "0 to 19 time periods", "among 7 layouts of sector 21: the current one and 6 splits",
+                     "0 min to 19 h", "among 7 layouts of sector 21: the current one and 6 splits",
                      "New trajectory in this step: 18, 19 and 26.", "The solver left 47 and 58 unchanged.",
-                     "split into 2 sectors (21 and 35) from time 11 on"):
+                     "split into 2 sectors (21 and 35) from time step 11 (11:00) on"):
             self.assertIn(part, details)
         got = [(d["key"], d["before"], d["after"], d["direction"]) for d in out["deltas"]]
         self.assertEqual(got, [("OVERLOAD", 28, 22, "lower"), ("ARRIVAL-DELAY", 241, 268, "higher"),
@@ -149,23 +149,23 @@ class Occupants(Base):
     def test_tie_step3(self):
         out, line = self.subproblem(3, {6: 5, 8: 5, 11: 6, 12: 5})
         self.assertEqual(out["errors"], [])
-        self.assertEqual(line, "Of the 4 flights in sector 6 at time 9, 2 went to the solver: 6 and 8; 12 has the same "
+        self.assertEqual(line, "Of the 4 flights in sector 6 at time step 9 (09:00), 2 went to the solver: 6 and 8; 12 has the same "
                                "stored duration and was left out by its higher flight number; 11 has a longer one.")
         refs = [r["ref"] for r in next(x for x in out["lines"] if x["kind"].startswith("subproblem"))["refs"]]
         self.assertEqual(refs, ["sector:6@3:before", "flight:6", "flight:8", "flight:12", "flight:11"])
 
     def test_shortest_step6(self):
         out, line = self.subproblem(6, {17: 6, 18: 4, 19: 3})
-        self.assertEqual(line, "Of the 3 flights in sector 21 at time 11, the 2 with the shortest stored flight duration "
-                               "went to the solver: 19 (3 time periods) and 18 (4); 17 has 6.")
+        self.assertEqual(line, "Of the 3 flights in sector 21 at time step 11 (11:00), the 2 with the shortest stored flight duration "
+                               "went to the solver: 19 (3 time steps) and 18 (4); 17 has 6.")
 
     def test_both_step9(self):
         out, line = self.subproblem(9, {28: 7, 30: 5})
-        self.assertEqual(line, "Both flights in sector 35 at time 15 went to the solver: 28 and 30.")
+        self.assertEqual(line, "Both flights in sector 35 at time step 15 (15:00) went to the solver: 28 and 30.")
 
     def test_tie_step12(self):
         out, line = self.subproblem(12, {55: 4, 56: 4, 57: 4})
-        self.assertEqual(line, "Of the 3 flights in sector 5 at time 20, 2 went to the solver: 55 and 56; 57 has the "
+        self.assertEqual(line, "Of the 3 flights in sector 5 at time step 20 (20:00), 2 went to the solver: 55 and 56; 57 has the "
                                "same stored duration and was left out by its higher flight number.")
 
     def test_forged_candidate(self):
@@ -196,29 +196,29 @@ class DurationRule(Base):
         out, line = self.subproblem_line(6, {17: 6, 18: 4, 19: 3})
         self.assertEqual(out["errors"], [])
         self.assertEqual(line["kind"], "subproblem_shortest")
-        self.assertEqual(line["text"], "Of the 3 flights in sector 21 at time 11, the 2 with the shortest flight "
-                                       "duration went to the solver: 19 (3 time periods) and 18 (4); 17 has 6.")
+        self.assertEqual(line["text"], "Of the 3 flights in sector 21 at time step 11 (11:00), the 2 with the shortest flight "
+                                       "duration went to the solver: 19 (3 time steps) and 18 (4); 17 has 6.")
         self.assertIn("run_option(flight_duration_rule,occupied_steps)", line["source"])
 
     def test_tie_step3(self):
         out, line = self.subproblem_line(3, {6: 5, 8: 5, 11: 6, 12: 5})
         self.assertEqual(out["errors"], [])
         self.assertEqual(line["kind"], "subproblem_tie")
-        self.assertEqual(line["text"], "Of the 4 flights in sector 6 at time 9, 2 went to the solver: 6 and 8; 12 has "
+        self.assertEqual(line["text"], "Of the 4 flights in sector 6 at time step 9 (09:00), 2 went to the solver: 6 and 8; 12 has "
                                        "the same flight duration and was left out by its higher flight number; 11 has "
                                        "a longer one.")
 
     def test_tie_step12(self):
         out, line = self.subproblem_line(12, {55: 4, 56: 4, 57: 4})
         self.assertEqual(out["errors"], [])
-        self.assertEqual(line["text"], "Of the 3 flights in sector 5 at time 20, 2 went to the solver: 55 and 56; 57 "
+        self.assertEqual(line["text"], "Of the 3 flights in sector 5 at time step 20 (20:00), 2 went to the solver: 55 and 56; 57 "
                                        "has the same flight duration and was left out by its higher flight number.")
 
     def test_rule_only_without_occupants(self):
         out = explain(self.records, 6, self.run_info)
         self.assertEqual(out["errors"], [])
         line = next(line for line in out["lines"] if line["kind"] == "subproblem_rule")
-        self.assertEqual(line["text"], "Of the 3 flights in sector 21 at time 11, 18 and 19 went to the solver (rule: "
+        self.assertEqual(line["text"], "Of the 3 flights in sector 21 at time step 11 (11:00), 18 and 19 went to the solver (rule: "
                                        "at most 2, shortest flight duration first, lower flight number on ties).")
         self.assertIn("run_option(flight_duration_rule,occupied_steps)", line["source"])
 
@@ -235,7 +235,7 @@ class DurationRule(Base):
         out, _ = self.subproblem_line(6, {17: 6, 18: 5, 19: 3})
         self.assertEqual(codes(out), ["duration_rule"])
         self.assertEqual([line["kind"] for line in out["lines"]], ["record_error"])
-        self.assertIn("a recorded flight duration differs from the time periods of its trajectory",
+        self.assertIn("a recorded flight duration differs from the time steps of its trajectory",
                       out["lines"][0]["text"])
 
     def test_forged_duration_without_rule_is_no_error(self):
@@ -367,17 +367,17 @@ class Rejected(Base):
         self.assertEqual([line["kind"] for line in out["lines"]], ["hotspot_rule", "not_kept"])
         not_kept = text_of(out, "not_kept")
         self.assertIn("stays at 22", not_kept)
-        self.assertIn("20 to 39", not_kept)
+        self.assertIn("20 h to 39 h", not_kept)
         # the line names the attempt's own spot (16 at 12), not the spot of step 6 under whose title it is shown
-        self.assertEqual(not_kept, "Step 7 (sector 16 at time 12) was not kept: the total overload did not fall "
+        self.assertEqual(not_kept, "Step 7 (sector 16 at time step 12 (12:00)) was not kept: the total overload did not fall "
                                    "(stays at 22). The plan is unchanged; a next attempt at this spot would offer "
-                                   "departure delays of 20 to 39 time periods.")
+                                   "departure delays of 20 h to 39 h.")
         self.assertIn("hotspot(7,16,12)", next(l for l in out["lines"] if l["kind"] == "not_kept")["source"])
         nxt = explain(self.records, 8, self.run_info)
         self.assertEqual(nxt["errors"], [])
         self.assertEqual(text_of(nxt, "retry"), "Step 7 at this spot was not kept, so this step offered departure "
-                                                "delays of 20 to 39 time periods (no shorter ones).")
-        self.assertIn("20 to 39 time periods later", text_of(nxt, "delays"))
+                                                "delays of 20 h to 39 h (no shorter ones).")
+        self.assertIn("20 h to 39 h later", text_of(nxt, "delays"))
 
     @staticmethod
     def lp_with_starts(first, plan_start=10, flights=(18, 19), width=20):
@@ -443,11 +443,13 @@ class TemplateShape(unittest.TestCase):
 
     @staticmethod
     def filled(text, limits=""):
-        return re.sub(r"\{(\w+)\}", lambda m: limits if m.group(1) == "limits" else "17", text)
+        # {time} as the step header gets it (K24: "time step 37 (09:15)"), every other value 17
+        return re.sub(r"\{(\w+)\}", lambda m: limits if m.group(1) == "limits" else
+                      reasons.time_text(37, 4) if m.group(1) == "time" else "17", text)
 
     def test_shortened_templates_keep_their_shape(self):
         _, templates, _ = reasons.solve("")
-        hotspot = re.compile(r"^(Sector \d+ at time \d+ had \d+ flights? for a capacity of \d+): "
+        hotspot = re.compile(r"^(Sector \d+ at time step \d+ \((?:\+\d+d )?\d\d:\d\d\) had \d+ flights? for a capacity of \d+): "
                              r"the earliest overload, lowest sector number first\.$")
         for kind in ("hotspot_rule", "hotspot_rule_one"):
             sentence = self.filled(templates[kind])
@@ -455,7 +457,7 @@ class TemplateShape(unittest.TestCase):
             # the short form is the hotspot template of sequential runs
             short = hotspot.match(sentence).group(1) + "."
             self.assertEqual(short, self.filled(templates[kind.replace("_rule", "")]), kind)
-        not_kept = re.compile(r"^(Step \d+ \(sector \d+ at time \d+\) was not kept): the total overload did not fall"
+        not_kept = re.compile(r"^(Step \d+ \(sector \d+ at time step \d+ \((?:\+\d+d )?\d\d:\d\d\)\) was not kept): the total overload did not fall"
                               r" \(stays at \d+\)\.")
         for kind in ("not_kept", "not_kept_sequential"):
             for limits in ("", templates["clause_layout"]):
@@ -524,7 +526,7 @@ class Branches(Base):
         folder = self.folder_with_lp(6, self.LP_SEQUENTIAL)
         out = explain(self.records, 6, self.run_info, folder=folder)
         lines = self.lines(out)
-        self.assertEqual(lines[0], "Sector 21 at time 11 had 3 flights for a capacity of 1.")
+        self.assertEqual(lines[0], "Sector 21 at time step 11 (11:00) had 3 flights for a capacity of 1.")
         self.assertNotIn("rule", [line["kind"] for line in out["lines"]])
         self.assertIn("18 and 19 could each take one candidate route only, departing as in the current plan "
                       "(sequential mode).", lines)
@@ -538,7 +540,7 @@ class Branches(Base):
                       self.lines(explain(self.records, 6, self.run_info, folder=self.folder_with_lp(6, one))))
         self.records[7] = rejected_copy(self.records[7], 7, self.records[6])
         out = explain(self.records, 7, self.run_info, folder=self.tmp)      # (step 7's lp is not sequential)
-        self.assertEqual(text_of(out, "not_kept"), "Step 7 (sector 16 at time 12) was not kept: the total overload "
+        self.assertEqual(text_of(out, "not_kept"), "Step 7 (sector 16 at time step 12 (12:00)) was not kept: the total overload "
                                                    "did not fall (stays at 22). The plan is unchanged.")
 
     def one_flight_record(self, n=6):
@@ -570,10 +572,10 @@ class Branches(Base):
     def test_one_flight_capacity_zero(self):
         self.records[6] = self.one_flight_record()
         lines = self.lines(explain(self.records, 6, self.run_info, folder=self.folder_with_lp(6, self.LP_ONE)))
-        self.assertEqual(lines[0], "Sector 21 at time 11 had 1 flight for a capacity of 0: the earliest overload, "
+        self.assertEqual(lines[0], "Sector 21 at time step 11 (11:00) had 1 flight for a capacity of 0: the earliest overload, "
                                    "lowest sector number first.")
-        self.assertIn("The only flight in sector 21 at time 11 went to the solver: 18.", lines)
-        self.assertIn("18 could depart 0 to 19 time periods later than in the current plan.", lines)
+        self.assertIn("The only flight in sector 21 at time step 11 (11:00) went to the solver: 18.", lines)
+        self.assertIn("18 could depart 0 min to 19 h later than in the current plan.", lines)
 
     def test_composite_sum(self):
         self.run_info["composite_sector_function"] = "sum"
@@ -605,12 +607,12 @@ class Branches(Base):
         self.records[6] = r
         lines = self.lines(explain(self.records, 6, self.run_info,
                                    folder=self.folder_with_lp(6, "paths(19,0..19).\nconfig(0,14).\n")))
-        self.assertIn("Of the 2 flights in sector 21 at time 11, the one with the shortest stored flight duration went "
-                      "to the solver: 19 (3 time periods); 18 has 4.", lines)
+        self.assertIn("Of the 2 flights in sector 21 at time step 11 (11:00), the one with the shortest stored flight duration went "
+                      "to the solver: 19 (3 time steps); 18 has 4.", lines)
 
     def test_tie_many(self):
         self.records[3] = with_occupants(self.records[3], {6: 5, 8: 5, 11: 5, 12: 5})
-        self.assertIn("Of the 4 flights in sector 6 at time 9, 2 went to the solver: 6 and 8; 11 and 12 have the "
+        self.assertIn("Of the 4 flights in sector 6 at time step 9 (09:00), 2 went to the solver: 6 and 8; 11 and 12 have the "
                       "same stored duration and were left out by their higher flight numbers.",
                       self.lines(explain(self.records, 3, self.run_info)))
 
@@ -636,7 +638,7 @@ class Branches(Base):
         out = explain(records, n, self.run_info)
         self.assertEqual(out["errors"], [])
         self.assertEqual(text_of(out, "retry"), "Steps 7, 8, 9, 10 and 11 at this spot were not kept, so this step "
-                                                "offered departure delays of 100 to 119 time periods (no shorter ones) "
+                                                "offered departure delays of 100 h to 119 h (no shorter ones) "
                                                 "and only the current layout.")
 
     def test_retry_ten(self):
@@ -644,7 +646,7 @@ class Branches(Base):
         out = explain(records, n, self.run_info)
         self.assertEqual(out["errors"], [])
         self.assertTrue(text_of(out, "retry").endswith(
-            "offered departure delays of 200 to 219 time periods (no shorter ones) and only the current layout and "
+            "offered departure delays of 200 h to 219 h (no shorter ones) and only the current layout and "
             "at most 1 flight."), text_of(out, "retry"))
 
     def test_run_ends_on_rejection(self):
@@ -652,7 +654,7 @@ class Branches(Base):
         records[14] = rejected_copy(self.records[13], 14, self.records[13])
         out = explain(records, 14, self.run_info, run_length=14, run_kept=13)
         self.assertEqual(out["errors"], [])
-        self.assertIn("a next attempt at this spot would offer departure delays of 20 to 39 time periods.",
+        self.assertIn("a next attempt at this spot would offer departure delays of 20 h to 39 h.",
                       text_of(out, "not_kept"))
 
     def test_retry_count_mismatch(self):

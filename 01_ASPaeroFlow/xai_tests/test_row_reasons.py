@@ -51,11 +51,11 @@ EXPECTED = {
     ('JUNE', 3): [
         ('sector:6@3:before', 'layout_keep_overload', 'capacity',
          'If sector 6 had not been split, the best answer of this step would leave a total overload of 62 '
-         'instead of 42, but it would have 24 instead of 30 open sectors at time 9.'),
+         'instead of 42, but it would have 24 instead of 30 open sectors at time step 9 (09:00).'),
         ('flight:6', 'keep_overload', 'capacity',
          'With flight 6 kept as it was, the best answer of this step would leave a total overload of 46 '
          'instead of 42, but the net arrival delay of the flights of this step '
-         'would be 0 instead of 31 time periods. Another new '
+         'would be 0 min instead of 31 h. Another new '
          'trajectory was exactly as good.'),
         ('flight:8', 'keep_overload', 'capacity',
          'With flight 8 kept as it was, the best answer of this step would leave a total overload of 43 '
@@ -69,28 +69,28 @@ EXPECTED = {
     ('JUNE', 6): [
         ('sector:21@6:before', 'layout_keep_overload', 'capacity',
          'If sector 21 had not been split, the best answer of this step would leave a total overload of 25 '
-         'instead of 22, but it would have 30 instead of 31 open sectors at time 11.'),
+         'instead of 22, but it would have 30 instead of 31 open sectors at time step 11 (11:00).'),
         ('flight:18', 'keep_overload', 'capacity',
          'With flight 18 kept as it was, the best answer of this step would leave a total overload of 23 '
          'instead of 22, but the net arrival delay of the flights of this step '
-         'would be 26 instead of 27 time periods. Another new '
+         'would be 26 h instead of 27 h. Another new '
          'trajectory was exactly as good.'),
         ('flight:19', 'keep_overload', 'capacity',
          'With flight 19 kept as it was, the best answer of this step would leave a total overload of 24 '
          'instead of 22, but the net arrival delay of the flights of this step '
-         'would be 1 instead of 27 time periods.'),
+         'would be 1 h instead of 27 h.'),
         ('flight:26', 'leg', 'rule',
          'Flies after flight 19 on the same aircraft and moved with it.'),
     ],
     ('JUNE', 9): [
         ('sector:35@9:before', 'layout_keep_delay', 'cost',
          'If sector 35 had not been split, the best answer of this step would have the same total overload '
-         'and a net arrival delay of 1 instead of 0 time periods, summed over the flights of this step, but '
-         'it would have 31 instead of 36 open sectors at time 15.'),
+         'and a net arrival delay of 1 h instead of 0 min, summed over the flights of this step, but '
+         'it would have 31 instead of 36 open sectors at time step 15 (15:00).'),
         ('flight:30', 'keep_delay', 'cost',
          'With flight 30 kept as it was, the best answer of this step would have the same total overload and '
-         'a net arrival delay of 8 instead of 0 time periods, summed over the flights of this step, but it '
-         'would have 31 instead of 36 open sectors at time 15.'),
+         'a net arrival delay of 8 h instead of 0 min, summed over the flights of this step, but it '
+         'would have 31 instead of 36 open sectors at time step 15 (15:00).'),
     ],
     ('JUNE', 11): [
         ('flight:38', 'keep_tie_other', 'tie',
@@ -102,22 +102,22 @@ EXPECTED = {
         ('flight:55', 'keep_overload', 'capacity',
          'With flight 55 kept as it was, the best answer of this step would leave a total overload of 4 '
          'instead of 2, but the net arrival delay of the flights of this step '
-         'would be 2 instead of 11 time periods. Another new '
+         'would be 2 h instead of 11 h. Another new '
          'trajectory was exactly as good.'),
         ('flight:56', 'keep_overload', 'capacity',
          'With flight 56 kept as it was, the best answer of this step would leave a total overload of 4 '
          'instead of 2, but the net arrival delay of the flights of this step '
-         'would be 2 instead of 11 time periods. Another new '
+         'would be 2 h instead of 11 h. Another new '
          'trajectory was exactly as good.'),
     ],
     ('TG4', 1): [
         ('sector:6@1:before', 'layout_keep_overload', 'capacity',
          'If sector 6 had not been split, the best answer of this step would leave a total overload of 55 '
-         'instead of 31, but it would have 14 instead of 18 open sectors at time 17.'),
+         'instead of 31, but it would have 14 instead of 18 open sectors at time step 17 (04:15).'),
         ('flight:4', 'keep_overload', 'capacity',
          'With flight 4 kept as it was, the best answer of this step would leave a total overload of 33 '
          'instead of 31, but the net arrival delay of the flights of this step '
-         'would be 3 instead of 10 time periods. Another new '
+         'would be 45 min instead of 2 h 30 min. Another new '
          'trajectory was exactly as good.'),
         ('flight:29', 'leg', 'rule',
          'Flies after flight 4 on the same aircraft and moved with it.'),
@@ -125,23 +125,23 @@ EXPECTED = {
     ('TG4', 2): [
         ('flight:11', 'keep_delay', 'cost',
          'With flight 11 kept as it was, the best answer of this step would have the same total overload and '
-         'a net arrival delay of 1 instead of 0 time periods, summed over the flights of this step.'),
+         'a net arrival delay of 15 min instead of 0 min, summed over the flights of this step.'),
     ],
     ('TG4', 3): [
         ('sector:24@3:before', 'layout_keep_overload', 'capacity',
          'If sector 24 had not been split, the best answer of this step would leave a total overload of 29 '
-         'instead of 13, but it would have 18 instead of 24 open sectors at time 23.'),
+         'instead of 13, but it would have 18 instead of 24 open sectors at time step 23 (05:45).'),
     ],
     ('TG4', 4): [
         ('sector:0@4:before', 'layout_keep_overload', 'capacity',
          'If sector 0 had not been split, the best answer of this step would leave a total overload of 11 '
-         'instead of 8, but it would have 24 instead of 25 open sectors at time 27.'),
+         'instead of 8, but it would have 24 instead of 25 open sectors at time step 27 (06:45).'),
     ],
     ('TG4', 5): [
         ('sector:16@5:before', 'layout_keep_delay', 'cost',
          'If sector 16 had not been split, the best answer of this step would have the same total overload '
-         'and a net arrival delay of 5 instead of 0 time periods, summed over the flights of this step, but '
-         'it would have 25 instead of 26 open sectors at time 28.'),
+         'and a net arrival delay of 1 h 15 min instead of 0 min, summed over the flights of this step, but '
+         'it would have 25 instead of 26 open sectors at time step 28 (07:00).'),
         ('flight:27', 'keep_overload', 'capacity',
          'With flight 27 kept as it was, the best answer of this step would leave a total overload of 7 '
          'instead of 6, but it would have 1 instead of 2 flights sent to the solver off the filed route or '
@@ -160,7 +160,7 @@ EXPECTED = {
     ('TG4', 7): [
         ('flight:44', 'keep_delay', 'cost',
          'With flight 44 kept as it was, the best answer of this step would have the same total overload and '
-         'a net arrival delay of 1 instead of 0 time periods, summed over the flights of this step. Another '
+         'a net arrival delay of 15 min instead of 0 min, summed over the flights of this step. Another '
          'new trajectory was exactly as good.'),
     ],
     ('TG4', 8): [
@@ -241,12 +241,12 @@ class Texts(unittest.TestCase):
                     texts[(name, n, r["ref"])] = r["text"]
         self.assertEqual(texts[("JUNE", 6, "flight:19")],
                          "With flight 19 kept as it was, the best answer of this step would leave a total overload "
-                         "of 24 instead of 22, but the net arrival delay of the flights of this step would be 1 instead of "
-                         "27 time periods.")
+                         "of 24 instead of 22, but the net arrival delay of the flights of this step would be 1 h instead of "
+                         "27 h.")
         self.assertEqual(texts[("JUNE", 9, "flight:30")],
                          "With flight 30 kept as it was, the best answer of this step would have the same total "
-                         "overload and a net arrival delay of 8 instead of 0 time periods, summed over the flights of "
-                         "this step, but it would have 31 instead of 36 open sectors at time 15.")
+                         "overload and a net arrival delay of 8 h instead of 0 min, summed over the flights of "
+                         "this step, but it would have 31 instead of 36 open sectors at time step 15 (15:00).")
         self.assertEqual(texts[("TG4", 8, "flight:54")],
                          "Flight 54 or flight 55 had to change: keeping both as they were would leave a total "
                          "overload of 4 instead of 2. Keeping flight 54 as it was and changing flight 55 is exactly "
@@ -288,7 +288,7 @@ class Texts(unittest.TestCase):
                     facts = reasons.step_facts(records[n], previous=previous, run=run, trace_folder=folder,
                                                rejected_before=rejected)
                     atoms, templates, error_texts = reasons.solve(facts + reasons.keep_facts(keep[n], run, records[n]))
-                    lines, errors = reasons._finish(n, atoms, templates, error_texts)
+                    lines, errors = reasons._finish(n, atoms, templates, error_texts, reasons.granularity(run))
                     header = header_of(folder, records, run, n)
                     self.assertEqual(lines, header["lines"])
                     self.assertEqual(errors, header["errors"])
@@ -364,7 +364,7 @@ class Synthetic(unittest.TestCase):
 
     def test_tie_other_by_delay(self):
         self.tie_with_move({"delay": 30})
-        self.assertIn("would have the same total overload and a net arrival delay of 30 instead of 27 time periods, "
+        self.assertIn("would have the same total overload and a net arrival delay of 30 h instead of 27 h, "
                       "summed over the flights of this step. Keeping flight 18",
                       self.row(self.out(), "flight:18")["text"])
 
@@ -526,13 +526,13 @@ class Synthetic(unittest.TestCase):
         set_costs(self.keep["factual"], delay=0)
         record = self.record_with(clingo_cost=list(self.keep["factual"]["clingo_cost"]))
         set_costs(self.keep["flights"]["18"]["keep"], delay=-2)
-        self.assertIn("but the net arrival delay of the flights of this step would be -2 instead of 0 time periods",
+        self.assertIn("but the net arrival delay of the flights of this step would be -2 h instead of 0 min",
                       self.row(self.out(record), "flight:18")["text"])
 
     def test_plain_delay_words(self):
         # synthetic: a run that scores late arrivals only
         self.run = dict(self.run, arrival_delay_metric="floored")
-        self.assertIn("but the arrival delay of the flights of this step would be 26 instead of 27 time periods",
+        self.assertIn("but the arrival delay of the flights of this step would be 26 h instead of 27 h",
                       self.row(self.out(), "flight:18")["text"])
 
     def test_leg_after_a_kept_flight(self):

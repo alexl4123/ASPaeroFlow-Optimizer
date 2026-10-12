@@ -57,7 +57,7 @@ def route_of(trajectory: Trajectory) -> List[int]:
 
 def clock(step: int, minutes_per_step: float, steps_per_day: int) -> str:
     day, rest = divmod(step, steps_per_day)
-    minutes = int(round(rest * minutes_per_step))
+    minutes = rest * 1440 // steps_per_day         # whole minutes, as time_words.clock_text and the frontend
     text = f"{minutes // 60:02d}:{minutes % 60:02d}"
     return f"+{day}d {text}" if day else text
 

@@ -100,27 +100,32 @@ class TraceAndExplanations(unittest.TestCase):
 
 
 class PathTextWords(unittest.TestCase):
-    """Durations in the contrastive texts are time periods ("step N" is the optimizer step)."""
+    """Durations in the contrastive texts are minutes and hours (K24; "step N" is the optimizer step)."""
 
-    def text(self, description):
+    def text(self, description, g=1):
         explainer = IterationExplainer.__new__(IterationExplainer)
+        explainer.g = g
         explainer.describe_path = lambda flight, index: description
         return explainer.path_text(18, 0)
 
-    def test_time_periods(self):
+    def test_durations(self):
         self.assertEqual(self.text({"departure_shift": 1, "arrival_shift": 1, "rerouted": False}),
-                         "flight 18 departs 1 time period later, on its current route")
+                         "flight 18 departs 1 h later, on its current route")
         self.assertEqual(self.text({"departure_shift": 3, "arrival_shift": 5, "rerouted": False}),
-                         "flight 18 departs 3 time periods later, on its current route, arrives 5 time periods later")
+                         "flight 18 departs 3 h later, on its current route, arrives 5 h later")
         self.assertEqual(self.text({"departure_shift": -2, "arrival_shift": -2, "rerouted": False}),
-                         "flight 18 departs 2 time periods earlier, on its current route")
+                         "flight 18 departs 2 h earlier, on its current route")
+        self.assertEqual(self.text({"departure_shift": 3, "arrival_shift": 5, "rerouted": False}, g=4),
+                         "flight 18 departs 45 min later, on its current route, arrives 1 h 15 min later")
         self.assertNotIn("step", self.text({"departure_shift": 0, "arrival_shift": -1, "rerouted": True,
                                             "route": [1, 2], "current_route": [1, 3]}))
 
     def test_contrast_amounts(self):
         from src.aspaeroflow.xai.subproblem import amount
-        self.assertEqual(amount("delay", 3), "3 more time periods of arrival delay")
-        self.assertEqual(amount("delay", -1), "1 more time period of arrival delay")
+        self.assertEqual(amount("delay", 3), "3 h more arrival delay")
+        self.assertEqual(amount("delay", -1), "1 h more arrival delay")
+        self.assertEqual(amount("delay", 3, 4), "45 min more arrival delay")
+        self.assertEqual(amount("delay", 5, 4), "1 h 15 min more arrival delay")
 
     def test_criterion_words(self):
         """One word per criterion in the cards, the step header and the row lines: the header says "total overload",

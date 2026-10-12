@@ -37,13 +37,16 @@ LEVELS: Tuple[Tuple[int, str], ...] = (
     (6, "config"),
 )
 
-def amount(level: str, n: int) -> str:
-    """'3 more units of overload', '1 more time period of arrival delay', ... for a level and a count."""
+def amount(level: str, n: int, granularity: int = 1) -> str:
+    """'3 more units of overload', '45 min more arrival delay', ... for a level and a count (the arrival
+    delay counts time steps; `granularity` time steps make an hour)."""
     n = abs(int(n))
     s = "" if n == 1 else "s"
+    m = n * 60 // max(1, int(granularity))
     return {
         "overload": f"{n} more unit{s} of overload",
-        "delay": f"{n} more time period{s} of arrival delay",
+        "delay": f"{m // 60} h {m % 60} min more arrival delay" if m >= 60 and m % 60 else
+                 f"{m // 60} h more arrival delay" if m >= 60 else f"{m} min more arrival delay",
         "sectors": f"{n} more sector{s}",
         "changed": f"{n} more flight{s} sent to the solver off the filed route or the earliest offered departure",
         "config": "a sector configuration further from the current one",

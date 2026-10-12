@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from .contrastive import IterationExplainer, Lock
 from .keep import append_keep, keep_matches, read_keep
-from .reasons import explain_rows, explain_start, explain_step, step_context
+from .reasons import explain_rows, explain_start, explain_step, step_context, time_scale
 from .trace import TraceReader
 
 OPTIMIZER_DIR = Path(__file__).resolve().parents[3]          # 01_ASPaeroFlow/
@@ -226,7 +226,7 @@ class _ExplainingSession:
         except Exception as exc:  # an explanation must never stop a step
             log.exception("step %s: explanation failed", n)
             step = {"iteration": n, "kept": bool(record.get("accepted")), "run_length": run_length,
-                    "run_kept": run_kept, "lines": [], "deltas": [],
+                    "run_kept": run_kept, "lines": [], "deltas": [], **self._scale(),
                     "errors": [{"code": "render_error", "text": f"the explanation text of this step could not be produced ({type(exc).__name__})"}]}
         if step.get("errors"):
             log.warning("step %s: explanation errors %s", n, ", ".join(e["code"] for e in step["errors"]))
@@ -275,13 +275,20 @@ class _ExplainingSession:
         run_length, run_kept = self._run_counts() if hasattr(self, "_run_counts") else (None, None)
         return self._rows_of(record, self._records(), run_length, run_kept)
 
+    def _scale(self) -> Dict[str, int]:
+        """The time scale of the STEP payload for the fallbacks (none when run.json cannot be read)."""
+        try:
+            return time_scale(self.trace().run)
+        except Exception:
+            return {}
+
     def _start_step(self, run_length: Optional[int] = None, run_kept: Optional[int] = None) -> Dict[str, Any]:
         try:
             step = explain_start(self.trace().run, run_length=run_length, run_kept=run_kept)
         except Exception as exc:
             log.exception("filed plan: explanation failed")
             step = {"iteration": 0, "kept": None, "run_length": run_length, "run_kept": run_kept, "lines": [],
-                    "deltas": [], "errors": [{"code": "render_error", "text": f"the explanation text of the filed plan could not be produced ({type(exc).__name__})"}]}
+                    "deltas": [], **self._scale(), "errors": [{"code": "render_error", "text": f"the explanation text of the filed plan could not be produced ({type(exc).__name__})"}]}
         if step.get("errors"):
             log.warning("filed plan: explanation errors %s", ", ".join(e["code"] for e in step["errors"]))
         return step
