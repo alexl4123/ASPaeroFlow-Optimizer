@@ -62,6 +62,38 @@ def aircraft_of_flights(data_dir: Optional[Path]) -> Optional[Dict[int, int]]:
         return {int(float(r["Flight_ID"])): int(float(r["Airplane_ID"])) for r in csv.DictReader(fh)}
 
 
+FIX_NAME = re.compile(r"^([A-Z]{5})(_FL\d+)?$")
+
+
+def display_name(identifier: str, airport: bool, vertex: int) -> str:
+    """How the interface names a navpoint: an airport by its identifier (EHAM), a real fix by its five letters
+    (ABGUS_FL300 -> ABGUS), anything else (grid instances) by its number."""
+    if airport:
+        return identifier
+    m = FIX_NAME.match(identifier or "")
+    return m.group(1) if m else str(vertex)
+
+
+def display_names(data_dir: Optional[Path]) -> Optional[Dict[int, str]]:
+    """Display names of the instance's navpoints; None when the instance has no vertex map or no real fixes (grid
+    instances keep their numbers everywhere, airports included, as the explanation texts always had them)."""
+    if data_dir is None:
+        return None
+    vmap, apts = Path(data_dir) / "mappings" / "vertex_map.csv", Path(data_dir) / "airports.csv"
+    if not vmap.exists():
+        return None
+    with open(vmap, newline="", encoding="utf-8") as fh:
+        ids = {int(r["VERTEX_ID"]): r["IDENTIFIER"] for r in csv.DictReader(fh)}
+    airports = set()
+    if apts.exists():
+        with open(apts, newline="", encoding="utf-8") as fh:
+            airports = {int(float(r["Airport_Vertex"])) for r in csv.DictReader(fh)}
+    names = {v: display_name(name, v in airports, v) for v, name in ids.items()}
+    if not any(v not in airports and names[v] != str(v) for v in names):
+        return None
+    return names
+
+
 def instance_graph(data_dir: Path) -> Dict[str, Any]:
     """Vertices (with coordinates if the instance has them), edges, airports and the initial sectors."""
     data_dir = Path(data_dir)
@@ -134,6 +166,16 @@ class _ExplainingSession:
             self._trace.refresh()
         return self._trace
 
+    def display_names(self) -> Optional[Dict[int, str]]:
+        """Navpoint names for the explanation texts (read once; None: numbers)."""
+        if not hasattr(self, "_names"):
+            try:
+                self._names = display_names(getattr(self, "data_dir", None))
+            except (OSError, ValueError, KeyError):
+                log.exception("navpoint names not readable; numbers are used")
+                self._names = None
+        return self._names
+
     def delivered(self) -> List[Dict[str, Any]]:
         """The records the client has received so far (a replay hands them out one by one)."""
         return list(getattr(self, "records", []))
@@ -160,6 +202,7 @@ class _ExplainingSession:
             if iteration not in trace.iterations:
                 raise KeyError(f"iteration {iteration} is not (yet) in the trace")
             ex = IterationExplainer(trace, iteration)
+            ex.names = self.display_names()
             if iteration in self._keep:     # the dialog's keep cards then describe the answers of the row lines
                 try:
                     ex.load_keep(self._keep[iteration])

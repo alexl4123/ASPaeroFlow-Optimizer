@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Sequence, Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import clingo
 
@@ -295,12 +295,26 @@ class IterationExplainer:
             out["unchanged"] = path.trajectory == cur
         return out
 
+    #: display names of navpoints (fix names on real-navpoint instances, xai/session.py display_names); None: numbers
+    names: Optional[Dict[int, str]] = None
+
+    def _nav(self, navpoint: Any) -> str:
+        """A navpoint as the interface names it: the fix or airport name when known, else its number."""
+        try:
+            n = int(navpoint)
+        except (TypeError, ValueError):
+            return str(navpoint)
+        return (self.names or {}).get(n, str(n))
+
+    def _route(self, route: Sequence[Any]) -> str:
+        return "-".join(self._nav(n) for n in route)
+
     def change_clause(self, flight: int, index: int) -> str:
         """What a candidate path does to the flight compared with its trajectory before the step, without the
         flight's name: "keeps its trajectory", "departs 1 time period later, flies 51-22-15-53 instead of ..."."""
         d = self.describe_path(flight, index)
         if "departure_shift" not in d:      # trajectory before the step not recorded: say only what the path is
-            return "flies " + "-".join(map(str, d["route"])) + f" from time {d['start']}"
+            return "flies " + self._route(d["route"]) + f" from time {d['start']}"
         if d.get("unchanged"):
             return "keeps its trajectory"
         parts = []
@@ -310,7 +324,7 @@ class IterationExplainer:
         elif shift < 0:
             parts.append(f"departs {_periods(-shift)} earlier")
         if d.get("rerouted"):
-            parts.append("flies " + "-".join(map(str, d["route"])) + " instead of " + "-".join(map(str, d["current_route"])))
+            parts.append("flies " + self._route(d["route"]) + " instead of " + self._route(d["current_route"]))
         elif shift != 0:
             parts.append("on its current route")
         arr = d.get("arrival_shift", 0)
@@ -555,8 +569,8 @@ class IterationExplainer:
             return self.config_text(0)
         if k == "avoid":
             if len(a) > 1:
-                return f"flight {self._flight_of_lock(Lock('keep', a[1:]))} does not pass navpoint {a[0]}"
-            return f"no flight of the step passes navpoint {a[0]}"
+                return f"flight {self._flight_of_lock(Lock('keep', a[1:]))} does not pass navpoint {self._nav(a[0])}"
+            return f"no flight of the step passes navpoint {self._nav(a[0])}"
         f = self._flight_of_lock(lock)
         if k == "keep":
             return f"flight {f} keeps its trajectory from before the step"
@@ -722,7 +736,7 @@ class IterationExplainer:
                                "already_met": False, "feasible": True, "same_as": None, "scope": SCOPE}
         if all(r["met"] for r in requirements):
             if not many and locks[0].kind == "avoid" and not self._lock_bans(locks[0])[0]:
-                answer = (f"No candidate route of {step} passes navpoint {locks[0].args[0]}; {step}'s choice already "
+                answer = (f"No candidate route of {step} passes navpoint {self._nav(locks[0].args[0])}; {step}'s choice already "
                           f"meets this requirement.")
             else:
                 answer = f"{step.capitalize()}'s choice already meets {noun}. Nothing is solved again."
