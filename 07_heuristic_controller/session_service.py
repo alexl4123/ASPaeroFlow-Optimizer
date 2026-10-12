@@ -274,6 +274,15 @@ def create_app(instances_root: Optional[Path], sessions_root: Path) -> FastAPI:
         except KeyError as exc:
             raise HTTPException(404, str(exc))
 
+    @app.get("/sessions/{sid}/plan")
+    def plan(sid: str, upto: int):
+        """The plan as of step `upto` (xai/plan.py): filed and current times per flight, the steps that moved them,
+        key figures and checks. 404 for a step the session has not delivered yet."""
+        try:
+            return get(sid).session.plan(upto)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc))
+
     @app.post("/sessions/{sid}/iterations/{n}/explain")
     def explain(sid: str, n: int, req: ExplainRequest):
         started = time.time()

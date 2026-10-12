@@ -135,8 +135,20 @@ class SessionService(unittest.TestCase):
         live = self.client.get(f"/sessions/{sid}/iterations").json()
         self.assertGreater(len(live), 0)
         replay = self.new(replay=str(Path(self.tmp.name) / sid))
+        replay2 = self.new(replay=str(Path(self.tmp.name) / sid))
+        last = max(r["iteration"] for r in live)
+        self.assertEqual(self.client.get(f"/sessions/{replay2}/plan?upto=1").status_code, 404)   # not delivered yet
         replayed = [self.client.post(f"/sessions/{replay}/step").json()["iteration"] for _ in live]
         self.assertEqual([r["objectives"] for r in replayed], [r["objectives"] for r in live])
+        # the plan as of each delivered step (K42): checks hold, the key figures are the run's
+        for s in (sid, replay):
+            self.assertEqual(self.client.get(f"/sessions/{s}/plan?upto=0").json()["kpis"]["arrival_delay"]["final"],
+                             self.client.get(f"/sessions/{s}/plan?upto=0").json()["kpis"]["arrival_delay"]["filed"])
+            plan = self.client.get(f"/sessions/{s}/plan?upto={last}").json()
+            self.assertTrue(all(c["ok"] for c in plan["checks"]), plan["checks"])
+            kept = [r for r in live if r["accepted"]]
+            self.assertEqual(plan["kpis"]["arrival_delay"]["final"], kept[-1]["objectives"]["ARRIVAL-DELAY"])
+            self.assertEqual(self.client.get(f"/sessions/{s}/plan?upto={last + 1}").status_code, 404)
 
     def test_event_stream_is_numbered_and_resumable(self):
         sid = self.new(instance=INSTANCE)

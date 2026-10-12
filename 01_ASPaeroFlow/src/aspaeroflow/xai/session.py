@@ -123,6 +123,9 @@ class _ExplainingSession:
         # keep contrasts per kept iteration (xai/keep.py) and the row reasons made from them (explain_rows)
         self._keep: Dict[int, Dict[str, Any]] = {}
         self._rows: Dict[int, Dict[str, Any]] = {}
+        # plans as of a step (xai/plan.py, K42/K06): files only, so their own lock, never the solver's _explain_lock
+        self._plans: Dict[int, Dict[str, Any]] = {}
+        self._plan_lock = threading.Lock()
 
     def trace(self) -> TraceReader:
         if self._trace is None:
@@ -130,6 +133,23 @@ class _ExplainingSession:
         else:
             self._trace.refresh()
         return self._trace
+
+    def delivered(self) -> List[Dict[str, Any]]:
+        """The records the client has received so far (a replay hands them out one by one)."""
+        return list(getattr(self, "records", []))
+
+    def plan(self, upto: int) -> Dict[str, Any]:
+        """The plan as of kept step `upto` (0 = the filed plan). Only steps already delivered can be asked for, so a
+        view that must not look past the shown step cannot be served a later one. KeyError otherwise."""
+        delivered = self.delivered()
+        last = max((r["iteration"] for r in delivered), default=0)
+        if upto < 0 or upto > last:
+            raise KeyError(f"step {upto} has not been delivered (last delivered: {last})")
+        with self._plan_lock:
+            if upto not in self._plans:
+                from .plan import build_plan
+                self._plans[upto] = build_plan(self.folder, getattr(self, "data_dir", None), upto=upto)
+            return self._plans[upto]
 
     def explainer(self, iteration: int) -> IterationExplainer:
         with self._explain_lock:
@@ -369,6 +389,9 @@ class ReplaySession(_ExplainingSession):
             self.data_dir = Path(run["data_dir"]) if run.get("data_dir") else None
         self.initial = run.get("initial_objectives") or {"OVERLOAD": run.get("initial_overload"), "ITERATION": 0}
         self.final: Optional[Dict[str, Any]] = None
+
+    def delivered(self) -> List[Dict[str, Any]]:
+        return self.records[:self.cursor]
 
     def _run_counts(self):
         return len(self.records), sum(1 for r in self.records if r["accepted"])
