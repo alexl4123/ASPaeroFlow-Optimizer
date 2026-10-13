@@ -20,10 +20,13 @@ Endpoints (JSON):
     GET  /sessions/{id}/iterations                    summaries so far
     GET  /sessions/{id}/iterations/{n}                full record (without the instance text)
     POST /sessions/{id}/iterations/{n}/explain        {"question": hotspot|flight|sectors|tie|alternatives|menu, "flight": F}
-                          menu: the requirements a what-if of this step can ask for, each open, met or not_offered
-    POST /sessions/{id}/iterations/{n}/what-if        {"locks": ["keep 18", "avoid 22", "max_delay 19 2", ...]}
+                          menu: the requirements a what-if of this step can ask for, each open, met or not_offered,
+                          and the navpoints of the step's candidate routes with the same states (K47)
+    POST /sessions/{id}/iterations/{n}/what-if        {"locks": ["keep 18", "same_route 18", "max_delay 19 2", ...]}
                           only this step's sub-problem is solved again and compared with the step's recorded answer;
                           locks the recorded answer already meets are not solved when all are met (already_met);
+                          the answer has an outcome (worse_<criterion>, tie, better, already_met, impossible) and
+                          a one-sentence headline;
                           a lock on a flight that is not part of the step answers 400
     GET  /sessions/{id}/events?after=SEQ              text/event-stream; "id:" = sequence number (Last-Event-ID works)
 Events: {"v": 1, "seq": n, "type": "state" | "iteration" | "reasons" | "finished" | "error", "data": {...}}, each a few KB.

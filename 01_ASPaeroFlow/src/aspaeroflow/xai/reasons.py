@@ -10,6 +10,8 @@ holds the text templates; this module fills them.
     step_context(records_by_iteration, n)                            previous record and rejected attempts before n
     explain_rows(record, keep, previous=..., run=..., trace_folder=...)   one line per row of the change list (K12),
                                                                      from the step's keep contrasts (xai/keep.py)
+    what_if_headline(subject, factual, foil, time=..., run=...)    the outcome and the one-sentence headline of a
+                                                                     what-if (K47), in the words of the K12 row lines
 
 Both explain functions return {"iteration", "kept", "run_length", "run_kept", "arrival_delay_metric",
 "lines": [{"id", "kind", "level", "order", "text", "refs", "source"}], "deltas": [{"key", "before", "after",
@@ -25,7 +27,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import clingo
 
-from .subproblem import Subproblem
+from .subproblem import LEVEL_TEXT, Subproblem
 from .time_words import duration_text, granularity, minutes, time_steps, time_text
 
 #: Objective keys of the trace, in the order of the interface (S0 step-words.ts OBJECTIVE_KEYS).
@@ -687,3 +689,68 @@ def explain_rows(record: Dict[str, Any], keep: Dict[str, Any], *, previous: Opti
         return {"iteration": n, "rows": [], "errors": [{"code": "render_error", "text": "render_error"}],
                 "notice": notice}
     return {"iteration": n, "rows": rows, "errors": [], "notice": None}
+
+
+# ------------------------------------------------------------------ what-if headline (K47)
+
+#: The subject of the K12 keep templates and of the layout tie template. A what-if headline puts its own subject
+#: ("With your requirement, the best answer of step 6") in their place, so that a row line and the what-if about the
+#: same comparison read alike.
+KEEP_SUBJECT = "With flight {flight} kept as it was, the best answer of this step"
+TIE_SUBJECT = "If sector {sector} had not been split, the best answer of this step"
+#: the keep template of each deciding level, and the clause of the first level below it on which the foil is lower
+KEEP_TEMPLATE = {"overload": "keep_overload", "delay": "keep_delay", "sectors": "keep_sectors",
+                 "changed": "keep_changed", "config": "keep_config"}
+GAIN_TEMPLATE = {"delay": "gain_delay", "sectors": "gain_sectors", "changed": "gain_changed"}
+
+_TEMPLATES: Optional[Dict[str, str]] = None
+
+
+def text_templates() -> Dict[str, str]:
+    """The developer templates of reasons_text.lp (read once)."""
+    global _TEMPLATES
+    if _TEMPLATES is None:
+        ctl = clingo.Control(["--warn=none"])
+        ctl.add("base", [], (importlib.resources.files(__package__) / "reasons_text.lp").read_text(encoding="utf-8"))
+        ctl.ground([("base", [])])
+        _TEMPLATES = _texts(ctl)[0]
+    return _TEMPLATES
+
+
+def _with_subject(template: str, old: str, subject: str) -> str:
+    if old not in template:
+        raise ValueError(f"template without its subject: {template}")
+    return template.replace(old, subject)
+
+
+def what_if_headline(subject: str, factual: Dict[str, int], foil: Dict[str, int], *, time: Optional[int],
+                     run: Optional[Dict[str, Any]]) -> Tuple[str, str]:
+    """(outcome, headline) of a what-if answer `foil` against the recorded answer `factual` (costs by level). The
+    outcome is worse_<level> for the first level (overload, delay, sectors, changed, config) on which the foil is
+    higher, tie when all five are equal, better when the foil is lower (a guard: never on an optimal recorded answer).
+    The headline is the K12 keep line of that level (reasons.lp row_kind, gain, delay_words) with `subject` in place
+    of "With flight F kept as it was, the best answer of this step" and without the alt sentence."""
+    templates = text_templates()
+    g = granularity(run)
+    deciding = next((level for level in COST_LEVELS if factual.get(level, 0) != foil.get(level, 0)), None)
+    if deciding is None:
+        return "tie", _with_subject(templates["layout_keep_tie"], TIE_SUBJECT, subject)
+    a, b = foil.get(deciding, 0), factual.get(deciding, 0)
+    if a < b:
+        value = (lambda v: duration_text(v, g)) if deciding == "delay" else str
+        return "better", (f"{subject} would be better on {LEVEL_TEXT[deciding]} ({value(a)} instead of {value(b)}); "
+                          f"the recorded choice is not optimal for this step.")
+    below = COST_LEVELS[COST_LEVELS.index(deciding) + 1:]
+    gain = next((level for level in below if level != "config" and foil.get(level, 0) < factual.get(level, 0)), None)
+    values: Dict[str, List[Any]] = {"foil": [a], "chosen": [b]}
+    if time is not None:
+        values["time"] = [int(time)]
+    if gain is not None:
+        values["gain_foil"], values["gain_chosen"] = [foil.get(gain, 0)], [factual.get(gain, 0)]
+    fill = _fill(values, templates, g)
+    # net arrival delay when the run scores signed delay or does not say (reasons.lp signed_delay)
+    metric = (run or {}).get("arrival_delay_metric")
+    fill["delay_words"] = templates["words_net" if metric in (None, "signed") else "words_plain"]
+    fill["gain"] = templates[GAIN_TEMPLATE[gain]].format(**fill) if gain is not None else ""
+    fill["alt"] = ""
+    return f"worse_{deciding}", _with_subject(templates[KEEP_TEMPLATE[deciding]], KEEP_SUBJECT, subject).format(**fill)

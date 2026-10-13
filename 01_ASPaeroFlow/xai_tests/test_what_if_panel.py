@@ -7,6 +7,7 @@ Runs on the shared 10-flight run (xai_tests/shared_run.py).
 """
 import copy
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -19,11 +20,36 @@ sys.path.insert(0, str(OPT))
 sys.path.insert(0, str(HERE))
 
 import shared_run  # noqa: E402
+from src.aspaeroflow.xai import reasons  # noqa: E402
 from src.aspaeroflow.xai.contrastive import IterationExplainer, Lock  # noqa: E402
+from src.aspaeroflow.xai.keep import read_keep  # noqa: E402
 from src.aspaeroflow.xai.subproblem import Solution, compare  # noqa: E402
 from src.aspaeroflow.xai.trace import TraceReader  # noqa: E402
 
-SOLVER_SYNTAX = ("keep_", "no_delay", "avoid ", "keep ")
+SOLVER_SYNTAX = ("keep_", "no_delay", "avoid ", "keep ", "same_route", "max_delay")
+FIXTURES = HERE / "fixtures"
+OUTCOMES = {"worse_overload", "worse_delay", "worse_sectors", "worse_changed", "worse_config", "tie", "better",
+            "already_met", "impossible"}
+
+
+def caps_of(ex):
+    """The delay caps of the menu in time steps: 15, 30 and 60 min, rounded down, without 0 and repeats."""
+    out = []
+    for m in (15, 30, 60):
+        d = m * ex.g // 60
+        if d > 0 and d not in out:
+            out.append(d)
+    return out
+
+
+def headline_of_row(text, n, subject="With your requirement"):
+    """A K12 keep row line as the what-if headline of the same comparison says it (K47): the what-if subject and no
+    alt sentence."""
+    text = re.sub(r"^With flight \d+ kept as it was, the best answer of this step",
+                  f"{subject}, the best answer of step {n}", text)
+    for alt in (" Another new trajectory was exactly as good.",):
+        text = text.replace(alt, "")
+    return text
 
 
 def chosen_meets(ex, lock):
@@ -41,14 +67,15 @@ class WhatIfPanel(unittest.TestCase):
         cls.explainers = {n: IterationExplainer(cls.trace, n) for n in cls.trace.accepted()}
 
     def test_menu_entries_and_states(self):
-        """U1: one keep and one no_delay entry per solver flight with a recorded trajectory, then keep_sectors; the
-        state equals a direct check of the recorded answer and of the candidate set."""
+        """U1: one keep, no_delay and same_route entry and the delay caps per solver flight with a recorded trajectory,
+        then keep_sectors; the state equals a direct check of the recorded answer and of the candidate set."""
         for n, ex in self.explainers.items():
             menu = ex.what_if_menu()["menu"]
             expected = []
             for f in ex.sub.decision_flights:
                 if f in ex.current:
-                    expected += [f"keep {f}", f"no_delay {f}"]
+                    expected += [f"keep {f}", f"no_delay {f}", f"same_route {f}"]
+                    expected += [f"max_delay {f} {d}" for d in caps_of(ex)]
             self.assertEqual([e["lock"] for e in menu], expected + ["keep_sectors"], f"step {n}")
             for e in menu:
                 lock = Lock.parse(e["lock"])
@@ -240,6 +267,210 @@ class WhatIfPanel(unittest.TestCase):
         result = ex.what_if([Lock("path", (f, missing))])
         self.assertEqual(result["answer"], f"No combination of step {n}'s candidate routes, delays and sector "
                                            f"options meets the requirement: flight {f} takes candidate path {missing}.")
+
+    # ------------------------------------------------------------------ K47: outcome, headline, new choices
+
+    def test_outcome_follows_the_ladder(self):
+        """K47 U9: every single requirement of every step's menu (navpoints included): an answer's outcome is
+        worse_<the ladder's deciding level> or tie when no level decides, never better (the recorded answers are
+        optimal); a met requirement is already_met, a not offered one impossible; the headline names the step."""
+        seen = set()
+        for n, ex in self.explainers.items():
+            menu = ex.what_if_menu()
+            locks = [(e["lock"], e["state"]) for e in menu["menu"]] + [(e["lock"], e["state"]) for e in menu["navpoints"]]
+            for lock, state in locks:
+                result = ex.what_if([Lock.parse(lock)])
+                self.assertIn(result["outcome"], OUTCOMES, f"step {n} {lock}")
+                seen.add(result["outcome"])
+                if state == "met":
+                    self.assertEqual(result["outcome"], "already_met", f"step {n} {lock}")
+                    self.assertEqual(result["headline"], result["answer"])
+                    continue
+                if state == "not_offered":
+                    self.assertEqual(result["outcome"], "impossible", f"step {n} {lock}")
+                    self.assertEqual(result["headline"], result["answer"])
+                    continue
+                if not result["feasible"]:
+                    self.assertEqual(result["outcome"], "impossible")
+                    continue
+                deciding = [r["level"] for r in result["ladder"] if r["decides"]]
+                self.assertEqual(result["outcome"], f"worse_{deciding[0]}" if deciding else "tie", f"step {n} {lock}")
+                self.assertTrue(result["optimal"], f"step {n} {lock}")
+                self.assertTrue(result["headline"].startswith(f"With your requirement, the best answer of step {n} would "),
+                                result["headline"])
+                for word in SOLVER_SYNTAX:
+                    self.assertNotIn(word, result["headline"])
+        self.assertNotIn("better", seen)
+        self.assertTrue(seen & {"worse_overload", "worse_delay", "worse_sectors", "worse_changed", "worse_config", "tie"})
+
+    def test_headline_is_the_k12_row_of_keep(self):
+        """K47 U10: on every changed solver flight with a K12 keep line, the headline of the what-if "keep F" is that
+        line with the what-if subject ("With your requirement, the best answer of step n") and without the alt
+        sentence; a keep tie line gives the outcome tie."""
+        compared = 0
+        for n in self.explainers:
+            ex = IterationExplainer(self.trace, n)
+            keep = ex.keep_contrasts()
+            previous, rejected = reasons.step_context(self.trace.iterations, n)
+            rows = reasons.explain_rows(self.trace.iterations[n], keep, previous=previous, run=self.trace.run,
+                                        trace_folder=self.trace.folder, rejected_before=rejected)
+            self.assertEqual(rows["errors"], [], f"step {n}")
+            for row in rows["rows"]:
+                if not row["ref"].startswith("flight:") or not row["kind"].startswith("keep_"):
+                    continue
+                f = int(row["ref"].split(":")[1])
+                result = ex.what_if([Lock("keep", (f,))])
+                if row["kind"] in ("keep_tie", "keep_tie_other"):
+                    self.assertEqual(result["outcome"], "tie", f"step {n} flight {f}")
+                    continue
+                if row["kind"] == "keep_infeasible":
+                    self.assertEqual(result["outcome"], "impossible")
+                    continue
+                self.assertEqual(result["outcome"], "worse_" + row["kind"][len("keep_"):], f"step {n} flight {f}")
+                self.assertEqual(result["headline"], headline_of_row(row["text"], n), f"step {n} flight {f}")
+                compared += 1
+        self.assertGreater(compared, 0)
+
+    def test_headline_templates_on_the_study_fixtures(self):
+        """K47 U11: the headline function on the stored keep contrasts of the June and the 15-minute traces (no
+        solving): for every keep line of a deciding level the headline of the same costs is that line in the what-if
+        words (net arrival delay, clock times, gain clauses); lower costs give the guard outcome better."""
+        compared = 0
+        for name in ("CE7_JUNE_TRACE", "K30_TG4"):
+            folder = FIXTURES / name
+            run = json.loads((folder / "run.json").read_text())
+            records = {}
+            for line in (folder / "trace.jsonl").read_text().splitlines():
+                if line.strip():
+                    r = json.loads(line)
+                    records[r["iteration"]] = r
+            keep = read_keep(folder)
+            for n, entry in keep.items():
+                previous, rejected = reasons.step_context(records, n)
+                rows = reasons.explain_rows(records[n], entry, previous=previous, run=run, trace_folder=folder,
+                                            rejected_before=rejected)
+                for row in rows["rows"]:
+                    level = row["kind"][len("keep_"):]
+                    if not row["ref"].startswith("flight:") or level not in reasons.KEEP_TEMPLATE:
+                        continue
+                    f = row["ref"].split(":")[1]
+                    outcome, headline = reasons.what_if_headline(
+                        f"With your requirement, the best answer of step {n}", entry["factual"]["costs"],
+                        entry["flights"][f]["keep"]["costs"], time=records[n]["hotspot"]["time"], run=run)
+                    self.assertEqual(outcome, f"worse_{level}", f"{name} step {n} flight {f}")
+                    self.assertEqual(headline, headline_of_row(row["text"], n), f"{name} step {n} flight {f}")
+                    compared += 1
+        self.assertGreater(compared, 10)
+        factual = {"overload": 3, "delay": 8, "sectors": 30, "changed": 2, "config": 1}
+        outcome, text = reasons.what_if_headline("With your requirements, the best answer of step 2",
+                                                 factual, dict(factual, delay=4), time=11, run={"timestep_granularity": 4})
+        self.assertEqual((outcome, text), ("better", "With your requirements, the best answer of step 2 would be better on "
+                                           "arrival delay (1 h instead of 2 h); the recorded choice is not optimal for "
+                                           "this step."))
+        self.assertEqual(reasons.what_if_headline("With your requirement, the best answer of step 2", factual, factual,
+                                                  time=11, run={}),
+                         ("tie", "With your requirement, the best answer of step 2 would be exactly as good on every "
+                                 "criterion; the solver picked one of the equally good answers."))
+        outcome, text = reasons.what_if_headline("With your requirement, the best answer of step 2", factual,
+                                                 dict(factual, delay=12), time=11,
+                                                 run={"timestep_granularity": 4, "arrival_delay_metric": "floored"})
+        self.assertEqual(text, "With your requirement, the best answer of step 2 would have the same total overload and "
+                               "a arrival delay of 3 h instead of 2 h, summed over the flights of this step.")
+
+    def test_same_route(self):
+        """K47 U12: "flight F stays on its current route (a delay is allowed)" bans exactly what the card "delaying
+        flight F on its current route instead" bans; open iff the recorded path reroutes F and a same-route candidate
+        exists, met iff it does not reroute F; the what-if names that card and has its costs; a flight whose route
+        before the step is unknown has no allowed candidate."""
+        named = 0
+        for n in self.explainers:
+            ex = IterationExplainer(self.trace, n)
+            menu = {e["lock"]: e for e in ex.what_if_menu()["menu"]}
+            for f in ex.sub.decision_flights:
+                if f not in ex.current:
+                    continue
+                same = [p for p in ex._all_paths(f) if not ex.describe_path(f, p).get("rerouted")]
+                lock = Lock("same_route", (f,))
+                self.assertEqual(ex._lock_bans(lock), (ex._ban_all_but(f, same), set()), f"step {n} flight {f}")
+                rerouted = bool(ex.describe_path(f, ex.chosen_paths[f]).get("rerouted"))
+                state = menu[str(lock)]["state"]
+                self.assertEqual(state == "open", rerouted and bool(same), f"step {n} flight {f}")
+                self.assertEqual(state == "met", not rerouted, f"step {n} flight {f}")
+                self.assertEqual(menu[str(lock)]["text"], f"flight {f} stays on its current route (a delay is allowed)")
+                cards = {c["label"]: c for c in ex.why_flight(f)["contrasts"]}
+                label = f"delaying flight {f} on its current route instead"
+                if label in cards:
+                    result = ex.what_if([lock])
+                    self.assertEqual(result["same_as"], label[0].upper() + label[1:])
+                    self.assertEqual(result["costs"], cards[label]["costs"])
+                    named += 1
+            f = ex.sub.decision_flights[0]
+            bare = IterationExplainer(self.trace, n)
+            del bare.current[f]
+            self.assertEqual(bare._lock_bans(Lock("same_route", (f,)))[0], {(f, p) for p in bare._all_paths(f)})
+        # (the 10-flight run reroutes no flight with a same-route candidate, so `named` stays 0 there; the K47 browser
+        # walk checks the named card on the study run)
+
+    def test_max_delay_states(self):
+        """K47 U13: each delay cap of the menu against all candidates: met iff the recorded path's flights (the solver
+        flight and its later flights) arrive within the cap of their filed arrival, not offered iff no candidate does;
+        minutes and the three text parts as the menu shows them."""
+        for n, ex in self.explainers.items():
+            for e in ex.what_if_menu()["menu"]:
+                if e["kind"] != "max_delay":
+                    continue
+                f, d = Lock.parse(e["lock"]).args
+                members = [f] + [l for l, par in ex.sub.parent.items() if par == f]
+
+                def within(p):
+                    for m in members:
+                        cp = ex.sub.paths.get(m, {}).get(p)
+                        planned = ex.sub.planned_arrival.get(m)
+                        if cp and planned is not None and max(cp.trajectory) - planned > d:
+                            return False
+                    return True
+
+                ok = [p for p in ex._all_paths(f) if within(p)]
+                state = "not_offered" if not ok else ("met" if within(ex.chosen_paths[f]) else "open")
+                self.assertEqual(e["state"], state, f"step {n} {e['lock']}")
+                self.assertEqual(e["minutes"], d * 60 // ex.g)
+                self.assertEqual(e["text"], f"{e['text_before']} {ex._dur(d)} {e['text_after']}")
+                self.assertTrue(e["text"].endswith("filed arrival time"), e["text"])
+
+    def test_navpoint_list(self):
+        """K47 U14: the navpoint list holds exactly the navpoints on the step's candidate routes (later flights
+        included); not offered: some solver flight passes it on every candidate, with a reason (airport or route);
+        met: the recorded answer passes it on no flight; open otherwise. A not offered navpoint's what-if is
+        impossible."""
+        reasons_seen = set()
+        for n, ex in self.explainers.items():
+            navs = ex.what_if_menu()["navpoints"]
+            on_routes = set()
+            for f in ex.sub.decision_flights:
+                for m in [f] + [l for l, par in ex.sub.parent.items() if par == f]:
+                    for cp in ex.sub.paths.get(m, {}).values():
+                        on_routes.update(cp.route)
+            self.assertEqual({e["navpoint"] for e in navs}, on_routes, f"step {n}")
+            for e in navs:
+                nav = e["navpoint"]
+                self.assertEqual(e["lock"], f"avoid {nav}")
+
+                def passes(f, p):
+                    return any(nav in ex.sub.paths[m][p].route for m in [f] + [l for l, par in ex.sub.parent.items()
+                                                                              if par == f] if p in ex.sub.paths.get(m, {}))
+
+                blocked = [f for f in ex.sub.decision_flights if all(passes(f, p) for p in ex._all_paths(f))]
+                recorded = any(passes(f, p) for f, p in ex.chosen_paths.items() if f in ex.sub.decision_flights)
+                state = "not_offered" if blocked else ("open" if recorded else "met")
+                self.assertEqual(e["state"], state, f"step {n} navpoint {nav}")
+                self.assertEqual(e["reason"] is not None, state == "not_offered")
+                if e["reason"]:
+                    reasons_seen.add("airport" if "airport of flight" in e["reason"] else "route")
+                    self.assertIn(str(nav), e["reason"])
+            for e in navs[:3]:
+                if e["state"] == "not_offered":
+                    self.assertEqual(ex.what_if([Lock.parse(e["lock"])])["outcome"], "impossible")
+        self.assertIn("airport", reasons_seen)
 
     def test_cards_and_what_if_share_one_answer(self):
         """A card and a what-if with the same bans are solved once per explainer."""

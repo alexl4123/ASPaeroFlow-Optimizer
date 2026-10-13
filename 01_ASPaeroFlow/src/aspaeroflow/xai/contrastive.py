@@ -18,7 +18,7 @@ from typing import Sequence, Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import clingo
 
-from .reasons import explain_step, step_context
+from .reasons import explain_step, step_context, what_if_headline
 from .subproblem import LEVELS, LEVEL_TEXT, amount, CandidatePath, Solution, Subproblem, SubproblemSolver, compare
 from .time_words import duration_text, granularity, minutes, minutes_text, time_text
 from .trace import TraceReader
@@ -44,7 +44,8 @@ class Lock:
     keep F          flight F keeps its current trajectory
     path F P        flight F takes candidate path P
     no_delay F      flight F departs no later than now
-    max_delay F D   flight F (and its later legs) arrives at most D steps after its planned arrival
+    same_route F    flight F stays on its current route; a delay is allowed (K47)
+    max_delay F D   flight F (and its later legs) arrives at most D time steps after its planned arrival
     avoid N [F]     no flight (or only flight F) passes navpoint N
     keep_sectors    the hotspot's sectors stay as they are (configuration 0)
     """
@@ -591,9 +592,30 @@ class IterationExplainer:
             return f"flight {f} departs no later than before the step"
         if k == "path":
             return f"flight {f} takes candidate path {a[1]}"
+        if k == "same_route":
+            return f"flight {f} stays on its current route (a delay is allowed)"
         if k == "max_delay":
-            return f"flight {f} and its later flights arrive at most {self._dur(a[1])} after their planned arrival"
+            return " ".join(self._max_delay_parts(f, a[1]))
         raise ValueError(f"unknown lock kind: {k}")
+
+    def _later(self, flight: int) -> List[int]:
+        """The later flights of the same aircraft in the sub-problem (they follow the path index of `flight`)."""
+        return [l for l, par in sorted(self.sub.parent.items()) if par == flight]
+
+    def _max_delay_parts(self, flight: int, steps: int) -> Tuple[str, str, str]:
+        """The delay cap's text in three parts (before the duration, the duration, after it), so that the menu can
+        put a choice of durations in the middle."""
+        if self._later(flight):
+            return (f"flight {flight} and its later flights arrive at most", self._dur(steps),
+                    "after their filed arrival time")
+        return f"flight {flight} arrives at most", self._dur(steps), "after its filed arrival time"
+
+    def _same_route_paths(self, flight: int) -> Optional[List[int]]:
+        """The candidates of a solver flight on its route before the step (any delay); None when that route is not
+        recorded. The same set as the card "delaying flight F on its current route instead"."""
+        if flight not in self.current:
+            return None
+        return [p for p in self._all_paths(flight) if not self.describe_path(flight, p).get("rerouted")]
 
     def lock_met(self, lock: Lock) -> bool:
         """The recorded answer of the step already satisfies the lock (no ban hits it)."""
@@ -618,8 +640,65 @@ class IterationExplainer:
             entry(Lock("keep", (f,)), f, bool(self.unchanged_paths(f)))
             entry(Lock("no_delay", (f,)), f,
                   any(self.describe_path(f, p).get("departure_shift", 0) <= 0 for p in self._all_paths(f)))
+            entry(Lock("same_route", (f,)), f, bool(self._same_route_paths(f)))
+            # delay caps of 15, 30 and 60 min in whole time steps; a cap that rounds to 0 or to a cap already listed
+            # is left out
+            caps: List[int] = []
+            for m in self.DELAY_CAPS:
+                d = m * self.g // 60
+                if d > 0 and d not in caps:
+                    caps.append(d)
+            for d in caps:
+                lock = Lock("max_delay", (f, d))
+                entry(lock, f, len(self._lock_bans(lock)[0]) < len(self._all_paths(f)))
+                before, _, after = self._max_delay_parts(f, d)
+                entries[-1].update({"minutes": minutes(d, self.g), "text_before": before, "text_after": after})
         entry(Lock("keep_sectors"), None, 0 in self.sub.configs)
-        return {"iteration": self.iteration, "menu": entries}
+        return {"iteration": self.iteration, "menu": entries, "navpoints": self.navpoint_states()}
+
+    #: the delay caps the menu offers, in minutes
+    DELAY_CAPS = (15, 30, 60)
+
+    def navpoint_states(self) -> List[Dict[str, Any]]:
+        """Every navpoint on a candidate route of the step (later flights included) with the state of "no flight of
+        the step passes it": open (each flight passing it has a candidate that avoids it, and the recorded answer
+        passes it), met (the recorded answer avoids it) or not_offered (some flight passes it on every candidate),
+        with the reason of a not_offered one."""
+        navs: Set[int] = set()
+        for f in self.sub.decision_flights:
+            for m in [f] + self._later(f):
+                for cp in self.sub.paths.get(m, {}).values():
+                    navs.update(cp.route)
+        out = []
+        for n in navs:
+            lock = Lock("avoid", (n,))
+            paths, _ = self._lock_bans(lock)
+            blocked = [f for f in self.sub.decision_flights
+                       if self._all_paths(f) and all((f, p) in paths for p in self._all_paths(f))]
+            if blocked:
+                state, reason = "not_offered", self._unavoidable(n, blocked[0])
+            else:
+                state, reason = ("met" if self.lock_met(lock) else "open"), None
+            out.append({"navpoint": n, "name": self._nav(n), "lock": str(lock), "state": state, "reason": reason})
+        out.sort(key=lambda e: (0, int(e["name"]), "") if e["name"].isdigit() else (1, 0, e["name"]))
+        return out
+
+    def _unavoidable(self, navpoint: int, flight: int) -> str:
+        """Why every candidate of a solver flight passes a navpoint: it is the departure or arrival airport of the
+        flight or of a later flight, or every candidate route of one of them passes it."""
+        name = self._nav(navpoint)
+        members = [flight] + self._later(flight)
+        for m in members:
+            routes = [self.sub.paths[m][p].route for p in self._all_paths(flight) if p in self.sub.paths.get(m, {})]
+            if routes and all(r and r[0] == navpoint for r in routes):
+                return f"{name} is the departure airport of flight {m}"
+            if routes and all(r and r[-1] == navpoint for r in routes):
+                return f"{name} is the arrival airport of flight {m}"
+        for m in members:
+            routes = [self.sub.paths[m][p].route for p in self._all_paths(flight) if p in self.sub.paths.get(m, {})]
+            if routes and all(navpoint in r for r in routes):
+                return f"every candidate route of flight {m} passes {name}"
+        return f"every candidate of flight {flight} passes {name}, on its own route or on a later flight's"
 
     def _lock_bans(self, lock: Lock) -> Tuple[PathSet, Set[int]]:
         k, a = lock.kind, lock.args
@@ -627,11 +706,14 @@ class IterationExplainer:
         configs: Set[int] = set()
         if k == "keep_sectors":
             configs = {c for c in self.sub.configs if c != 0}
-        elif k in ("keep", "path", "no_delay", "max_delay"):
+        elif k in ("keep", "path", "no_delay", "same_route", "max_delay"):
             f = self._flight_of_lock(lock)
             if k == "keep":
                 # every candidate whose trajectory is the one before the step stays allowed (the keep card's bans)
                 paths = self._ban_all_but(f, self.unchanged_paths(f) or [])
+            elif k == "same_route":
+                # the bans of the card "delaying flight F on its current route instead" (route unknown: all banned)
+                paths = self._ban_all_but(f, self._same_route_paths(f) or [])
             elif k == "path":
                 paths = self._ban_all_but(f, [a[1]])
             elif k == "no_delay":
@@ -668,7 +750,7 @@ class IterationExplainer:
             if self.chosen_config == 0:
                 return None
             return "Keeping the hotspot's sectors as they are", self.keep_layout()
-        if lock.kind not in ("keep", "no_delay"):
+        if lock.kind not in ("keep", "no_delay", "same_route"):
             return None
         f = self._flight_of_lock(lock)
         pf, pu = self.chosen_paths.get(f), self.unchanged(f)
@@ -677,6 +759,11 @@ class IterationExplainer:
         if lock.kind == "keep":
             keep = self.keep_flight(f)
             return None if keep is None else (f"Keeping flight {f} as it was", keep)
+        if lock.kind == "same_route":
+            same = self._same_route_paths(f)
+            if not self.describe_path(f, pf).get("rerouted") or not same:
+                return None
+            return f"Delaying flight {f} on its current route instead", self._solve_bans(self._ban_all_but(f, same))
         if self.describe_path(f, pf).get("departure_shift", 0) <= 0:
             return None
         allowed = [p for p in self._all_paths(f) if self.describe_path(f, p).get("departure_shift", 0) <= 0]
@@ -746,14 +833,15 @@ class IterationExplainer:
                         for lock, text in zip(locks, texts)]
         question = f"What if, in {step}, " + " and ".join(texts) + "?"
         out: Dict[str, Any] = {"iteration": self.iteration, "question": question, "requirements": requirements,
-                               "already_met": False, "feasible": True, "same_as": None, "scope": SCOPE}
+                               "already_met": False, "feasible": True, "same_as": None, "scope": SCOPE,
+                               "optimal": None}
         if all(r["met"] for r in requirements):
             if not many and locks[0].kind == "avoid" and not self._lock_bans(locks[0])[0]:
                 answer = (f"No candidate route of {step} passes navpoint {self._nav(locks[0].args[0])}; {step}'s choice already "
                           f"meets this requirement.")
             else:
                 answer = f"{step.capitalize()}'s choice already meets {noun}. Nothing is solved again."
-            return out | {"already_met": True, "answer": answer}
+            return out | {"already_met": True, "answer": answer, "outcome": "already_met", "headline": answer}
 
         same = self._same_card(locks[0]) if not many else None
         if same is not None:
@@ -781,19 +869,27 @@ class IterationExplainer:
                 else:
                     answer = (f"No combination of {step}'s candidate routes, delays and sector options meets these "
                               f"requirements together: " + " and ".join(core_texts) + ".")
-                return out | {"feasible": False, "core": core, "core_texts": core_texts, "answer": answer}
+                return out | {"feasible": False, "core": core, "core_texts": core_texts, "answer": answer,
+                              "outcome": "impossible", "headline": answer}
         if not sol.satisfiable:          # the card's own answer: no candidate meets the lock
             text = self.lock_text(locks[0])
-            return out | {"feasible": False, "core": [str(locks[0])], "core_texts": [text],
-                          "answer": (f"No combination of {step}'s candidate routes, delays and sector options meets "
-                                     f"the requirement: {text}.")}
+            answer = (f"No combination of {step}'s candidate routes, delays and sector options meets the requirement: "
+                      f"{text}.")
+            return out | {"feasible": False, "core": [str(locks[0])], "core_texts": [text], "answer": answer,
+                          "outcome": "impossible", "headline": answer}
         label = "the answer with your requirements" if many else "the answer with your requirement"
         deciding, verdict = self._contrast_text(label, sol, chosen_name=f"{step}'s choice")
         recorded = self._answer_of(self.chosen_paths, self.chosen_config)
         other = self._answer_of(sol.chosen_paths, sol.chosen_config)
         changes = self._differences(sol)
         answer = verdict + (" In that answer " + "; ".join(changes) + "." if changes else "")
-        return out | {"verdict": verdict, "deciding_level": deciding, "answer": answer,
+        # K47: the outcome in one word and the K12 row sentence of the same comparison; optimal is False when either
+        # answer is not proven optimal (K12 shows no row line then)
+        outcome, headline = what_if_headline(
+            f"With your {'requirements' if many else 'requirement'}, the best answer of {step}",
+            self.factual.costs, sol.costs, time=self.record["hotspot"].get("time"), run=self.trace.run)
+        return out | {"verdict": verdict, "deciding_level": deciding, "answer": answer, "outcome": outcome,
+                      "headline": headline, "optimal": bool(sol.optimal and self.factual.optimal),
                       "answers": {"recorded": recorded, "what_if": other}, "table": self._table(recorded, other),
                       "costs": sol.costs, "chosen_paths": sol.chosen_paths, "chosen_config": sol.chosen_config,
                       "ladder": self._ladder(self.factual, sol)}
