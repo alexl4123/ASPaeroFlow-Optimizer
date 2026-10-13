@@ -1088,7 +1088,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # analysis reads SOLVER-STOPPED-AT-DEADLINE and SOLVER-EXHAUSTED from the result line instead,
     # and which needs the lower bound that only a run stopped from inside can report.
     parser.add_argument("--solve-deadline-margin", type=float, default=None, metavar="SECONDS",
-                        help="ABLATION ONLY. Pass --solve-deadline=<time-limit minus SECONDS> to "
+                        help="Off by default (the V2 campaign kills a run at the limit). Used by "
+                             "the solver-option ablation and the 05_ASP rerun on the fixed encoding "
+                             "(run_benchmark_units.slurm SOLVE_DEADLINE_MARGIN). "
+                             "Pass --solve-deadline=<time-limit minus SECONDS> to "
                              "02_ASP systems (no other system), so clingo is stopped from inside "
                              "before this script's kill and still reports its lower bound. A run "
                              "stopped this way exits normally and is recorded with a runtime, not "

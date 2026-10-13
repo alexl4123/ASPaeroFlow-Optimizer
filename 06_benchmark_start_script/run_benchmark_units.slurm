@@ -92,8 +92,20 @@ PYTHON_BIN="${PYTHON_BIN:-}"                 # interpreter for the solvers. EMPT
                                              # rehearse a submission on a workstation:
                                              #   PYTHON_BIN=$(which python) bash run_benchmark_units.slurm
 
+SOLVE_DEADLINE_MARGIN="${SOLVE_DEADLINE_MARGIN:-}"  # EMPTY BY DEFAULT: an exact-ASP run is killed at
+                                             # TIME_LIMIT as in the V2 campaign, and a timeout
+                                             # saves no schedule. Set to N seconds and 02_ASP stops
+                                             # its own search at TIME_LIMIT - N, prints its result
+                                             # line and saves the schedule of its best solution,
+                                             # so the validator can check it. Such a run exits
+                                             # normally: read COMPUTATION-FINISHED (False) and
+                                             # SOLVER-STOPPED-AT-DEADLINE, not the outcome, to tell
+                                             # it from a finished one. Other systems ignore it.
+
 PYBIN_FLAG=()
 [ -n "$PYTHON_BIN" ] && PYBIN_FLAG=(--python-bin="$PYTHON_BIN")
+DEADLINE_FLAG=()
+[ -n "$SOLVE_DEADLINE_MARGIN" ] && DEADLINE_FLAG=(--solve-deadline-margin="$SOLVE_DEADLINE_MARGIN")
 
 [ -f "$WORKLIST" ] || { echo "[ERROR] $WORKLIST not found -- run ./build_worklist.py first" >&2; exit 1; }
 : "${SLURM_ARRAY_TASK_ID:?this script is an array job; submit it with --array=1-N}"
@@ -227,6 +239,7 @@ PROV="${PROV_DIR}/task_${SLURM_ARRAY_JOB_ID:-local}_${SLURM_ARRAY_TASK_ID}.txt"
   echo "chunk=${CHUNK}"
   echo "time_limit_s=${TIME_LIMIT}"
   echo "memory_limit_gib=${MEMORY_LIMIT}"
+  echo "solve_deadline_margin_s=${SOLVE_DEADLINE_MARGIN:-off}"
   echo "optimizer_commit=$(git -C .. rev-parse HEAD 2>/dev/null || echo unknown)"
   echo "optimizer_dirty=$(test -n "$(git -C .. status --porcelain 2>/dev/null)" && echo yes || echo no)"
   echo "slurm_job=${SLURM_ARRAY_JOB_ID:-local}_${SLURM_ARRAY_TASK_ID}"
@@ -291,6 +304,7 @@ for (( UNIT = FIRST_UNIT; UNIT <= LAST_UNIT; UNIT++ )); do
     --only-instance="${INSTANCE}" \
     --only-system="${SYSTEM}" \
     ${PYBIN_FLAG[@]+"${PYBIN_FLAG[@]}"} \
+    ${DEADLINE_FLAG[@]+"${DEADLINE_FLAG[@]}"} \
     "${EXPERIMENTS[@]}" || UNIT_RC=$?
 
   if [ "$UNIT_RC" -eq 0 ]; then STATUS="ok"; N_OK=$(( N_OK + 1 ));

@@ -6,7 +6,7 @@ units renumbered from 1, so run_benchmark_units.slurm and merge_benchmark_shards
 any campaign. Every kept row is copied from the source worklist, so problem, time granularity,
 region, capacity level and family are exactly the campaign's.
 
-Two modes:
+Three modes:
 
   --systems A,B [--only-finished]   the source's units of these systems; with --only-finished only
                                     those whose run FINISHED in the source campaign, read from the
@@ -14,6 +14,10 @@ Two modes:
                                     with --outcome-from individual, from individual_outputs/).
   --as-system S                     one unit per (problem, instance) of the source, for system S --
                                     a new method over exactly the campaign's instances.
+  --only-keys FILE                  exactly the units listed in FILE, a TSV with the header
+                                    problem_dir, instance, system (e.g. the published rows of one
+                                    method that reported a solution). Every listed unit must be in
+                                    the source worklist.
 
     # R-DC: regenerate the matrices 03_DELAY and 03A_CASA lost to their shared results folder
     ./build_rerun_worklist.py --source-folder 20260918_V2 --folder 20260930_V2_RERUN_DC \\
@@ -21,6 +25,9 @@ Two modes:
     # R-SEQ: 0_Sequential on every instance of the campaign
     ./build_rerun_worklist.py --source-folder 20260918_V2 --folder 20260930_V2_SEQ \\
         --as-system 0_Sequential
+    # the large-family 05_ASP rows that reported a solution, on the fixed exact encoding
+    ./build_rerun_worklist.py --source-folder 20260918_V2 --folder 20261013_V2_05ASP_FIX \\
+        --only-keys rerun_lists/05asp_large_with_incumbent.tsv
 
 The system(s) must be ones run_benchmark_units.slurm can run for each problem: checked here with
 the same benchmark_families.py flags and build_system_config() the unit will use.
@@ -88,6 +95,20 @@ def finished_from_individual(problem_dir: Path, instance: str, system: str) -> s
     return OUTCOMES.get(lines, "unknown") if isinstance(lines, str) else "unknown"
 
 
+def read_keys(path: Path) -> Set[Tuple[str, str, str]]:
+    """(problem_dir, instance, system) of every row of a --only-keys file."""
+    with path.open(encoding="utf-8") as fh:
+        header = fh.readline().rstrip("\n").split("\t")
+        if header != ["problem_dir", "instance", "system"]:
+            raise SystemExit(f"[ERROR] {path}: header {header} is not ['problem_dir', 'instance', 'system']")
+        keys = [tuple(line.rstrip("\n").split("\t")) for line in fh if line.strip()]
+    if any(len(k) != 3 for k in keys):
+        raise SystemExit(f"[ERROR] {path}: every row needs three tab-separated fields")
+    if len(set(keys)) != len(keys):
+        raise SystemExit(f"[ERROR] {path}: duplicate rows")
+    return set(keys)
+
+
 def runnable(system: str, capacity_level: str, run_mip: str) -> bool:
     """Whether a unit of `system` on a problem of this capacity level would find its system."""
     flags = families.experiment_flags(capacity_level, run_mip, system=system)
@@ -111,6 +132,8 @@ def main() -> int:
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument("--systems", default=None, help="comma-separated system keys to keep")
     mode.add_argument("--as-system", default=None, help="one unit per (problem, instance) for this system")
+    mode.add_argument("--only-keys", type=Path, default=None,
+                      help="TSV (problem_dir, instance, system): exactly these units of the source")
     ap.add_argument("--only-finished", action="store_true",
                     help="with --systems: keep only units whose run finished in the source campaign")
     ap.add_argument("--outcome-from", default="progress", choices=["progress", "individual"],
@@ -142,6 +165,19 @@ def main() -> int:
                 seen.add(key)
                 kept.append(dict(row, system=a.as_system))
         wanted = {a.as_system}
+    elif a.only_keys:
+        keys = read_keys(a.only_keys)
+        kept = [row for row in rows if (row["problem_dir"], row["instance"], row["system"]) in keys]
+        missing = keys - {(row["problem_dir"], row["instance"], row["system"]) for row in kept}
+        if missing:
+            print(f"[ERROR] {len(missing)} listed unit(s) not in the source worklist, e.g. "
+                  f"{sorted(missing)[:3]}", file=sys.stderr)
+            return 1
+        if len(kept) != len(keys):
+            print(f"[ERROR] the source worklist holds some listed unit more than once "
+                  f"({len(kept)} rows for {len(keys)} keys)", file=sys.stderr)
+            return 1
+        wanted = {k[2] for k in keys}
     else:
         wanted = {s.strip() for s in a.systems.split(",") if s.strip()}
         known = {row["system"] for row in rows}
@@ -199,6 +235,7 @@ def main() -> int:
         "written_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "source_worklist": str(source), "source_units": len(rows),
         "mode": f"as-system {a.as_system}" if a.as_system else
+                f"only keys {a.only_keys} ({len(kept)} units)" if a.only_keys else
                 f"systems {sorted(wanted)}" + (f", only finished (from {a.outcome_from})" if a.only_finished else ""),
         "units": len(kept), "per_system": per_system, "dropped_by_source_outcome": dropped,
     }
