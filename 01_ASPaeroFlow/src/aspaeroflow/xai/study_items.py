@@ -252,6 +252,16 @@ def select(pool: Dict[str, List[Dict[str, Any]]], run_id: str) -> List[Dict[str,
     return picked
 
 
+def select_practice(pool: Dict[str, List[Dict[str, Any]]], step: int) -> List[Dict[str, Any]]:
+    """The practice run's one item (K33/K32): about `step`, the step after the ones the introduction tour explains;
+    a forward item if there is one, else a reason item, else a counterfactual."""
+    for kind in ("forward", "reason", "counterfactual"):
+        items = [i for i in pool[kind] if i["step"] == step]
+        if items:
+            return [sorted(items, key=lambda i: i.get("flight") or 0)[0]]
+    return []
+
+
 def missing_kinds(items: List[Dict[str, Any]]) -> List[str]:
     """The kinds of the planned mix (one forward, counterfactual, claim, two reason) that could not be filled."""
     want = {"forward": 1, "counterfactual": 1, "claim": 1, "reason": 2}
@@ -259,15 +269,16 @@ def missing_kinds(items: List[Dict[str, Any]]) -> List[str]:
     return [k for k, n in want.items() for _ in range(n - have[k])]
 
 
-def build_items(folder: Path, run_id: str) -> Dict[str, Any]:
+def build_items(folder: Path, run_id: str, practice_step: Optional[int] = None) -> Dict[str, Any]:
     run = Run(folder)
     pool = {"forward": forward_items(run), "counterfactual": counterfactual_items(run),
             "claim": claim_items(run), "reason": reason_items(run)}
-    items = select(pool, run_id)
+    items = select(pool, run_id) if practice_step is None else select_practice(pool, practice_step)
     for k, i in enumerate(items, 1):
         i["id"] = f"{run_id}{k}"
         i["type"] = "single_choice"
-    return {"run": run_id, "trace": str(folder), "items": items, "missing": missing_kinds(items),
+    return {"run": run_id, "trace": str(folder), "items": items,
+            "missing": missing_kinds(items) if practice_step is None else ([] if items else ["practice"]),
             "pool": {k: len(v) for k, v in pool.items()}, "pool_items": pool}
 
 
@@ -290,8 +301,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     ap.add_argument("trace")
     ap.add_argument("--run", required=True)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--practice-step", type=int, default=None, help="one practice item about this step")
     a = ap.parse_args(argv)
-    result = build_items(Path(a.trace), a.run)
+    result = build_items(Path(a.trace), a.run, a.practice_step)
     out = Path(a.out) if a.out else Path(a.trace)
     out.mkdir(parents=True, exist_ok=True)
     (out / f"study_items_{a.run}.json").write_text(json.dumps(result, indent=1))

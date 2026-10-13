@@ -69,5 +69,13 @@ class StudyItems(unittest.TestCase):
         self.assertIn("(key)", review_table(self.result))
 
 
+    def test_practice_mode_one_item_about_the_given_step(self):
+        result = build_items(TRACE, "P", practice_step=6)
+        self.assertLessEqual(len(result["items"]), 1)
+        for i in result["items"]:
+            self.assertEqual((i["id"], i["step"]), ("P1", 6))
+        self.assertEqual(result["missing"], [] if result["items"] else ["practice"])
+
+
 if __name__ == "__main__":
     unittest.main()
