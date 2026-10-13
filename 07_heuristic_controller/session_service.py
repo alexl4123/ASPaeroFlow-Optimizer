@@ -336,7 +336,8 @@ def main(argv=None) -> None:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8090)
     args = p.parse_args(argv)
-    uvicorn.run(create_app(args.instances_root, args.sessions_root), host=args.host, port=args.port)
+    # K39: no access log (behind the study gateway it would only show 127.0.0.1, but nothing should log requests)
+    uvicorn.run(create_app(args.instances_root, args.sessions_root), host=args.host, port=args.port, access_log=False)
 
 
 if __name__ == "__main__":
