@@ -10,6 +10,7 @@ in front of them.
 """
 from __future__ import annotations
 
+import copy
 import csv
 import importlib.util
 import json
@@ -20,6 +21,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from . import answer_cache
 from .contrastive import IterationExplainer, Lock
 from .keep import append_keep, keep_matches, read_keep
 from .reasons import explain_rows, explain_start, explain_step, step_context, time_scale
@@ -413,6 +415,11 @@ class OptimizerSession(_ExplainingSession):
         return instance_graph(self.data_dir) | self._run_extras()
 
 
+#: K35: one read-only copy of each trace's answer cache per process, shared by all sessions of that trace
+_CACHES: Dict[tuple, Dict[str, Any]] = {}
+_CACHES_LOCK = threading.Lock()
+
+
 class ReplaySession(_ExplainingSession):
     """A finished trace served like a live run: step() hands out the next recorded iteration."""
 
@@ -439,6 +446,54 @@ class ReplaySession(_ExplainingSession):
             self.data_dir = Path(run["data_dir"]) if run.get("data_dir") else None
         self.initial = run.get("initial_objectives") or {"OVERLOAD": run.get("initial_overload"), "ITERATION": 0}
         self.final: Optional[Dict[str, Any]] = None
+        self._answers = self._load_answers()
+
+    def _load_answers(self) -> Optional[Dict[str, Any]]:
+        """The trace's answer cache (K35, xai/answer_cache.py) when its fingerprint matches this session (trace,
+        keep contrasts, clingo, code, navpoint names); None otherwise (then every question is solved)."""
+        try:
+            cache = answer_cache.load(self.folder)
+            if cache is None:
+                return None
+            fp = answer_cache.fingerprint(self.folder, self._keep, self.display_names())
+            if cache.get("version") != answer_cache.VERSION or cache.get("fingerprint") != fp:
+                log.warning("%s: the answer cache does not match this trace or code; answers are solved", self.folder)
+                return None
+            with _CACHES_LOCK:
+                return _CACHES.setdefault((str(self.folder), fp), cache["entries"])
+        except (OSError, ValueError, KeyError):
+            log.exception("%s: answer cache not readable; answers are solved", self.folder)
+            return None
+
+    def _fresh_explainer(self, iteration: int) -> IterationExplainer:
+        """An explainer for one question only, so an answer outside the cache does not depend on earlier ones."""
+        ex = IterationExplainer(self.trace(), iteration)
+        ex.names = self.display_names()
+        if iteration in self._keep:
+            try:
+                ex.load_keep(self._keep[iteration])
+            except (ValueError, KeyError, TypeError):
+                log.exception("iteration %s: stored keep contrasts not usable", iteration)
+        return ex
+
+    def explain(self, iteration: int, question: str, flight: Optional[int] = None) -> Dict[str, Any]:
+        if self._answers is not None:
+            hit = self._answers.get(answer_cache.explain_key(iteration, question, flight))
+            if hit is not None:
+                return copy.deepcopy(hit)
+        return super().explain(iteration, question, flight)
+
+    def what_if(self, iteration: int, locks: List[str]) -> Dict[str, Any]:
+        if self._answers is not None:
+            hit = self._answers.get(answer_cache.what_if_key(iteration, locks))
+            if hit is not None:
+                return copy.deepcopy(hit)
+            if iteration not in self.trace().iterations:
+                raise KeyError(f"iteration {iteration} is not (yet) in the trace")
+            ex = self._fresh_explainer(iteration)
+            canonical = sorted({str(Lock.parse(text)) for text in locks})      # as the cache's keys (and the browser)
+            return answer_cache._plain(ex.what_if([Lock.parse(text) for text in canonical]))
+        return super().what_if(iteration, locks)
 
     def delivered(self) -> List[Dict[str, Any]]:
         return self.records[:self.cursor]
@@ -464,20 +519,3 @@ class ReplaySession(_ExplainingSession):
         base = instance_graph(self.data_dir) if self.data_dir else {"vertices": [], "edges": []}
         return base | self._run_extras()
 
-
-def precompute(folder: Path, out: Path) -> None:
-    """Answers to the standard questions of every accepted iteration, for a replay without solving."""
-    session = ReplaySession(folder)
-    answers: Dict[str, Any] = {}
-    for record in session.records:
-        n = record["iteration"]
-        if not record["accepted"]:
-            continue
-        ex = session.explainer(n)
-        answers[str(n)] = {
-            "hotspot": ex.why_hotspot(),
-            "flights": {str(f): ex.why_flight(f) for f in ex.sub.decision_flights},
-            "sectors": ex.why_sectors(),
-            "tie": ex.tie_check(),
-        }
-    Path(out).write_text(json.dumps(answers, indent=1), encoding="utf-8")
