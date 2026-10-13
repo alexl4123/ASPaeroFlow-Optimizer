@@ -1,5 +1,5 @@
-"""Study items with answer keys from a recorded run (K32b): forward prediction, counterfactual, claim verification
-and reason items for the replay study, written as a list the task panel can read and a table for the review.
+"""Study items with answer keys from a recorded run (K32b): forward prediction, counterfactual, claim verification,
+reason and sector items for the replay study, written as a list the task panel can read and a table for the review.
 
     python -m src.aspaeroflow.xai.study_items <trace folder> --run A [--out DIR]     (from 01_ASPaeroFlow)
 
@@ -12,9 +12,12 @@ Every key is derived from the trace and its keep contrasts (xai/keep.py), never 
   ("dominated"); the claim "this plan is better" is false. Whether it stays dominated after the rest of the run is
   not checked here (a forced-alternative continuation, open);
 - reason (step n, flight F): why the step changed F, from the row reasons (xai/reasons.py explain_rows) and the keep
-  contrast: the first criterion on which keeping F is worse, a later flight of the same aircraft, or a tie.
-Items are proposed in a pool; five are selected per run (one forward, one counterfactual, one claim, two reason), in
-step order, so that the step a participant may see (`cap`) never goes back within a block.
+  contrast: the first criterion on which keeping F is worse, a later flight of the same aircraft, or a tie;
+- sector (step n, sector S, Sprint 6): why the step split S, from the kind of its layout row (reasons.lp: the step
+  solved again with the layout kept leaves more overload, or the same overload and more delay).
+Items are proposed in a pool; six are selected per run (one forward, one counterfactual, one claim, two reason, one
+sector), in step order, so that the step a participant may see (`cap`) never goes back within a block. A forward
+item (a prediction task) needs at least three seen steps and is never the first task.
 """
 from __future__ import annotations
 
@@ -62,12 +65,15 @@ class Run:
         self.records = [r for r in self.session.records if r.get("accepted")]
         self.keep = read_keep(self.folder)
         self.plan = build_plan(self.folder)
+        run_json = self.folder / "run.json"
+        self.merging = bool(json.loads(run_json.read_text()).get("minimize_number_sectors")) if run_json.exists() else True
         self.mps = self.plan["run"]["minutes_per_step"]
         self.per_day = self.plan["run"]["steps_per_day"]
         self._rows: Dict[int, Dict[str, Dict[str, Any]]] = {}
 
     def time(self, t: int) -> str:
-        return f"time step {t} ({clock(t, self.mps, self.per_day)})"
+        """Item texts give clock times only: "step" means the optimizer's step there (Alexander, 13 Oct)."""
+        return clock(t, self.mps, self.per_day)
 
     def rows(self, n: int) -> Dict[str, Dict[str, Any]]:
         if n not in self._rows:
@@ -111,9 +117,9 @@ def forward_items(run: Run) -> List[Dict[str, Any]]:
         options += [{"id": "none", "text": "None of these flights"}, CANNOT_TELL]
         out.append({
             "kind": "forward", "step": n, "cap": n - 1, "visible_in_e_on": False,
-            "prompt": (f"Next comes step {n}. It deals with sector {h.get('sector')} at {run.time(h.get('time'))}, "
-                       f"where {h.get('demand')} flights meet a capacity of {h.get('capacity')}. "
-                       f"Which of these flights will the optimizer change in step {n}?"),
+            "prompt": (f"Your task is to predict the optimizer's next step (step {n}): it works on sector "
+                       f"{h.get('sector')} at {run.time(h.get('time'))}, where {h.get('demand')} flights meet a capacity "
+                       f"of {h.get('capacity')}. Which of these flights do you expect it to change?"),
             "options": options, "key": f"f{changed[0]}",
             "source": f"step {n}: hotspot flights {sorted(shown)}, given to the solver {decision}, changed {changed}; "
                       f"row class {row.get('class')}",
@@ -221,34 +227,87 @@ def reason_items(run: Run) -> List[Dict[str, Any]]:
     return out
 
 
+SECTOR_OPTIONS = [
+    {"id": "overload", "text": "Without the split, more overload would have been left"},
+    {"id": "delay", "text": "Without the split, the overload would have been the same but the arrival delay higher"},
+    {"id": "sectors", "text": "Without the split, more sectors would have had to be open"},
+    {"id": "tie", "text": "Not splitting would have been just as good"},
+    CANNOT_TELL,
+]
+#: the layout row kinds of reasons.lp with a clear key (layout_keep_changed and layout_keep_tie are not used)
+SECTOR_KEYS = {"layout_keep_overload": "overload", "layout_keep_delay": "delay"}
+
+
+def sector_items(run: Run) -> List[Dict[str, Any]]:
+    """Why a kept step split a sector. Only when merging is off (then a split always opens more sectors, so the
+    'more sectors' option is false) and the step solved with the layout kept has fewer open sectors."""
+    out = []
+    if run.merging:
+        return out
+    for r in run.records:
+        n = r["iteration"]
+        sc = r.get("sector_changes") or {}
+        parts = sc.get("post_sector_config") or {}
+        if len(parts) < 2:
+            continue
+        s, t = sc.get("sector_index"), sc.get("time_index")
+        row = run.rows(n).get(f"sector:{s}@{n}:before") or {}
+        key = SECTOR_KEYS.get(row.get("kind"))
+        layout = run.keep.get(n, {}).get("layout") or {}
+        keep, factual = _costs(layout.get("keep")), run.factual(n)
+        if key is None or not keep or not factual or not keep.get("sectors", 0) < factual.get("sectors", 0):
+            continue
+        out.append({
+            "kind": "sector", "step": n, "cap": n, "visible_in_e_on": True, "sector": s,
+            "prompt": (f"In step {n} the optimizer split sector {s} at {run.time(t)} into {len(parts)} sectors. "
+                       f"Why did it split the sector?"),
+            "options": SECTOR_OPTIONS, "key": key,
+            "source": f"layout row {row.get('kind')}; keep layout {keep} against {factual}; "
+                      + (row.get("text") or "")[:120],
+        })
+    return out
+
+
 def select(pool: Dict[str, List[Dict[str, Any]]], run_id: str) -> List[Dict[str, Any]]:
-    """One forward, one counterfactual, one claim, two reason items; spread over the run; caps in step order; the
-    counterfactual's key alternates between 'higher' and 'same' by run; no flight twice."""
+    """One forward, one counterfactual, one claim, two reason items and one sector item; spread over the run; caps in
+    step order; the counterfactual's key alternates between 'higher' and 'same' by run; no flight twice, steps
+    distinct where possible; the forward item (a prediction task) last, with cap >= 3 and above the smallest cap of
+    the others, so that it is never the first task (left out, and reported missing, when no candidate fits)."""
     rnd = random.Random(f"study-items-{run_id}")
     used: set = set()
+    steps: set = set()
     picked: List[Dict[str, Any]] = []
 
-    def take(items: List[Dict[str, Any]], prefer=None) -> None:
-        items = [i for i in items if i.get("flight") not in used and i not in picked]
+    def flight_of(i: Dict[str, Any]) -> Optional[int]:
+        return int(i["key"][1:]) if i["kind"] == "forward" else i.get("flight")
+
+    def take(items: List[Dict[str, Any]], prefer=None, need=None) -> None:
+        items = [i for i in items if flight_of(i) not in used and i not in picked]
+        if need:
+            items = [i for i in items if need(i)]
         if prefer:
             items = [i for i in items if prefer(i)] or items
+        items = [i for i in items if i["step"] not in steps] or items
         if not items:
             return
         i = rnd.choice(items)
         picked.append(i)
-        if i.get("flight") is not None:
-            used.add(i["flight"])
-        if i["kind"] == "forward":
-            used.add(int(i["key"][1:]))
+        steps.add(i["step"])
+        if flight_of(i) is not None:
+            used.add(flight_of(i))
 
     # the scarce kinds first, so that a later pick cannot take the only candidate's flight
     take(pool["claim"])
-    take(pool["forward"])
     want = "higher" if sum(map(ord, run_id)) % 2 == 0 else "same"
     take(pool["counterfactual"], lambda i: i["key"] == want)
     take(pool["reason"], lambda i: i["key"] in ("overload", "delay", "sectors"))
     take(pool["reason"], lambda i: i["key"] in ("aircraft", "tie"))
+    # a split chosen for delay cannot be guessed from "a split adds capacity" alone
+    take(pool.get("sector", []), lambda i: i["key"] == "delay")
+    first = min((i["cap"] for i in picked), default=0)
+    take(pool["forward"], need=lambda i: i["cap"] >= 3 and i["cap"] > first)
     picked.sort(key=lambda i: (i["cap"], i["step"]))
+    assert not picked or picked[0]["kind"] != "forward", "a prediction task must not come first"
     return picked
 
 
@@ -263,8 +322,9 @@ def select_practice(pool: Dict[str, List[Dict[str, Any]]], step: int) -> List[Di
 
 
 def missing_kinds(items: List[Dict[str, Any]]) -> List[str]:
-    """The kinds of the planned mix (one forward, counterfactual, claim, two reason) that could not be filled."""
-    want = {"forward": 1, "counterfactual": 1, "claim": 1, "reason": 2}
+    """The kinds of the planned mix (one forward, counterfactual, claim, two reason, sector) that could not be
+    filled."""
+    want = {"forward": 1, "counterfactual": 1, "claim": 1, "reason": 2, "sector": 1}
     have = {k: sum(1 for i in items if i["kind"] == k) for k in want}
     return [k for k, n in want.items() for _ in range(n - have[k])]
 
@@ -272,7 +332,7 @@ def missing_kinds(items: List[Dict[str, Any]]) -> List[str]:
 def build_items(folder: Path, run_id: str, practice_step: Optional[int] = None) -> Dict[str, Any]:
     run = Run(folder)
     pool = {"forward": forward_items(run), "counterfactual": counterfactual_items(run),
-            "claim": claim_items(run), "reason": reason_items(run)}
+            "claim": claim_items(run), "reason": reason_items(run), "sector": sector_items(run)}
     items = select(pool, run_id) if practice_step is None else select_practice(pool, practice_step)
     for k, i in enumerate(items, 1):
         i["id"] = f"{run_id}{k}"

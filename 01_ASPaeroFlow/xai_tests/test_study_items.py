@@ -11,7 +11,8 @@ OPT = HERE.parent
 sys.path.insert(0, str(OPT))
 
 from src.aspaeroflow.xai.study_items import (  # noqa: E402
-    Run, build_items, claim_items, counterfactual_items, forward_items, reason_items, review_table)
+    SECTOR_KEYS, Run, build_items, claim_items, counterfactual_items, forward_items, reason_items, review_table,
+    sector_items)
 
 TRACE = HERE / "fixtures" / "CE7_JUNE_TRACE"
 
@@ -58,16 +59,39 @@ class StudyItems(unittest.TestCase):
     def test_selection_mix_order_and_determinism(self):
         items = self.result["items"]
         kinds = sorted(i["kind"] for i in items)
-        self.assertEqual(kinds, sorted(["forward", "counterfactual", "claim", "reason", "reason"]), self.result["pool"])
+        self.assertEqual(kinds, sorted(["forward", "counterfactual", "claim", "reason", "reason", "sector"]),
+                         self.result["pool"])
         caps = [i["cap"] for i in items]
         self.assertEqual(caps, sorted(caps))
-        flights = [i.get("flight") for i in items if i.get("flight") is not None]
+        flights = [int(i["key"][1:]) if i["kind"] == "forward" else i.get("flight") for i in items]
+        flights = [f for f in flights if f is not None]
         self.assertEqual(len(flights), len(set(flights)))
         self.assertEqual([i["id"] for i in build_items(TRACE, "A")["items"]], [i["id"] for i in items])
         self.assertEqual([(i["kind"], i["step"]) for i in build_items(TRACE, "A")["items"]],
                          [(i["kind"], i["step"]) for i in items])
         self.assertIn("(key)", review_table(self.result))
 
+
+    def test_prediction_tasks_are_named_and_never_first(self):
+        for i in forward_items(self.trace):
+            self.assertTrue(i["prompt"].startswith(f"Your task is to predict the optimizer's next step (step {i['step']})"))
+            self.assertNotIn("time step", i["prompt"])
+        items = self.result["items"]
+        self.assertNotEqual(items[0]["kind"], "forward")
+        fwd = [i for i in items if i["kind"] == "forward"]
+        self.assertTrue(all(i["cap"] >= 3 for i in fwd))
+
+    def test_sector_keys_follow_the_layout_row(self):
+        items = sector_items(self.trace)
+        self.assertTrue(items)
+        for i in items:
+            row = self.trace.rows(i["step"])[f"sector:{i['sector']}@{i['step']}:before"]
+            self.assertEqual(i["key"], SECTOR_KEYS[row["kind"]])
+            self.assertIn(i["key"], [o["id"] for o in i["options"]])
+            layout = self.trace.keep[i["step"]]["layout"]["keep"]["costs"]
+            self.assertLess(layout["sectors"], self.trace.factual(i["step"])["sectors"])   # 'more sectors' is false
+            self.assertNotIn("time step", i["prompt"])
+        self.assertFalse(self.trace.merging)
 
     def test_practice_mode_one_item_about_the_given_step(self):
         result = build_items(TRACE, "P", practice_step=6)
