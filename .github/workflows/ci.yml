@@ -25,6 +25,8 @@ jobs:
       - uses: mamba-org/setup-micromamba@v2
         with:
           environment-file: environment.yml
+          # the benchmark scripts some tests import need psutil, which environment.yml does not list
+          create-args: psutil
           cache-environment: true
       - name: Tests in tests/
         shell: micromamba-shell {0}
