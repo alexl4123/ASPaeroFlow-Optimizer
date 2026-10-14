@@ -59,8 +59,7 @@ class StudyItems(unittest.TestCase):
     def test_selection_mix_order_and_determinism(self):
         items = self.result["items"]
         kinds = sorted(i["kind"] for i in items)
-        self.assertEqual(kinds, sorted(["forward", "counterfactual", "claim", "reason", "reason", "sector"]),
-                         self.result["pool"])
+        self.assertEqual(kinds, sorted(["counterfactual", "claim", "reason", "reason", "sector"]), self.result["pool"])
         caps = [i["cap"] for i in items]
         self.assertEqual(caps, sorted(caps))
         flights = [int(i["key"][1:]) if i["kind"] == "forward" else i.get("flight") for i in items]
@@ -72,14 +71,13 @@ class StudyItems(unittest.TestCase):
         self.assertIn("(key)", review_table(self.result))
 
 
-    def test_prediction_tasks_are_named_and_never_first(self):
+    def test_prediction_tasks_are_proposed_but_not_selected(self):
         for i in forward_items(self.trace):
             self.assertTrue(i["prompt"].startswith(f"Your task is to predict the optimizer's next step (step {i['step']})"))
             self.assertNotIn("time step", i["prompt"])
-        items = self.result["items"]
-        self.assertNotEqual(items[0]["kind"], "forward")
-        fwd = [i for i in items if i["kind"] == "forward"]
-        self.assertTrue(all(i["cap"] >= 3 for i in fwd))
+        self.assertTrue(self.result["pool"]["forward"] > 0)
+        self.assertFalse(any(i["kind"] == "forward" for i in self.result["items"]))
+        self.assertNotIn("forward", self.result["missing"])
 
     def test_sector_keys_follow_the_layout_row(self):
         items = sector_items(self.trace)
@@ -98,6 +96,7 @@ class StudyItems(unittest.TestCase):
         self.assertLessEqual(len(result["items"]), 1)
         for i in result["items"]:
             self.assertEqual((i["id"], i["step"]), ("P1", 6))
+            self.assertNotEqual(i["kind"], "forward")
         self.assertEqual(result["missing"], [] if result["items"] else ["practice"])
 
 

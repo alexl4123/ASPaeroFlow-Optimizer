@@ -15,9 +15,10 @@ Every key is derived from the trace and its keep contrasts (xai/keep.py), never 
   contrast: the first criterion on which keeping F is worse, a later flight of the same aircraft, or a tie;
 - sector (step n, sector S, Sprint 6): why the step split S, from the kind of its layout row (reasons.lp: the step
   solved again with the layout kept leaves more overload, or the same overload and more delay).
-Items are proposed in a pool; six are selected per run (one forward, one counterfactual, one claim, two reason, one
-sector), in step order, so that the step a participant may see (`cap`) never goes back within a block. A forward
-item (a prediction task) needs at least three seen steps and is never the first task.
+Items are proposed in a pool; five are selected per run (one counterfactual, one claim, two reason, one sector), in
+step order, so that the step a participant may see (`cap`) never goes back within a block. Forward items (prediction
+tasks) stay in the pool but are not selected (Alexander, 14 Oct): which flight the next step changes cannot be told
+from what the interface shows before the step (notes/XAI_PREDICTABILITY.md).
 """
 from __future__ import annotations
 
@@ -269,10 +270,9 @@ def sector_items(run: Run) -> List[Dict[str, Any]]:
 
 
 def select(pool: Dict[str, List[Dict[str, Any]]], run_id: str) -> List[Dict[str, Any]]:
-    """One forward, one counterfactual, one claim, two reason items and one sector item; spread over the run; caps in
-    step order; the counterfactual's key alternates between 'higher' and 'same' by run; no flight twice, steps
-    distinct where possible; the forward item (a prediction task) last, with cap >= 3 and above the smallest cap of
-    the others, so that it is never the first task (left out, and reported missing, when no candidate fits)."""
+    """One counterfactual, one claim, two reason items and one sector item; spread over the run; caps in step order;
+    the counterfactual's key alternates between 'higher' and 'same' by run; no flight twice, steps distinct where
+    possible. No forward item (prediction tasks are not selected since 14 Oct)."""
     rnd = random.Random(f"study-items-{run_id}")
     used: set = set()
     steps: set = set()
@@ -304,17 +304,14 @@ def select(pool: Dict[str, List[Dict[str, Any]]], run_id: str) -> List[Dict[str,
     take(pool["reason"], lambda i: i["key"] in ("aircraft", "tie"))
     # a split chosen for delay cannot be guessed from "a split adds capacity" alone
     take(pool.get("sector", []), lambda i: i["key"] == "delay")
-    first = min((i["cap"] for i in picked), default=0)
-    take(pool["forward"], need=lambda i: i["cap"] >= 3 and i["cap"] > first)
     picked.sort(key=lambda i: (i["cap"], i["step"]))
-    assert not picked or picked[0]["kind"] != "forward", "a prediction task must not come first"
     return picked
 
 
 def select_practice(pool: Dict[str, List[Dict[str, Any]]], step: int) -> List[Dict[str, Any]]:
-    """The practice run's one item (K33/K32): about `step`, the step after the ones the introduction tour explains;
-    a forward item if there is one, else a reason item, else a counterfactual."""
-    for kind in ("forward", "reason", "counterfactual"):
+    """The practice run's one item (K33/K32): about `step`; a reason item if there is one, else a sector item, else a
+    counterfactual (no prediction task since 14 Oct)."""
+    for kind in ("reason", "sector", "counterfactual"):
         items = [i for i in pool[kind] if i["step"] == step]
         if items:
             return [sorted(items, key=lambda i: i.get("flight") or 0)[0]]
@@ -322,9 +319,8 @@ def select_practice(pool: Dict[str, List[Dict[str, Any]]], step: int) -> List[Di
 
 
 def missing_kinds(items: List[Dict[str, Any]]) -> List[str]:
-    """The kinds of the planned mix (one forward, counterfactual, claim, two reason, sector) that could not be
-    filled."""
-    want = {"forward": 1, "counterfactual": 1, "claim": 1, "reason": 2, "sector": 1}
+    """The kinds of the planned mix (one counterfactual, claim, two reason, sector) that could not be filled."""
+    want = {"counterfactual": 1, "claim": 1, "reason": 2, "sector": 1}
     have = {k: sum(1 for i in items if i["kind"] == k) for k in want}
     return [k for k, n in want.items() for _ in range(n - have[k])]
 
