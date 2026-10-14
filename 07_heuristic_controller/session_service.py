@@ -21,13 +21,21 @@ Endpoints (JSON):
     GET  /sessions/{id}/iterations/{n}                full record (without the instance text)
     POST /sessions/{id}/iterations/{n}/explain        {"question": hotspot|flight|sectors|tie|alternatives|menu, "flight": F}
                           menu: the requirements a what-if of this step can ask for, each open, met or not_offered,
-                          and the navpoints of the step's candidate routes with the same states (K47)
+                          and the navpoints of the step's candidate routes with the same states (K47);
+                          "flight_navpoints" (S8 4a): per flight of the step (each solver flight, then its later
+                          flights) {"flight", "parent" (null for a solver flight), "navpoints": [{"navpoint", "name",
+                          "lock": "avoid N M", "state": open|met|not_offered, "reason" (not_offered only)}]}, the
+                          navpoints on that flight's own candidate routes; a replay whose answer cache was built
+                          without --per-flight (the study traces) has no "flight_navpoints" in its cached menus
     POST /sessions/{id}/iterations/{n}/what-if        {"locks": ["keep 18", "same_route 18", "max_delay 19 2", ...]}
+                          "avoid N" (no flight of the step passes navpoint N), "avoid N M" (flight M, a solver flight
+                          or a later flight of the step, does not pass N; only M's own route counts);
                           only this step's sub-problem is solved again and compared with the step's recorded answer;
                           locks the recorded answer already meets are not solved when all are met (already_met);
                           the answer has an outcome (worse_<criterion>, tie, better, already_met, impossible) and
                           a one-sentence headline;
-                          a lock on a flight that is not part of the step answers 400
+                          a lock on a flight that is not part of the step answers 400; requirements that cannot hold
+                          (together) answer feasible false with the minimal "core" and its "core_texts"
     GET  /sessions/{id}/events?after=SEQ              text/event-stream; "id:" = sequence number (Last-Event-ID works)
 Events: {"v": 1, "seq": n, "type": "state" | "iteration" | "reasons" | "finished" | "error", "data": {...}}, each a few KB.
 A kept iteration's summary carries "reasons" (one line per row of its change list) when its keep contrasts are known

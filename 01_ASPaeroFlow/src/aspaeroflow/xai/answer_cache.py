@@ -1,7 +1,7 @@
 """Answers to the questions a replay is asked, computed once (K35).
 
     python -m src.aspaeroflow.xai.answer_cache <trace folder> [--data-dir <instance folder>] [--check]
-                                                                                   (from 01_ASPaeroFlow)
+                                               [--per-flight] [--out <file>]       (from 01_ASPaeroFlow)
 
 A replay used to solve every question when it was asked. The step's clingo control is reused across questions, so
 when two answers are equally good the one returned could depend on which questions came before (same costs, other
@@ -9,6 +9,13 @@ routes). The cache computes every question the interface asks of a kept step in 
 the flights in ascending order, the hotspot, the sectors, then each requirement the menu offers on its own, sorted -
 and the replay serves those answers, so every participant gets the same answer to the same question. Questions
 outside the cache (combinations of requirements) are computed on demand in a fresh explainer of the step.
+
+Per-flight navpoints (S8 4a, `avoid N M`): by default the cache holds the menu without `flight_navpoints` and no
+per-flight what-ifs, so a cache built for the study traces (whose visits do not offer the per-flight form) has the same
+entries as before that change. `--per-flight` adds both; the per-flight what-ifs of a step are solved only after all of
+that step's other entries, because the step's clingo control is shared and an earlier query could change which of
+several equally good answers a later one returns. A replay serves what its cache holds, so with a default cache the
+menu of a cached step has no `flight_navpoints`.
 
 The file `answers.json.gz` sits in the trace folder and carries a fingerprint of everything an answer depends on:
 the trace files, the keep contrasts it loaded, the clingo version, the explaining code and the navpoint names of the
@@ -69,8 +76,10 @@ def _plain(value: Any) -> Any:
     return json.loads(json.dumps(value))
 
 
-def build(folder: Path, data_dir: Optional[Path] = None) -> Dict[str, Any]:
-    """Every cached answer of the trace, in the fixed order; one explainer per step, used for that step only."""
+def build(folder: Path, data_dir: Optional[Path] = None, per_flight: bool = False) -> Dict[str, Any]:
+    """Every cached answer of the trace, in the fixed order; one explainer per step, used for that step only.
+    `per_flight`: the menu with `flight_navpoints` and each open per-flight navpoint lock, after the step's other
+    entries."""
     from .session import ReplaySession
     session = ReplaySession(Path(folder), data_dir)
     options = " ".join(session.trace().run.get("solver_options") or [])
@@ -82,7 +91,7 @@ def build(folder: Path, data_dir: Optional[Path] = None) -> Dict[str, Any]:
             continue
         n = int(record["iteration"])
         ex = session.explainer(n)
-        menu = ex.what_if_menu()
+        menu = ex.what_if_menu(per_flight=per_flight)
         entries[explain_key(n, "menu")] = menu
         flights = sorted({int(f) for f in record.get("flight_changes") or {}} | set(ex.sub.decision_flights))
         for f in flights:
@@ -96,6 +105,10 @@ def build(folder: Path, data_dir: Optional[Path] = None) -> Dict[str, Any]:
         locks |= {v["lock"] for v in menu.get("navpoints", []) if v.get("state") == "open"}
         for lock in sorted(locks):
             entries[what_if_key(n, [lock])] = ex.what_if([Lock.parse(lock)])
+        if per_flight:                    # only after the step's other entries (same clingo control)
+            extra = {v["lock"] for g in menu.get("flight_navpoints", []) for v in g["navpoints"] if v["state"] == "open"}
+            for lock in sorted(extra - locks):
+                entries[what_if_key(n, [lock])] = ex.what_if([Lock.parse(lock)])
     return {"version": VERSION, "fingerprint": fingerprint(Path(folder), session._keep, session.display_names()),
             "entries": _plain(entries)}
 
@@ -117,14 +130,18 @@ def main(argv: Optional[List[str]] = None) -> None:
     ap.add_argument("trace")
     ap.add_argument("--data-dir", default=None, help="the instance folder the service uses (display names)")
     ap.add_argument("--check", action="store_true", help="build twice and compare the bytes")
+    ap.add_argument("--per-flight", action="store_true",
+                    help="also the per-flight navpoints of the menu and their what-ifs (not for the study traces)")
+    ap.add_argument("--out", default=None, help=f"write the cache here instead of <trace>/{FILE}")
     a = ap.parse_args(argv)
     data_dir = Path(a.data_dir) if a.data_dir else None
-    data = to_bytes(build(Path(a.trace), data_dir))
-    if a.check and to_bytes(build(Path(a.trace), data_dir)) != data:
+    data = to_bytes(build(Path(a.trace), data_dir, a.per_flight))
+    if a.check and to_bytes(build(Path(a.trace), data_dir, a.per_flight)) != data:
         raise SystemExit("two builds differ: not written")
-    (Path(a.trace) / FILE).write_bytes(data)
+    out = Path(a.out) if a.out else Path(a.trace) / FILE
+    out.write_bytes(data)
     cache = json.loads(gzip.decompress(data))
-    print(f"wrote {Path(a.trace) / FILE}: {len(cache['entries'])} answers, {len(data) // 1024} KB")
+    print(f"wrote {out}: {len(cache['entries'])} answers, {len(data) // 1024} KB")
 
 
 if __name__ == "__main__":

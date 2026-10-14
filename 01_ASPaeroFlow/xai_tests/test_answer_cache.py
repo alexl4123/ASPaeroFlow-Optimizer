@@ -18,6 +18,7 @@ sys.path.insert(0, str(HERE))
 
 import shared_run  # noqa: E402
 from src.aspaeroflow.xai import answer_cache  # noqa: E402
+from src.aspaeroflow.xai.contrastive import Lock  # noqa: E402
 from src.aspaeroflow.xai.session import ReplaySession  # noqa: E402
 
 
@@ -75,6 +76,54 @@ class AnswerCache(unittest.TestCase):
         result = s.what_if(n, pair)
         self.assertIn("question", result)
         self.assertEqual(s.what_if(n, list(reversed(pair))), result)      # order of the locks does not matter
+
+    def test_default_build_has_no_per_flight_entries(self):
+        """S8 4a: the default build (the study traces) holds no `flight_navpoints` in its menus and no per-flight
+        what-if."""
+        for key, value in self.cache["entries"].items():
+            if key.startswith("explain|") and key.split("|")[2] == "menu":
+                self.assertNotIn("flight_navpoints", value, key)
+            if key.startswith("what_if|"):
+                for lock in key.split("|")[2].split(","):
+                    parsed = Lock.parse(lock)
+                    self.assertFalse(parsed.kind == "avoid" and len(parsed.args) > 1, key)
+
+    def test_per_flight_build_only_adds(self):
+        """S8 4a: a --per-flight build has every entry of the default build unchanged (a menu gains only
+        `flight_navpoints`), and its further entries are exactly the open per-flight navpoints of each step's menu,
+        solved after the step's other entries; it is repeatable byte for byte; a replay serves them from the cache."""
+        cache = answer_cache.build(self.folder, per_flight=True)
+        data = answer_cache.to_bytes(cache)
+        self.assertEqual(answer_cache.to_bytes(answer_cache.build(self.folder, per_flight=True)), data)
+        old, new = self.cache["entries"], cache["entries"]
+        self.assertEqual(cache["fingerprint"], self.cache["fingerprint"])
+        for key, value in old.items():
+            got = new[key]
+            if key.startswith("explain|") and key.split("|")[2] == "menu":
+                self.assertIn("flight_navpoints", got)
+                got = {k: v for k, v in got.items() if k != "flight_navpoints"}
+            self.assertEqual(json.dumps(got, sort_keys=True), json.dumps(value, sort_keys=True), key)
+        expected = set()
+        for key, value in new.items():
+            if key.startswith("explain|") and key.split("|")[2] == "menu":
+                n = int(key.split("|")[1])
+                expected |= {answer_cache.what_if_key(n, [e["lock"]]) for g in value["flight_navpoints"]
+                             for e in g["navpoints"] if e["state"] == "open"}
+        self.assertEqual(set(new) - set(old), expected)
+        if not expected:
+            self.skipTest("no open per-flight navpoint in this run")
+        other = self.tmp / "per_flight"
+        shutil.copytree(self.folder, other)
+        (other / answer_cache.FILE).write_bytes(data)
+        s = ReplaySession(other)
+
+        def no_explainer(n):
+            raise AssertionError("a cached question must not build an explainer")
+        s.explainer = no_explainer
+        s._fresh_explainer = no_explainer
+        for key in sorted(expected):
+            _, n, rest = key.split("|", 2)
+            self.assertEqual(json.loads(json.dumps(s.what_if(int(n), rest.split(",")))), new[key], key)
 
     def test_a_changed_fingerprint_is_ignored(self):
         other = self.tmp / "other"
