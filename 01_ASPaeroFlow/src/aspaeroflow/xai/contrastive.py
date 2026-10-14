@@ -46,7 +46,10 @@ class Lock:
     no_delay F      flight F departs no later than now
     same_route F    flight F stays on its current route; a delay is allowed (K47)
     max_delay F D   flight F (and its later legs) arrives at most D time steps after its planned arrival
-    avoid N [F]     no flight (or only flight F) passes navpoint N
+    avoid N         no flight of the step passes navpoint N (a solver flight's candidate is banned when its own route
+                    or the route of one of its later flights passes N)
+    avoid N M       flight M (a solver flight or a later flight of the step) does not pass navpoint N: exactly the
+                    candidates of M's own trajectory that pass N are banned (S8 4a, D1)
     keep_sectors    the hotspot's sectors stay as they are (configuration 0)
     """
 
@@ -580,8 +583,9 @@ class IterationExplainer:
         if k == "keep_sectors":
             return self.config_text(0)
         if k == "avoid":
-            if len(a) > 1:
-                return f"flight {self._flight_of_lock(Lock('keep', a[1:]))} does not pass navpoint {self._nav(a[0])}"
+            member = self._avoid_member(lock)
+            if member is not None:
+                return f"flight {member} does not pass navpoint {self._nav(a[0])}"
             return f"no flight of the step passes navpoint {self._nav(a[0])}"
         f = self._flight_of_lock(lock)
         if k == "keep":
@@ -597,6 +601,16 @@ class IterationExplainer:
         if k == "max_delay":
             return " ".join(self._max_delay_parts(f, a[1]))
         raise ValueError(f"unknown lock kind: {k}")
+
+    def _avoid_member(self, lock: Lock) -> Optional[int]:
+        """The flight M of a per-flight avoid lock `avoid N M` (None for the step-wide `avoid N`); ValueError when M is
+        not a flight of the step (neither a solver flight nor a later flight of one) or the lock has more arguments."""
+        if not lock.args or len(lock.args) > 2:
+            raise ValueError(f"lock '{lock}' needs a navpoint and at most one flight")
+        if len(lock.args) == 1:
+            return None
+        self._flight_of_lock(Lock("keep", lock.args[1:]))          # raises for a flight outside the step
+        return lock.args[1]
 
     def _later(self, flight: int) -> List[int]:
         """The later flights of the same aircraft in the sub-problem (they follow the path index of `flight`)."""
@@ -623,10 +637,12 @@ class IterationExplainer:
         return (not any((f, p) in paths for f, p in self.chosen_paths.items())
                 and self.chosen_config not in configs)
 
-    def what_if_menu(self) -> Dict[str, Any]:
+    def what_if_menu(self, per_flight: bool = True) -> Dict[str, Any]:
         """The requirements a user can pick for this step, each with its state: open (it changes the answer of the
         step), met (the recorded answer already meets it) or not_offered (no candidate of the step meets it). A
-        solver flight whose trajectory before the step is not recorded gets no entries (neither can be checked)."""
+        solver flight whose trajectory before the step is not recorded gets no entries (neither can be checked).
+        `per_flight` adds `flight_navpoints` (flight_navpoint_states, S8 4a); the answer caches of the study traces are
+        built without it (xai/answer_cache.py). Nothing here is solved."""
         entries: List[Dict[str, Any]] = []
 
         def entry(lock: Lock, flight: Optional[int], offered: bool) -> None:
@@ -654,7 +670,10 @@ class IterationExplainer:
                 before, _, after = self._max_delay_parts(f, d)
                 entries[-1].update({"minutes": minutes(d, self.g), "text_before": before, "text_after": after})
         entry(Lock("keep_sectors"), None, 0 in self.sub.configs)
-        return {"iteration": self.iteration, "menu": entries, "navpoints": self.navpoint_states()}
+        out = {"iteration": self.iteration, "menu": entries, "navpoints": self.navpoint_states()}
+        if per_flight:
+            out["flight_navpoints"] = self.flight_navpoint_states()
+        return out
 
     #: the delay caps the menu offers, in minutes
     DELAY_CAPS = (15, 30, 60)
@@ -682,6 +701,43 @@ class IterationExplainer:
             out.append({"navpoint": n, "name": self._nav(n), "lock": str(lock), "state": state, "reason": reason})
         out.sort(key=lambda e: (0, int(e["name"]), "") if e["name"].isdigit() else (1, 0, e["name"]))
         return out
+
+    def flight_navpoint_states(self) -> List[Dict[str, Any]]:
+        """Per flight of the step (each solver flight, followed by its later flights), the navpoints on that flight's own
+        candidate routes with the state of "flight M does not pass navpoint N" (lock `avoid N M`): open (the recorded
+        answer gives M a route through N and some candidate of M avoids it), met (M's recorded route avoids N) or
+        not_offered (every candidate of M passes N), with the reason of a not_offered one. A later flight has the
+        candidates of its solver flight's path indices."""
+        out = []
+        for m, parent in self._members():
+            navs: Set[int] = set()
+            for cp in self.sub.paths.get(m, {}).values():
+                navs.update(cp.route)
+            f = parent if parent is not None else m
+            items = []
+            for n in navs:
+                lock = Lock("avoid", (n, m))
+                paths, _ = self._lock_bans(lock)
+                if self._all_paths(f) and all((f, p) in paths for p in self._all_paths(f)):
+                    state, reason = "not_offered", self._unavoidable_for(n, m)
+                else:
+                    state, reason = ("met" if self.lock_met(lock) else "open"), None
+                items.append({"navpoint": n, "name": self._nav(n), "lock": str(lock), "state": state,
+                              "reason": reason})
+            items.sort(key=lambda e: (0, int(e["name"]), "") if e["name"].isdigit() else (1, 0, e["name"]))
+            out.append({"flight": m, "parent": parent, "navpoints": items})
+        return out
+
+    def _unavoidable_for(self, navpoint: int, flight: int) -> str:
+        """Why every candidate of one flight (a solver flight or a later flight) passes a navpoint: it is the flight's
+        departure or arrival airport, or every candidate route of the flight passes it."""
+        name = self._nav(navpoint)
+        routes = [cp.route for _, cp in sorted(self.sub.paths.get(flight, {}).items())]
+        if routes and all(r and r[0] == navpoint for r in routes):
+            return f"{name} is the departure airport of flight {flight}"
+        if routes and all(r and r[-1] == navpoint for r in routes):
+            return f"{name} is the arrival airport of flight {flight}"
+        return f"every candidate route of flight {flight} passes {name}"
 
     def _unavoidable(self, navpoint: int, flight: int) -> str:
         """Why every candidate of a solver flight passes a navpoint: it is the departure or arrival airport of the
@@ -730,10 +786,19 @@ class IterationExplainer:
                             break
         elif k == "avoid":
             nav = a[0]
-            only = self._flight_of_lock(Lock("keep", a[1:])) if len(a) > 1 else None
+            member = self._avoid_member(lock)
+            if member is not None:
+                # S8 4a (D1): only flight M. A later flight M has no choice of its own: it follows the path index of
+                # its solver flight F (chosen_path(M,P) :- chosen_path(F,P), the only rule deriving chosen_path(M,P)),
+                # so ":- chosen_path(M,p)" equals the ban (F,p). Banned: exactly the indices p whose candidate of M
+                # itself passes N; an index without a candidate of M is not banned (M has no route there).
+                f = self.sub.decision_flight_of(member)
+                for p in self._all_paths(f):
+                    cp = self.sub.paths.get(member, {}).get(p)
+                    if cp is not None and nav in cp.route:
+                        paths.add((f, p))
+                return paths, configs
             for f in self.sub.decision_flights:
-                if only is not None and f != only:
-                    continue
                 members = [f] + [l for l, par in self.sub.parent.items() if par == f]
                 for p in self._all_paths(f):
                     if any(nav in self.sub.paths.get(m, {}).get(p, CandidatePath(m, p, 0, None, {}, ())).route
@@ -837,8 +902,10 @@ class IterationExplainer:
                                "optimal": None}
         if all(r["met"] for r in requirements):
             if not many and locks[0].kind == "avoid" and not self._lock_bans(locks[0])[0]:
-                answer = (f"No candidate route of {step} passes navpoint {self._nav(locks[0].args[0])}; {step}'s choice already "
-                          f"meets this requirement.")
+                member = self._avoid_member(locks[0])
+                where = f"flight {member} in {step}" if member is not None else step
+                answer = (f"No candidate route of {where} passes navpoint {self._nav(locks[0].args[0])}; {step}'s choice "
+                          f"already meets this requirement.")
             else:
                 answer = f"{step.capitalize()}'s choice already meets {noun}. Nothing is solved again."
             return out | {"already_met": True, "answer": answer, "outcome": "already_met", "headline": answer}
