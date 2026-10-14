@@ -52,6 +52,99 @@ def _run(job):
 
     return model
 
+
+#: hotspot cells a step works on (optimization_step: one; the solving below is not parallel)
+CELLS_PER_STEP = 1
+
+
+def select_flights(time_index, sector_index, converted_instance_matrix, capacity_demand_diff_matrix, duration,
+                   max_rows, n_proc, airplane_flight, fill_value):
+    """The flights a step passes to the solver for the hotspot cell (sector_index at time_index), from the state
+    before the step. The one implementation of this rule: build_job uses it, and so does the XAI next-step preview
+    (xai/preview.py). Reads its inputs only.
+
+    The cell's flights are sorted by their stored duration (shortest first; a stable sort over ascending flight ids,
+    so ties go to the lower flight number); the first min(n_proc * max_rows, max(2, |overload|)) of them are taken
+    (fewer when the cell holds fewer); each taken flight brings the flights of its aircraft that start no earlier.
+
+    Returns a dict:
+        cell        the cell's flights in that order (np.ndarray)
+        needed      the number the rule asks for
+        rows_pool   the taken flights (cell[:needed])
+        problematic_flight_indices  the taken flights of the first chunk (all of rows_pool when n_proc is 1)
+        airplane_flight_map         aircraft -> its flights from the taken flight's start on
+        all_potentially_problematic_flight_indices  taken flights and their later flights (np.ndarray, the order
+                                                    build_job passes to OptimizeFlights)
+    """
+    sector_flight_index_mask = converted_instance_matrix[:, time_index] == sector_index
+
+    # Get flights for possible rerouting/delaying:
+    candidate = np.flatnonzero(sector_flight_index_mask)
+
+    candidate_duration = duration[candidate]
+
+    # Shortest flight duration first (time steps occupied, computation_helpers.flight_spans_contiguous);
+    # stable sort over ascending flight ids, so ties go to the lower flight number. Take the first ones:
+    order = np.argsort(candidate_duration, kind="stable")
+    candidate_sorted = candidate[order]
+    candidate = candidate_sorted
+
+    capacity_difference = abs(capacity_demand_diff_matrix[sector_index, time_index])
+    if capacity_difference < 2:
+        capacity_difference = 2
+
+    needed   = n_proc * max_rows
+    needed = min(needed, capacity_difference)
+
+    rows_pool = candidate[:needed]
+
+    chunk_size = max_rows
+
+    chunk_index = 0
+    problematic_flight_indices = rows_pool[chunk_index*chunk_size:(chunk_index+1)*chunk_size]
+
+    # Get all associated problematic flights:
+    airplane_indices = airplane_flight[np.isin(airplane_flight[:,1],problematic_flight_indices),0]
+    airplane_flight_map = {}
+
+    all_potentially_problematic_flight_indices = list(problematic_flight_indices)
+
+    for airplane_index in airplane_indices:
+
+        flights_per_airplane = airplane_flight[airplane_flight[:,0] == airplane_index, 1]
+        flight_start_time_list = []
+
+        for flight in flights_per_airplane:
+
+            flight_operation_start_time = np.flatnonzero(converted_instance_matrix[flight,:] != fill_value)[0]
+
+            if flight in problematic_flight_indices:
+                problematic_start_time = flight_operation_start_time
+
+            flight_start_time_list.append((flight_operation_start_time,flight))
+
+        flight_start_time_list = sorted(flight_start_time_list)
+
+        considered_flight_indices = []
+
+        for start_time, flight in flight_start_time_list:
+
+            if start_time < problematic_start_time:
+                continue
+            else:
+                considered_flight_indices.append(flight)
+
+                all_potentially_problematic_flight_indices.append(flight)
+
+        airplane_flight_map[airplane_index] = considered_flight_indices
+
+    all_potentially_problematic_flight_indices = np.array(list(set(all_potentially_problematic_flight_indices)))
+
+    return {"cell": candidate, "needed": needed, "rows_pool": rows_pool,
+            "problematic_flight_indices": problematic_flight_indices,
+            "airplane_flight_map": airplane_flight_map,
+            "all_potentially_problematic_flight_indices": all_potentially_problematic_flight_indices}
+
 class IterationStep:
 
     def __init__(self, global_var_dto):
@@ -60,6 +153,8 @@ class IterationStep:
     def optimization_step(self, optimization_dto):
         # XAI trace: the flights this iteration passes to the solver (set below; empty on every other path).
         optimization_dto["xai_taken"] = []
+        optimization_dto["xai_cell"] = None
+        optimization_dto["xai_solver_flights"] = []
 
         navaid_sector_time_assignment = optimization_dto["navaid_sector_time_assignment"]
         converted_instance_matrix = optimization_dto["converted_instance_matrix"]
@@ -191,47 +286,22 @@ class IterationStep:
             if self.verbosity > 0:
                 print(f"<ITER:{iteration}><REMAINING ISSUES:{str(number_of_conflicts)}>")
 
-            cols_with_values = (converted_instance_matrix != -1).any(axis=0)           
-            idxs = np.flatnonzero(cols_with_values)            
-            last_idx = int(idxs[-1]) if idxs.size else -1     
-            safety_factor = self._timestep_granularity * 2
+            # What this step works on (also the XAI next-step preview's source, xai/preview.py): the matrices widened
+            # in time when needed, the hotspot cell(s) and their solver flights.
+            scope = self.step_scope(navaid_sector_time_assignment, converted_instance_matrix, converted_navpoint_matrix,
+                                    system_loads, capacity_time_matrix, capacity_demand_diff_matrix,
+                                    capacity_overload_mask, additional_time_increase,
+                                    max_number_airplanes_considered_in_ASP, flight_durations, fill_value)
+            navaid_sector_time_assignment = scope["navaid_sector_time_assignment"]
+            converted_instance_matrix = scope["converted_instance_matrix"]
+            converted_navpoint_matrix = scope["converted_navpoint_matrix"]
+            system_loads = scope["system_loads"]
+            capacity_time_matrix = scope["capacity_time_matrix"]
+            capacity_demand_diff_matrix = scope["capacity_demand_diff_matrix"]
+            capacity_overload_mask = scope["capacity_overload_mask"]
 
-            if last_idx + self._max_delay_per_iteration * (additional_time_increase + 1) + safety_factor >= converted_instance_matrix.shape[1]:
-                # INCREASE MATRIX SIZE (TIME) AUTOMATICALLY
-                diff = last_idx + self._max_delay_per_iteration * (additional_time_increase + 1) + safety_factor - converted_instance_matrix.shape[1] + 1
-                in_units = math.ceil(diff / self._timestep_granularity)
-                number_new_cols = in_units * self._timestep_granularity
-
-                # 0.) Handle Sector Assignments:
-                new_cols = np.repeat(navaid_sector_time_assignment[:,[-1]], number_new_cols, axis=1)  # shape (N,k)
-                navaid_sector_time_assignment = np.concatenate([navaid_sector_time_assignment, new_cols], axis=1)
-                # 1.) Handle Instance Matrix:
-                extra_col = -1 * np.ones((converted_instance_matrix.shape[0], number_new_cols), dtype=int)
-                converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col)) 
-
-                extra_col = -1 * np.ones((converted_navpoint_matrix.shape[0], number_new_cols), dtype=int)
-                converted_navpoint_matrix = np.hstack((converted_navpoint_matrix, extra_col)) 
-                
-                # 2.) Create demand matrix (|R|x|T|):
-                system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
-                # 3.) Create capacity matrix (|R|x|T|):
-                #capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, z = self.sector_capacity_factor)
-                capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor, composite_sector_function=self.composite_sector_function)
-
-                # 3.) Create capacity matrix (|R|x|T|)
-                #capacity_time_matrix = self.capacity_time_matrix_reference(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = z)
-                # 4.) Subtract demand from capacity (|R|x|T|):
-                capacity_demand_diff_matrix = capacity_time_matrix - system_loads
-                # 5.) Create capacity overload matrix:
-                capacity_overload_mask = capacity_demand_diff_matrix < 0
-
-            if navaid_sector_time_assignment.shape[1] != converted_instance_matrix.shape[1]:
-                raise Exception(f"Navaid time must correspond to instance time: {navaid_sector_time_assignment.shape[1]} != {converted_instance_matrix.shape[1]}")
-
-            #time_index,bucket_index = self.first_overload(capacity_overload_mask)
-
-            max_number_processors = 1
-            time_bucket_tuples = self.first_overloads(capacity_overload_mask, k=max_number_processors)
+            max_number_processors = CELLS_PER_STEP
+            time_bucket_tuples = scope["cells"]
 
             start_time = time.time()
 
@@ -242,7 +312,7 @@ class IterationStep:
 
             all_jobs = []
             all_candidates = {}
-            for time_index, sector_index in time_bucket_tuples:
+            for (time_index, sector_index), selection in zip(time_bucket_tuples, scope["selections"]):
             
                 time_bucket_updated = time_index
 
@@ -257,9 +327,11 @@ class IterationStep:
                                 self.networkx_navpoint_graph, self.unit_graphs, planned_arrival_times, self.airplane_flight,
                                 self.airplanes, navaid_sector_time_assignment, flight_durations,
                                 iteration, self.sector_capacity_factor, self.flights,
-                                self._sequential_execution
+                                self._sequential_execution, selection
                                 )
                 optimization_dto["xai_taken"] = [int(f) for f in candidates]
+                optimization_dto["xai_cell"] = (int(time_index), int(sector_index))
+                optimization_dto["xai_solver_flights"] = sorted(int(f) for f in job[5])
 
                 controller_sector_diff_dict["time_index"] = int(time_index)
                 controller_sector_diff_dict["sector_index"] = int(sector_index)
@@ -363,6 +435,61 @@ class IterationStep:
 
         return optimization_dto, global_dto, last_return_string
 
+    def step_scope(self, navaid_sector_time_assignment, converted_instance_matrix, converted_navpoint_matrix,
+                   system_loads, capacity_time_matrix, capacity_demand_diff_matrix, capacity_overload_mask,
+                   additional_time_increase, max_number_airplanes_considered_in_ASP, flight_durations, fill_value):
+        """What a step works on, decided before anything is solved: the matrices, widened in time when a delay could
+        run past their end; the hotspot cells (first_overloads: earliest overloaded time step, then lowest sector
+        index; CELLS_PER_STEP of them); per cell the flights that go to the solver (select_flights). optimization_step
+        uses it, and the XAI next-step preview (xai/preview.py) calls it on the state a step leaves. It changes
+        neither its inputs nor the optimizer (a widened matrix is a new array)."""
+        cols_with_values = (converted_instance_matrix != -1).any(axis=0)
+        idxs = np.flatnonzero(cols_with_values)
+        last_idx = int(idxs[-1]) if idxs.size else -1
+        safety_factor = self._timestep_granularity * 2
+
+        if last_idx + self._max_delay_per_iteration * (additional_time_increase + 1) + safety_factor >= converted_instance_matrix.shape[1]:
+            # INCREASE MATRIX SIZE (TIME) AUTOMATICALLY
+            diff = last_idx + self._max_delay_per_iteration * (additional_time_increase + 1) + safety_factor - converted_instance_matrix.shape[1] + 1
+            in_units = math.ceil(diff / self._timestep_granularity)
+            number_new_cols = in_units * self._timestep_granularity
+
+            # 0.) Handle Sector Assignments:
+            new_cols = np.repeat(navaid_sector_time_assignment[:,[-1]], number_new_cols, axis=1)  # shape (N,k)
+            navaid_sector_time_assignment = np.concatenate([navaid_sector_time_assignment, new_cols], axis=1)
+            # 1.) Handle Instance Matrix:
+            extra_col = -1 * np.ones((converted_instance_matrix.shape[0], number_new_cols), dtype=int)
+            converted_instance_matrix = np.hstack((converted_instance_matrix, extra_col))
+
+            extra_col = -1 * np.ones((converted_navpoint_matrix.shape[0], number_new_cols), dtype=int)
+            converted_navpoint_matrix = np.hstack((converted_navpoint_matrix, extra_col))
+
+            # 2.) Create demand matrix (|R|x|T|):
+            system_loads = OptimizeFlights.bucket_histogram(converted_instance_matrix, self.sectors, self.sectors.shape[0], converted_instance_matrix.shape[1], self._timestep_granularity)
+            # 3.) Create capacity matrix (|R|x|T|):
+            capacity_time_matrix = OptimizeFlights.capacity_time_matrix(self.sectors, system_loads.shape[1], self._timestep_granularity, navaid_sector_time_assignment, z = self.sector_capacity_factor, composite_sector_function=self.composite_sector_function)
+            # 4.) Subtract demand from capacity (|R|x|T|):
+            capacity_demand_diff_matrix = capacity_time_matrix - system_loads
+            # 5.) Create capacity overload mask:
+            capacity_overload_mask = capacity_demand_diff_matrix < 0
+
+        if navaid_sector_time_assignment.shape[1] != converted_instance_matrix.shape[1]:
+            raise Exception(f"Navaid time must correspond to instance time: {navaid_sector_time_assignment.shape[1]} != {converted_instance_matrix.shape[1]}")
+
+        cells = self.first_overloads(capacity_overload_mask, k=CELLS_PER_STEP)
+        selections = [select_flights(time_index, sector_index, converted_instance_matrix, capacity_demand_diff_matrix,
+                                     flight_durations, max_number_airplanes_considered_in_ASP, CELLS_PER_STEP,
+                                     self.airplane_flight, fill_value)
+                      for time_index, sector_index in cells]
+
+        return {"navaid_sector_time_assignment": navaid_sector_time_assignment,
+                "converted_instance_matrix": converted_instance_matrix,
+                "converted_navpoint_matrix": converted_navpoint_matrix,
+                "system_loads": system_loads, "capacity_time_matrix": capacity_time_matrix,
+                "capacity_demand_diff_matrix": capacity_demand_diff_matrix,
+                "capacity_overload_mask": capacity_overload_mask,
+                "cells": cells, "selections": selections}
+
     def first_overload(self, mask: np.ndarray):
         """
         Return (time, bucket) of the first *True* entry in `mask`
@@ -431,7 +558,8 @@ class IterationStep:
                 iteration,
                 sector_capacity_factor,
                 filed_flights,
-                sequential_execution
+                sequential_execution,
+                selection=None
                 ):
         """
         Split the candidate rows into *n_proc* equally‑sized chunks
@@ -439,88 +567,22 @@ class IterationStep:
         """
 
 
-        # DEMAND COMPUTATION WHEN FLIGHTS ENTER:
-        #if time_index > 0:
-        #    bucket_index_mask = (converted_instance_matrix[:, time_index] == sector_index) & (converted_instance_matrix[:, time_index - 1] != sector_index)
-        #else:
-        #    bucket_index_mask = converted_instance_matrix[:, time_index] == sector_index
-        
-        sector_flight_index_mask = converted_instance_matrix[:, time_index] == sector_index
-
-        # Get flights for possible rerouting/delaying:
-        candidate = np.flatnonzero(sector_flight_index_mask)
-
-        #print(f"===> Trying to solve sector:{bucket_index} for time: {time_index}, with overload: {capacity_demand_diff_matrix[bucket_index, time_index]}, candidates: {len(candidate)}")
-        #bucket_index_mask = bucket_index_mask.any(axis=1)
-
-
-        candidate_duration = duration[candidate]
-
-        # Shortest flight duration first (time steps occupied, computation_helpers.flight_spans_contiguous);
-        # stable sort over ascending flight ids, so ties go to the lower flight number. Take the first ones:
-        order = np.argsort(candidate_duration, kind="stable")
-        candidate_sorted = candidate[order]
-        candidate = candidate_sorted
-        #rng.shuffle(candidate)
-
-        capacity_difference = abs(capacity_demand_diff_matrix[sector_index, time_index])
-        if capacity_difference < 2:
-            capacity_difference = 2
-
-        needed   = n_proc * max_rows
-        needed = min(needed, capacity_difference)
+        # The flights of the cell that go to the solver, with their later flights (select_flights, the rule's one
+        # implementation; optimization_step hands in the selection step_scope made).
+        if selection is None:
+            selection = select_flights(time_index, sector_index, converted_instance_matrix, capacity_demand_diff_matrix,
+                                       duration, max_rows, n_proc, self.airplane_flight, fill_value)
+        needed = selection["needed"]
+        rows_pool = selection["rows_pool"]
+        problematic_flight_indices = selection["problematic_flight_indices"]
+        airplane_flight_map = selection["airplane_flight_map"]
+        all_potentially_problematic_flight_indices = selection["all_potentially_problematic_flight_indices"]
 
         if self.verbosity > 2:
             print(f"---> ACTUALLY INVESTIGATED AIRPLANES: <<{needed}>>")
 
-        rows_pool = candidate[:needed]
-
-        chunk_size = max_rows
-        n_chunks   = min(n_proc, len(rows_pool) // chunk_size)
-        n_chunks = max(n_chunks, 3)
-
-        chunk_index = 0
-        problematic_flight_indices = rows_pool[chunk_index*chunk_size:(chunk_index+1)*chunk_size]
-
-        # Get all associated problematic flights:
-        airplane_indices = self.airplane_flight[np.isin(self.airplane_flight[:,1],problematic_flight_indices),0]
-        airplane_flight_map = {}
-
-        all_potentially_problematic_flight_indices = list(problematic_flight_indices)
-
         if self.verbosity > 1:
-            print(f"--> Investigated sector: sec={sector_index}; time={time_index} with problematic flights: {all_potentially_problematic_flight_indices}")
-
-        for airplane_index in airplane_indices:
-
-            flights_per_airplane = self.airplane_flight[self.airplane_flight[:,0] == airplane_index, 1]
-            flight_start_time_list = []
-
-            for flight in flights_per_airplane:
-                
-                flight_operation_start_time = np.flatnonzero(converted_instance_matrix[flight,:] != fill_value)[0]
-
-                if flight in problematic_flight_indices:
-                    problematic_start_time = flight_operation_start_time
-
-                flight_start_time_list.append((flight_operation_start_time,flight))
-
-            flight_start_time_list = sorted(flight_start_time_list)
-
-            considered_flight_indices = []
-
-            for start_time, flight in flight_start_time_list:
-
-                if start_time < problematic_start_time:
-                    continue
-                else:
-                    considered_flight_indices.append(flight)
-
-                    all_potentially_problematic_flight_indices.append(flight)
-
-            airplane_flight_map[airplane_index] = considered_flight_indices
-
-        all_potentially_problematic_flight_indices = np.array(list(set(all_potentially_problematic_flight_indices)))
+            print(f"--> Investigated sector: sec={sector_index}; time={time_index} with problematic flights: {list(problematic_flight_indices)}")
 
         problematic_flights = converted_instance_matrix[problematic_flight_indices, :]
         #de_facto_max_time = converted_instance_matrix.shape[1]

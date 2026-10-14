@@ -260,6 +260,8 @@ class Main:
                                   optimization_dto["navaid_sector_time_assignment"], optimization_dto["system_loads"],
                                   optimization_dto["capacity_time_matrix"],
                                   optimization_dto["original_navaid_sector_time_assignment"])
+            # S8 4c: the preview of step 1 (hotspot cell and solver flights), by the optimizer's own selection code
+            xai_hooks.record_preview(self, 0, None)
         return optimization_dto
 
     def has_overload(self) -> bool:
@@ -306,6 +308,9 @@ class Main:
         elif "SEQUENTIAL END" in command:
             return "sequential-end"
 
+        if self._xai_trace is not None:
+            xai_hooks.note_selection(self, optimization_dto)      # S8 4c: checks the preview made before this step
+
         # XAI fork experiments (xai/fork.py) may replace the step's answer before it is applied.
         fork = getattr(self, "_xai_fork", None)
         if fork is not None:
@@ -324,10 +329,15 @@ class Main:
         # Extract the absolute last time position
         last_flight = col_indices.max()
         max_number_airplanes_considered_in_ASP = optimization_dto["max_number_airplanes_considered_in_ASP"]
+        outcome = "evaluated"
         if (additional_time_increase-1) * self._max_delay_per_iteration > last_flight and max_number_airplanes_considered_in_ASP == 1:
             # Terminate if not solvable:
-            return "terminate"
-        return "evaluated"
+            outcome = "terminate"
+        if self._xai_trace is not None and self._xai_trace.last is not None:
+            # S8 4c: the preview of the next step, from the state this step leaves
+            last = self._xai_trace.last
+            xai_hooks.record_preview(self, int(last["iteration"]), bool(last["accepted"]), outcome)
+        return outcome
 
     def finish(self):
         """Post-processing of the final plan; returns what run() returns."""
@@ -337,6 +347,7 @@ class Main:
         if self._xai_trace is not None:
             self._xai_trace.close()
             xai_hooks.close_load(self._xai_trace)
+            xai_hooks.close_preview(self._xai_trace)
         return r0,r1
 
     def xai_run_info(self, optimization_dto):

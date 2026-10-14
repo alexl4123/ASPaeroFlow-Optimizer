@@ -1,6 +1,7 @@
 """The calls the optimizer makes into the trace: before a step's answer is applied, after it (evaluate_solution.py),
-and the load of each plan state (K08, xai/load.py: Main.begin for the filed plan, evaluate_solution.py once the step's
-state is final)."""
+the load of each plan state (K08, xai/load.py: Main.begin for the filed plan, evaluate_solution.py once the step's
+state is final), and the next-step preview (S8 4c, xai/preview.py: Main.begin and Main.step once a step is done; each
+step's actual selection is noted for the check of the preview made before it)."""
 from __future__ import annotations
 
 import logging
@@ -8,6 +9,7 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
+from . import preview as preview_mod
 from .load import LoadWriter
 from .trace import trajectory_of
 
@@ -27,7 +29,7 @@ def capture_before(evaluator, solutions, flight_ids, converted_navpoint_matrix, 
     hotspot["vertices"] = list(prev.get("vertices", []))
     hotspot["overload"] = prev.get("overload")
     # The flights in the hotspot cell with the flight durations the candidate sort used
-    # (iteration_step.py build_job: stable sort by duration, so ties fall to the lower flight number),
+    # (iteration_step.py select_flights: stable sort by duration, so ties fall to the lower flight number),
     # and how many of them were passed to the solver. Both matrices still hold the plan before the answer.
     instance_matrix = optimization_dto.get("converted_instance_matrix")
     durations = optimization_dto.get("flight_durations")
@@ -99,5 +101,41 @@ def record_load(owner, iteration: int, kept: Optional[bool], recorded_overload, 
 
 def close_load(trace) -> None:
     writer = getattr(trace, "_xai_load", None)
+    if writer is not None:
+        writer.close()
+
+
+def note_selection(owner, optimization_dto) -> None:
+    """What the step about to be evaluated selected (cell, solver flights), for the check of the preview made
+    before it."""
+    writer = getattr(owner._xai_trace, "_xai_preview", None)
+    if writer is not None:
+        try:
+            writer.actual = preview_mod.selected(optimization_dto)
+        except Exception:  # the preview must never stop a step
+            log.exception("preview: the step's selection could not be noted")
+            writer.actual = None
+
+
+def record_preview(owner, iteration: int, kept: Optional[bool], outcome: Optional[str] = None) -> None:
+    """The preview of the step after `iteration` (0 = filed plan), into <trace>/preview.jsonl, computed by the
+    optimizer's own selection code on its current state. The filed plan starts a new file. A failure is written as an
+    error line and never stops the run."""
+    trace = owner._xai_trace
+    writer = getattr(trace, "_xai_preview", None)
+    try:
+        if writer is None or iteration == 0:
+            if writer is not None:
+                writer.close()
+            writer = trace._xai_preview = preview_mod.PreviewWriter(trace.folder)
+        writer.write(iteration, kept, preview_mod.compute(owner, outcome))
+    except Exception as exc:  # the preview must never stop a step
+        log.exception("iteration %s: preview record failed", iteration)
+        if writer is not None:
+            writer.write_error(iteration, kept, exc)
+
+
+def close_preview(trace) -> None:
+    writer = getattr(trace, "_xai_preview", None)
     if writer is not None:
         writer.close()

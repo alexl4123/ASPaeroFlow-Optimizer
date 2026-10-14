@@ -38,6 +38,11 @@ from ..navpoint_sector_allocation_bootstrap import to_window as to_evaluation_wi
 from ..optimize_flights import OptimizeFlights
 from ..xai import hooks as xai_hooks
 
+#: rejected steps in a row after which a step passes only one flight to the solver (max_number_airplanes_considered_in_ASP;
+#: read by the XAI next-step preview, xai/preview.py)
+REJECTIONS_BEFORE_ONE_AIRCRAFT = 10
+
+
 class EvaluateSolution:
 
     def __init__(self, global_var_dto):
@@ -380,7 +385,7 @@ class EvaluateSolution:
                     if self.verbosity > 1:
                         print(f">>> SET NUMBER DYNAMIC SECTOR ALLOCATION TO:{self.number_capacity_management_configs}")
                 
-                if counter_equal_solutions >= 10:
+                if counter_equal_solutions >= REJECTIONS_BEFORE_ONE_AIRCRAFT:
                     # Otherwise it can be that the considered planes hinder a solution through MUTEX
                     max_number_airplanes_considered_in_ASP = 1
                     if self.verbosity > 1:
