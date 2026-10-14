@@ -547,6 +547,10 @@ current_time -> {int(time_bucket_updated)}
         if xai_trace is not None:
             xai_hooks.record_iteration(self, xai_before, iteration, controller_sector_diff_dict.get("accepted_solution"),
                                        output_dict, all_flights_diff_dict, controller_sector_diff_dict)
+            # K08: demand, capacity and sector composition of the state the next step starts from (final here)
+            xai_hooks.record_load(self, iteration, bool(controller_sector_diff_dict.get("accepted_solution")),
+                                  output_dict["OVERLOAD"], xai_before["hotspot"], navaid_sector_time_assignment,
+                                  system_loads, capacity_time_matrix, original_navaid_sector_time_assignment)
 
         if self._controller_enabled is True or self._explainability_context is not None:
 

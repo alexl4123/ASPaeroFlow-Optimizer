@@ -1,0 +1,18 @@
+{
+  "source_experiment": "/home/thinklex/Dropbox/2025_phd/2026/28_OpenSky_Symposium/02_JOAS_paper/analysis/xai_study/14_sprint4_20261012/practice/work/exp",
+  "source_data_dir": "/home/thinklex/Dropbox/2025_phd/2026/28_OpenSky_Symposium/02_JOAS_paper/analysis/xai_study/14_sprint4_20261012/practice/work/exp/DATA_S15_2",
+  "navgraph_dir": "/home/thinklex/Dropbox/2025_phd/2026/28_OpenSky_Symposium/02_JOAS_paper/analysis/xai_study/14_sprint4_20261012/practice/work/exp/navgraph",
+  "output_dir": "/home/thinklex/Dropbox/2025_phd/2026/28_OpenSky_Symposium/02_JOAS_paper/analysis/xai_study/14_sprint4_20261012/practice/work/inst/CE-NAVPT-PRACTICE/0000015_SEED2",
+  "n_flights": 15,
+  "seed": "2",
+  "files": [
+    "airplane_flight_assignment.csv",
+    "airplanes.csv",
+    "airports.csv",
+    "flights.csv",
+    "graph_edges.csv",
+    "navaid_sector_assignment.csv",
+    "navaid_sector_schedule.csv",
+    "sectors.csv"
+  ]
+}

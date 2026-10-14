@@ -48,6 +48,7 @@ from .main_loop_components.after_optimization import AfterOptimization
 from .main_loop_components.iteration_step import IterationStep
 from .main_loop_components.evaluate_solution import EvaluateSolution
 from .xai.trace import IterationTrace
+from .xai import hooks as xai_hooks
 from .navpoint_sector_allocation_bootstrap import to_window as to_evaluation_window
 
 
@@ -255,6 +256,10 @@ class Main:
         if self._xai_trace is not None:
             self._xai_trace.write_encoding(self.encoding)
             self._xai_trace.write_run(self.xai_run_info(optimization_dto))
+            xai_hooks.record_load(self, 0, None, optimization_dto["number_of_conflicts"], None,
+                                  optimization_dto["navaid_sector_time_assignment"], optimization_dto["system_loads"],
+                                  optimization_dto["capacity_time_matrix"],
+                                  optimization_dto["original_navaid_sector_time_assignment"])
         return optimization_dto
 
     def has_overload(self) -> bool:
@@ -331,6 +336,7 @@ class Main:
         convert_dto_to_global_vars(self, global_dto)
         if self._xai_trace is not None:
             self._xai_trace.close()
+            xai_hooks.close_load(self._xai_trace)
         return r0,r1
 
     def xai_run_info(self, optimization_dto):

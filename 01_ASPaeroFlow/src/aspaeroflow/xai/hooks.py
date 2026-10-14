@@ -1,11 +1,17 @@
-"""The two calls evaluate_solution.py makes into the trace: before the answer is applied, and after."""
+"""The calls the optimizer makes into the trace: before a step's answer is applied, after it (evaluate_solution.py),
+and the load of each plan state (K08, xai/load.py: Main.begin for the filed plan, evaluate_solution.py once the step's
+state is final)."""
 from __future__ import annotations
 
-from typing import Any, Dict
+import logging
+from typing import Any, Dict, Optional
 
 import numpy as np
 
+from .load import LoadWriter
 from .trace import trajectory_of
+
+log = logging.getLogger(__name__)
 
 
 def capture_before(evaluator, solutions, flight_ids, converted_navpoint_matrix, capacity_time_matrix,
@@ -70,3 +76,28 @@ def record_iteration(evaluator, pre: Dict[str, Any], iteration: int, accepted, o
                  flight_changes=flight_changes if accepted else {},
                  sector_changes=sector_changes if accepted else {},
                  parameters=pre["parameters"])
+
+
+def record_load(owner, iteration: int, kept: Optional[bool], recorded_overload, hotspot: Optional[Dict[str, Any]],
+                assignment, loads, capacity, filed) -> None:
+    """Demand, capacity and composition of the plan state the optimizer holds now, into <trace>/load.jsonl. The filed
+    plan (iteration 0) starts a new file. A failure is written as an error line and never stops the run."""
+    trace = owner._xai_trace
+    writer = getattr(trace, "_xai_load", None)
+    try:
+        if writer is None or iteration == 0:
+            if writer is not None:
+                writer.close()
+            writer = trace._xai_load = LoadWriter(trace.folder)
+        writer.write(iteration, kept, None if recorded_overload is None else int(recorded_overload), hotspot,
+                     assignment, loads, capacity, filed, getattr(owner, "airports", None))
+    except Exception as exc:  # the load view must never stop a step
+        log.exception("iteration %s: load record failed", iteration)
+        if writer is not None:
+            writer.write_error(iteration, kept, exc)
+
+
+def close_load(trace) -> None:
+    writer = getattr(trace, "_xai_load", None)
+    if writer is not None:
+        writer.close()
