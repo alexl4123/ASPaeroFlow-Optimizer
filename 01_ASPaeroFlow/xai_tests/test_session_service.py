@@ -189,6 +189,35 @@ class SessionService(unittest.TestCase):
         self.client.post(f"/sessions/{replay}/step")
         self.assertEqual(self.client.get(f"/sessions/{replay}/load?upto=0").status_code, 404)
 
+    def test_preview_only_for_delivered_steps(self):
+        """S8 4c: GET /preview?upto=n serves the preview made after a delivered step n, which names step n+1's
+        hotspot cell and solver flights; the step then works on exactly those."""
+        sid = self.new(instance=INSTANCE)
+        filed = self.client.get(f"/sessions/{sid}/preview?upto=0")
+        self.assertEqual(filed.status_code, 200, filed.text)
+        self.assertEqual((filed.json()["iteration"], filed.json()["next"]), (0, 1))
+        self.assertEqual(self.client.get(f"/sessions/{sid}/preview?upto=1").status_code, 404)
+        first = self.client.post(f"/sessions/{sid}/step").json()["iteration"]
+        detail = self.client.get(f"/sessions/{sid}/iterations/{first['iteration']}").json()
+        hotspot = filed.json()["hotspot"]
+        self.assertEqual((hotspot["sector"], hotspot["time"]), (detail["hotspot"]["sector"], detail["hotspot"]["time"]))
+        live = self.client.get(f"/sessions/{sid}/preview?upto=1")
+        self.assertEqual(live.status_code, 200, live.text)
+        self.assertTrue(live.json()["check"]["ok"], live.json()["check"])
+        self.assertEqual(self.client.get(f"/sessions/{sid}/preview?upto=2").status_code, 404)
+        self.assertEqual(self.client.get(f"/sessions/{sid}/preview?upto=-1").status_code, 404)
+        replay = self.new(replay=str(Path(self.tmp.name) / sid))
+        self.assertEqual(self.client.get(f"/sessions/{replay}/preview?upto=1").status_code, 404)
+        self.client.post(f"/sessions/{replay}/step")
+        self.assertEqual(self.client.get(f"/sessions/{replay}/preview?upto=1").json(), live.json())
+
+    def test_preview_of_a_replay_without_side_file(self):
+        """S8 4c: a replay of a trace recorded before the hook has no preview data (404)."""
+        replay = self.new(replay=str(FIXTURES / "CE7_JUNE_TRACE"))
+        self.client.post(f"/sessions/{replay}/step")
+        for n in (0, 1):
+            self.assertEqual(self.client.get(f"/sessions/{replay}/preview?upto={n}").status_code, 404)
+
     def test_event_stream_is_numbered_and_resumable(self):
         sid = self.new(instance=INSTANCE)
         self.client.post(f"/sessions/{sid}/step")

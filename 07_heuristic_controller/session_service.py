@@ -40,6 +40,11 @@ Endpoints (JSON):
                           the plan as of step n (0 = filed), from the optimizer's own matrices, with its check
                           (xai/load.py); like /plan only for delivered steps; 404 also when the trace has no
                           load.jsonl (a replay of a trace recorded before the hook without its side file)
+    GET  /sessions/{id}/preview?upto=n                S8 4c: the preview made after step n (0 = filed plan) of step n+1:
+                          its hotspot cell (sector, time, clock, demand, capacity), the cell's flights in the
+                          optimizer's order, the solver flights with their aircraft's later flights, the rejection
+                          streak, or finished; computed by the optimizer's own selection code (xai/preview.py); like
+                          /plan only for delivered steps; 404 also when the trace has no preview.jsonl
     GET  /sessions/{id}/events?after=SEQ              text/event-stream; "id:" = sequence number (Last-Event-ID works)
 Events: {"v": 1, "seq": n, "type": "state" | "iteration" | "reasons" | "finished" | "error", "data": {...}}, each a few KB.
 A kept iteration's summary carries "reasons" (one line per row of its change list) when its keep contrasts are known
@@ -70,6 +75,7 @@ sys.path.insert(0, str(OPTIMIZER_DIR))
 
 from src.aspaeroflow.xai.session import OptimizerSession, ReplaySession  # noqa: E402
 from src.aspaeroflow.xai.load import load_for  # noqa: E402
+from src.aspaeroflow.xai.preview import preview_for  # noqa: E402
 
 PROTOCOL_VERSION = 1
 
@@ -305,6 +311,15 @@ def create_app(instances_root: Optional[Path], sessions_root: Path) -> FastAPI:
         session has not delivered yet, and for a trace without load data."""
         try:
             return load_for(get(sid).session, upto)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc))
+
+    @app.get("/sessions/{sid}/preview")
+    def preview(sid: str, upto: int):
+        """The next-step preview made after step `upto` (xai/preview.py, S8 4c): what step upto+1 works on. 404 for
+        a step the session has not delivered yet, and for a trace without preview data."""
+        try:
+            return preview_for(get(sid).session, upto)
         except KeyError as exc:
             raise HTTPException(404, str(exc))
 
