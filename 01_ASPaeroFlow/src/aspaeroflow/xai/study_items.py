@@ -10,7 +10,9 @@ Every key is derived from the trace and its keep contrasts (xai/keep.py), never 
   same; "lower" cannot be right, the step's overload is optimal); the sub-problem overload must equal the run's;
 - claim (step n, flight F): a feasible plan that keeps F and is worse on exactly one criterion and equal on the others
   ("dominated"); the claim "this plan is better" is false. Whether it stays dominated after the rest of the run is
-  not checked here (a forced-alternative continuation, open);
+  not checked here (a forced-alternative continuation, open); the claim is about the step only. The selection turns
+  the claim of every second run around ("what the optimizer chose is better than plan X", true), so that the answer
+  is not always False (Alexander, 14 Oct);
 - reason (step n, flight F): why the step changed F, from the row reasons (xai/reasons.py explain_rows) and the keep
   contrast: the first criterion on which keeping F is worse, a later flight of the same aircraft, or a tie;
 - sector (step n, sector S, Sprint 6): why the step split S, from the kind of its layout row (reasons.lp: the step
@@ -181,7 +183,7 @@ def claim_items(run: Run) -> List[Dict[str, Any]]:
                 "kind": "claim", "step": n, "cap": last, "visible_in_e_on": False, "flight": f,
                 "prompt": (f"Consider plan X for step {n}: flight {f} is kept as it was before the step, and the step "
                            f"is otherwise solved as well as possible. Plan X has the same {equal} as the optimizer's "
-                           f"choice and {unit} {label}. Claim: plan X is better than what the optimizer chose."),
+                           f"choice and {unit} {label}. {CLAIM_FALSE}"),
                 "options": [{"id": "true", "text": "True"}, {"id": "false", "text": "False"}, CANNOT_TELL],
                 "key": "false",
                 "source": f"keep contrast step {n} flight {f}: differences {d} (worse only on {worse[0]}); "
@@ -269,9 +271,20 @@ def sector_items(run: Run) -> List[Dict[str, Any]]:
     return out
 
 
+CLAIM_FALSE = "Claim: plan X is better than what the optimizer chose."
+CLAIM_TRUE = "Claim: what the optimizer chose is better than plan X."
+
+
+def true_claim(item: Dict[str, Any]) -> Dict[str, Any]:
+    """The same comparison with the claim turned around: the optimizer's choice is better (true)."""
+    return {**item, "prompt": item["prompt"].replace(CLAIM_FALSE, CLAIM_TRUE), "key": "true",
+            "source": item["source"] + "; claim turned around (true)"}
+
+
 def select(pool: Dict[str, List[Dict[str, Any]]], run_id: str) -> List[Dict[str, Any]]:
     """One counterfactual, one claim, two reason items and one sector item; spread over the run; caps in step order;
-    the counterfactual's key alternates between 'higher' and 'same' by run; no flight twice, steps distinct where
+    the counterfactual's key alternates between 'higher' and 'same' by run, the claim's between false and true; no
+    flight twice, steps distinct where
     possible. No forward item (prediction tasks are not selected since 14 Oct)."""
     rnd = random.Random(f"study-items-{run_id}")
     used: set = set()
@@ -298,7 +311,10 @@ def select(pool: Dict[str, List[Dict[str, Any]]], run_id: str) -> List[Dict[str,
 
     # the scarce kinds first, so that a later pick cannot take the only candidate's flight
     take(pool["claim"])
-    want = "higher" if sum(map(ord, run_id)) % 2 == 0 else "same"
+    even = sum(map(ord, run_id)) % 2 == 0
+    if even and picked and picked[-1]["kind"] == "claim":
+        picked[-1] = true_claim(picked[-1])
+    want = "higher" if even else "same"
     take(pool["counterfactual"], lambda i: i["key"] == want)
     take(pool["reason"], lambda i: i["key"] in ("overload", "delay", "sectors"))
     take(pool["reason"], lambda i: i["key"] in ("aircraft", "tie"))

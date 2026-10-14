@@ -71,6 +71,13 @@ class StudyItems(unittest.TestCase):
         self.assertIn("(key)", review_table(self.result))
 
 
+    def test_claim_polarity_alternates_by_run(self):
+        claims = {r: next(i for i in build_items(TRACE, r)["items"] if i["kind"] == "claim") for r in ("A", "B")}
+        self.assertEqual((claims["A"]["key"], claims["B"]["key"]), ("false", "true"))
+        self.assertTrue(claims["A"]["prompt"].endswith("Claim: plan X is better than what the optimizer chose."))
+        self.assertTrue(claims["B"]["prompt"].endswith("Claim: what the optimizer chose is better than plan X."))
+        self.assertIn("true", [o["id"] for o in claims["B"]["options"]])
+
     def test_prediction_tasks_are_proposed_but_not_selected(self):
         for i in forward_items(self.trace):
             self.assertTrue(i["prompt"].startswith(f"Your task is to predict the optimizer's next step (step {i['step']})"))
