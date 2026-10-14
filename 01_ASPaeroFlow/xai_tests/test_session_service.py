@@ -150,6 +150,45 @@ class SessionService(unittest.TestCase):
             self.assertEqual(plan["kpis"]["arrival_delay"]["final"], kept[-1]["objectives"]["ARRIVAL-DELAY"])
             self.assertEqual(self.client.get(f"/sessions/{s}/plan?upto={last + 1}").status_code, 404)
 
+    def test_load_only_for_delivered_steps(self):
+        """K08: GET /load?upto=n serves the optimizer's load record of a delivered step and refuses later ones."""
+        sid = self.new(instance=INSTANCE)
+        filed = self.client.get(f"/sessions/{sid}/load?upto=0")
+        self.assertEqual(filed.status_code, 200, filed.text)
+        self.assertEqual(filed.json()["iteration"], 0)
+        self.assertTrue(filed.json()["check"]["ok"])
+        self.assertEqual(self.client.get(f"/sessions/{sid}/load?upto=1").status_code, 404)
+        first = self.client.post(f"/sessions/{sid}/step").json()["iteration"]
+        live = self.client.get(f"/sessions/{sid}/load?upto=1")
+        self.assertEqual(live.status_code, 200, live.text)
+        self.assertEqual(live.json()["overload"], first["objectives"]["OVERLOAD"])
+        self.assertTrue(live.json()["check"]["ok"], live.json()["check"])
+        self.assertEqual(self.client.get(f"/sessions/{sid}/load?upto=2").status_code, 404)
+        self.assertEqual(self.client.get(f"/sessions/{sid}/load?upto=-1").status_code, 404)
+        # a replay of the live folder serves the same record, again only once the step is delivered
+        replay = self.new(replay=str(Path(self.tmp.name) / sid))
+        self.assertEqual(self.client.get(f"/sessions/{replay}/load?upto=1").status_code, 404)
+        self.client.post(f"/sessions/{replay}/step")
+        self.assertEqual(self.client.get(f"/sessions/{replay}/load?upto=1").json(), live.json())
+
+    def test_load_of_a_replay_without_side_file(self):
+        """K08: a replay of a trace recorded before the hook has no load data (404, the after-view is hidden); a side
+        file made for another trace.jsonl is not served either."""
+        replay = self.new(replay=str(FIXTURES / "CE7_JUNE_TRACE"))
+        self.client.post(f"/sessions/{replay}/step")
+        for n in (0, 1):
+            self.assertEqual(self.client.get(f"/sessions/{replay}/load?upto={n}").status_code, 404)
+        sid = self.new(instance=INSTANCE)
+        self.client.post(f"/sessions/{sid}/step")
+        folder = Path(self.tmp.name) / f"{sid}-copy"
+        import shutil
+        shutil.copytree(Path(self.tmp.name) / sid, folder)
+        body = (folder / "load.jsonl").read_text()
+        (folder / "load.jsonl").write_text(json.dumps({"header": {"v": 1, "trace_sha256": "0" * 64}}) + "\n" + body)
+        replay = self.new(replay=str(folder))
+        self.client.post(f"/sessions/{replay}/step")
+        self.assertEqual(self.client.get(f"/sessions/{replay}/load?upto=0").status_code, 404)
+
     def test_event_stream_is_numbered_and_resumable(self):
         sid = self.new(instance=INSTANCE)
         self.client.post(f"/sessions/{sid}/step")

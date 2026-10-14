@@ -36,6 +36,10 @@ Endpoints (JSON):
                           a one-sentence headline;
                           a lock on a flight that is not part of the step answers 400; requirements that cannot hold
                           (together) answer feasible false with the minimal "core" and its "core_texts"
+    GET  /sessions/{id}/load?upto=n                   K08: demand, capacity and composition per sector and time step of
+                          the plan as of step n (0 = filed), from the optimizer's own matrices, with its check
+                          (xai/load.py); like /plan only for delivered steps; 404 also when the trace has no
+                          load.jsonl (a replay of a trace recorded before the hook without its side file)
     GET  /sessions/{id}/events?after=SEQ              text/event-stream; "id:" = sequence number (Last-Event-ID works)
 Events: {"v": 1, "seq": n, "type": "state" | "iteration" | "reasons" | "finished" | "error", "data": {...}}, each a few KB.
 A kept iteration's summary carries "reasons" (one line per row of its change list) when its keep contrasts are known
@@ -65,6 +69,7 @@ OPTIMIZER_DIR = Path(__file__).resolve().parents[1] / "01_ASPaeroFlow"
 sys.path.insert(0, str(OPTIMIZER_DIR))
 
 from src.aspaeroflow.xai.session import OptimizerSession, ReplaySession  # noqa: E402
+from src.aspaeroflow.xai.load import load_for  # noqa: E402
 
 PROTOCOL_VERSION = 1
 
@@ -291,6 +296,15 @@ def create_app(instances_root: Optional[Path], sessions_root: Path) -> FastAPI:
         key figures and checks. 404 for a step the session has not delivered yet."""
         try:
             return get(sid).session.plan(upto)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc))
+
+    @app.get("/sessions/{sid}/load")
+    def load(sid: str, upto: int):
+        """Demand vs capacity per sector and time step as of step `upto` (xai/load.py, K08). 404 for a step the
+        session has not delivered yet, and for a trace without load data."""
+        try:
+            return load_for(get(sid).session, upto)
         except KeyError as exc:
             raise HTTPException(404, str(exc))
 
