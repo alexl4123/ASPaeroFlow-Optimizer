@@ -108,6 +108,29 @@ a comment header, so an exported file states the settings it was built under:
 Note that `sectors.csv::Capacity` is a **per-timestep** capacity, not per hour — see the dataset
 README shipped with the instances.
 
+#### Time horizon of the exact ASP solver
+
+`02_ASP` solves inside a finite time domain: timesteps `0 .. max_time × T_gran` (`--max-time`,
+in hours, default 24, i.e. the instance's day), extended to the last planned timestep if a filed
+plan ends later. **Every flight position must lie inside this domain**: a delayed or rerouted
+flight cannot land after it. (Before commit `cf90cea`, the no-rerouting and restricted-rerouting
+variants did not enforce this; a flight could fly past the domain, where no capacity was checked,
+so its load went uncounted.) What happens when the best solution still has overload depends on
+the delay option:
+
+| ground delay | horizon |
+|---|---|
+| full (`d`, `--regulation-ground-delay-active=2`) | re-solve loop: when a search ends with overload > 0, solve again with `max_time` one hour longer, up to a theoretical bound. A search stopped at the time limit (or at `--solve-deadline`) is not extended. `--fixed-horizon` switches the loop off. |
+| bounded (`dp`) or none (`nd`) | **fixed** at `max_time`: no re-solve. |
+
+**This differs from the formal model** (LPNMR 2026), whose time axis continues after the
+instance's day with the last sector configuration and its capacity. With a fixed horizon, a flight
+cannot be delayed so far that it would land after the day, so the optimum of a bounded-delay
+variant can be worse than the formal model's. This is accepted: bounded delay is itself a
+restriction of the model (at most a few timesteps per flight), and delay 0 always fits, so no
+instance becomes unsatisfiable. The other solvers (ASPaeroFlow, MIP, the baselines) are not bound
+to the day; their solutions are validated over the whole time axis.
+
 ### Run Baselines
 
 - **MILP (flow-only):** `04_MIP/main.py` (requires Gurobi)
